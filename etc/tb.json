@@ -1,0 +1,8 @@
+{
+  "tag": "TB",
+  "log": {
+      "level": "info",
+      "log_path": "/logs"
+  },
+  "tb_accounts":["test1", "test2"]
+}

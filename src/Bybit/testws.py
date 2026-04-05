@@ -1,0 +1,68 @@
+import hmac
+import json
+import logging
+import time
+
+import websocket
+
+logging.basicConfig(filename='logfile_wrapper.log', level=logging.DEBUG,
+                    format='%(asctime)s %(levelname)s %(message)s')
+topic = "user.wallet.contractAccount"
+topic1 = "user.position.contractAccount"
+topic2 = "user.execution.contractAccount"
+topic3 = "user.order.contractAccount"
+def on_message(ws, message):
+    data = json.loads(message)
+    print(data)
+
+def on_error(ws, error):
+    print('we got error')
+    print(error)
+
+def on_close(ws):
+    print("### about to close please don't close ###")
+
+def send_auth(ws):
+    key = 'kbmHhNDFWiIDjrY4ti'
+    secret = '1BfhxeF1bCM7YLlShavvxLRfsngwyoALakKv'
+    expires = int((time.time() + 10) * 1000)
+    _val = f'GET/realtime{expires}'
+    print(_val)
+    signature = str(hmac.new(
+        bytes(secret, 'utf-8'),
+        bytes(_val, 'utf-8'), digestmod='sha256'
+    ).hexdigest())
+    print(signature)
+    ws.send(json.dumps({"op": "auth", "args": [key, expires, signature]}))
+
+def on_pong(ws, *data):
+    print('pong received')
+
+def on_ping(ws, *data):
+    print('ping received')
+
+def on_open(ws):
+    print('opened')
+    send_auth(ws)
+    print('send subscription ' + topic)
+    ws.send(json.dumps({"op": "subscribe", "args": [topic, topic1, topic2, topic3]}))
+
+def connWS():
+    ws = websocket.WebSocketApp("wss://stream-testnet.bybit.com/contract/private/v3",
+                                on_message=on_message,
+                                on_error=on_error,
+                                on_close=on_close,
+                                on_ping=on_ping,
+                                on_pong=on_pong,
+                                on_open=on_open
+                                )
+    ws.run_forever(
+        #http_proxy_host='127.0.0.1',
+        #http_proxy_port=1087,
+        ping_interval=20,
+        ping_timeout=10
+    )
+
+if __name__ == "__main__":
+    #websocket.enableTrace(True)
+    connWS()
