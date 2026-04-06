@@ -16,9 +16,23 @@ add_definitions("-D_TURN_OFF_PLATFORM_STRING")
 # add_definitions("-DUSE_BINANCE_UNIFIED")
 
 
-file(READ /inc/version.inc COMPILE_VERSION LIMIT 8 OFFSET 33)
-message(${COMPILE_VERSION})
+
+# 读取整个文件
+file(READ /inc/version.inc FILE_CONTENT)
+
+# 查找 COMPILE_VERSION= 之后的内容
+string(FIND "${FILE_CONTENT}" "COMPILE_VERSION=" COMPILE_POS)
+if(COMPILE_POS GREATER -1)
+    math(EXPR VALUE_START "${COMPILE_POS} + 16")  # "COMPILE_VERSION=" 的长度是 16
+    string(SUBSTRING "${FILE_CONTENT}" ${VALUE_START} -1 COMPILE_VERSION)
+    
+    # 去除换行符
+    string(REGEX REPLACE "\n.*$" "" COMPILE_VERSION "${COMPILE_VERSION}")
+    message("COMPILE_VERSION = ${COMPILE_VERSION}")
+endif()
 set(COMPILE_PATH ${COMPILE_VERSION})
+
+
 
 set(3RD_PATH /opt/version/3rd)
 
