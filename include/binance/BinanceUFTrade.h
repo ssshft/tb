@@ -2,12 +2,13 @@
 #include "base/BaseTrade.h"
 
 
-class BinanceSpotTradeUnit : public BaseTradeUnit {
+class BinanceUFTradeUnit : public BaseTradeUnit {
 
 public:
-    BinanceSpotTradeUnit(AccountCfg& a, sm::SecurityManager* s);
-    virtual ~BinanceSpotTradeUnit();
+    BinanceUFTradeUnit(AccountCfg& a, sm::SecurityManager* s);
+    virtual ~BinanceUFTradeUnit();
 
+    virtual void monitorWs();
     virtual void subWebsocekt();
     virtual void onWebsocketMsg(const web::websockets::client::websocket_incoming_message& msg);
     virtual void ping();
@@ -21,5 +22,11 @@ public:
     virtual void cancel_order(const pubsub::TCommand& tcmd);
     virtual void query_order(const pubsub::TCommand& tcmd);
 
-    std::string buildWsSigPayload(std::vector<std::pair<std::string, std::string>> kvs);
+    void genListenKey();
+    void keepListenKey();
+
+private:
+    web::uri wsSubUrl{""};
+    web::uri listenKeyUrl{""};
+    std::string listenKey;
 };

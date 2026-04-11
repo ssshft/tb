@@ -53,7 +53,7 @@ aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/src/base     DIR_BASE_SRCS)
 aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/src/oms     DIR_OMS_SRCS)
 aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/src/operation  DIR_OPERATION_SRCS)
 aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/src/binance   DIR_BINANCE_SRCS)
-# aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/src/gateio    DIR_GATEIO_SRCS)
+aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/src/gateio    DIR_GATEIO_SRCS)
 # aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/src/okx     DIR_OKX_SRCS)
 # aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/src/bybit    DIR_BYBIT_SRCS)
 aux_source_directory(${SHMQUEUE_INCLUDE_DIR}            DIR_SHMQUEU_SRCS)
@@ -96,7 +96,7 @@ add_executable(TB
         ${DIR_OMS_SRCS}
         ${DIR_OPERATION_SRCS}
         ${DIR_BINANCE_SRCS}
-        # ${DIR_GATEIO_SRCS}
+        ${DIR_GATEIO_SRCS}
         # ${HUOBI_SRCS}
         # ${XT_SRCS}
         # ${KUCOIN_SRCS}

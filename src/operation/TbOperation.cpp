@@ -52,6 +52,7 @@ bool TbOperation::preStart(Config* config) {
         cryptothrow("trade_config.json not found OMS fields configuration!!", -1);
     }
 
+    
     std::string configStr = config->get_document_str();
     rapidjson::Document d1;
     rapidjson::Value& configValue = d1.Parse<rapidjson::kParseNumbersAsStringsFlag>(configStr.c_str());
@@ -65,9 +66,11 @@ bool TbOperation::preStart(Config* config) {
             std::string strategyId = accountConfig["strategyId"].GetString();
             std::string exchIdAccountKey = crypto::get_tradeclient_key(exchId.c_str(), strategyId.c_str());
 
+            std::cout << exchId << " " << strategyId << " " << exchIdAccountKey << std::endl;
+
             if (crypto::str_cmp(exchId.c_str(), "BINANCE")) {
-                BaseTradeClient* trade = new BinanceTradeClient(accountConfig, smc);
-                mTradeClient[exchIdAccountKey] = trade;
+               BaseTradeClient* trade = new BinanceTradeClient(accountConfig, smc);
+               mTradeClient[exchIdAccountKey] = trade;
             }
             // else if(crypto::str_cmp(exchId.c_str(), "GATEIO") == true){
             //     TradingClientBase *client = new GateioTradingClient(accountConfig , smc);
@@ -86,16 +89,17 @@ bool TbOperation::preStart(Config* config) {
             //     tradeClientMap[exchIdAccountKey] = (TradingClientBase *)client;
             // }
     
-            else {
-                LOG_ERROR("not implemented exchId: {}", exchId);
-            }
+            //else {
+            //    LOG_ERROR("not implemented exchId: {}", exchId);
+            //}
         }
         else {
             LOG_ERROR("not found accountId: {} configuration in trade_config.json. please add it first", accountId);
         }
     }
 
-    orderManager.preStart();
+   orderManager.preStart();
+   return true;
 }
 
 
@@ -106,11 +110,13 @@ void TbOperation::run() {
     }
 
     LOG_INFO("start execute tcmd");
+    /*
     std::thread executeThread(&TbOperation::execute, this);
     executeThread.detach();
 
     std::thread executeTcmdThread(&TbOperation::executeTcmd, this);
     executeTcmdThread.detach();
+    */
 }
 
 void TbOperation::execute() {
@@ -207,7 +213,7 @@ void TbOperation::executeTcmd() {
                     const std::string& exchIdAccountKey = crypto::get_tradeclient_key(exchId.c_str(), tcmd.body.queryBalance.strategyId);
                     auto iter = mTradeClient.find(exchIdAccountKey);
                     if (iter != mTradeClient.end()) {
-                        iter->second->query_account(tcmd);
+                        iter->second->query_balance(tcmd);
                     }
                     else {
                         LOG_ERROR("not found exchIdAccountKey: {}", exchIdAccountKey);
@@ -219,7 +225,7 @@ void TbOperation::executeTcmd() {
                     const std::string& exchIdAccountKey = crypto::get_tradeclient_key(exchId.c_str(), tcmd.body.queryPosition.strategyId);
                     auto iter = mTradeClient.find(exchIdAccountKey);
                     if (iter != mTradeClient.end()) {
-                        iter->second->query_account(tcmd);
+                        iter->second->query_position(tcmd);
                     }
                     else {
                         LOG_ERROR("not found exchIdAccountKey: {}", exchIdAccountKey);

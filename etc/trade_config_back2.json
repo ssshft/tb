@@ -30,9 +30,9 @@
           "accountId": "test1",
           "accounts": [
             {
-              "instType": "SPOT",
-              "apiKey": "XSaUOuSFzb4HPVBzuI2J5wl10fT5WLkOkPHOJkrE8f5v6sfOayGLraqkpXhUy97p",
-              "secretKey": "ForVdJLT7SvUyM467d443C3hGrpbBN75x1yNff0A31YGD951cOxs0kJnB52RzejH",
+              "instType": "USDT_SWAP",
+              "apiKey": "yIwvj4Y5VLH7p3U59lMnAgoW9yULd9OYDoxLGUzTz5CEd2xrydrHL1b2Sn2lYCfk",
+              "secretKey": "HRBjyhtoJCKhuKdOMrrnG9l03rzLeabyhChAeVbUFsA7ONGsOmVulut8UiFaAHuT",
               "password": "",
               "isSimulated": false,
               "restUrl": "https://demo-api.binance.com",

@@ -5,15 +5,10 @@ BinanceSpotTradeUnit::BinanceSpotTradeUnit(AccountCfg& a, sm::SecurityManager* s
     cancelOrderUrl = "/api/v3/order";
     queryOrderUrl = "/api/v3/order";
     balanceUrl = "/api/v3/account";
-
-    pRestClient = new web::http::client::http_client(acc.restUrl);
 }
 
 BinanceSpotTradeUnit::~BinanceSpotTradeUnit() {
-    if (pRestClient) {
-        delete pRestClient;
-        pRestClient = nullptr;
-    }
+
 }
 
 std::string BinanceSpotTradeUnit::buildWsSigPayload(std::vector<std::pair<std::string, std::string>> kvs) {
@@ -68,7 +63,9 @@ void BinanceSpotTradeUnit::subWebsocekt() {
         web:;websockets::client::websocket_outgoing_message out;
         out.set_utf8_message(sb.GetString());
         LOG_INFO("TB {} ws subscribe payload: {}, signature:{}", acc.accountId, payload, signature);
-        pWsClient->send(out).wait();
+        pWsClient->send(out).then([this]() {
+            std::cout << "spot ws url subscribe successfully!" << std::endl;
+        }).wait();
     }
     else {
         LOG_ERROR("{} ws: {} connect failed, cannot sub.", acc.accountId, acc.wsUrl);
@@ -81,6 +78,9 @@ void BinanceSpotTradeUnit::onWebsocketMsg(const websocket_incoming_message& msg)
         auto ty = msg.message_type();
         if (ty == websocket_message_type::text_message) [[likely]] {
             const std::string s = msg.extract_string().get();
+
+            std::cout << "------------"  << s << std::endl;
+            return;
 
             rapidjson::Document d;
             d.Parse<rapidjson::kParseNumbersAsStringsFlag>(s.c_str());
@@ -119,6 +119,8 @@ void BinanceSpotTradeUnit::onWebsocketMsg(const websocket_incoming_message& msg)
                     rcmd.body.balance.isLast = data.Size() - 1;
                     rcmd.body.balance.updateTime = crypto::getCurrentTime();
                     rcmd.body.balance.apiSourceEnum = AS_WEBSOCKET;
+
+                    std::cout << "onWebsocketMsg: " << rcmd.getString() << std::endl;
                     PUSH_RCMD(rcmd)
                 }
             }
@@ -288,8 +290,8 @@ void BinanceSpotTradeUnit::query_balance(const pubsub::TCommand& tcmd) { // ä¹Ÿé
                 std::vector<pubsub::RCommand> needPushRcmd;
                 for (auto& it : array) {
                     pubsub::RCommand rcmd;
-                    rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                     memset(&rcmd, 0, sizeof(pubsub::RCommand));
+                    rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                     rcmd.body.balance.exchangeTypeEnum = BINANCE;
                     rcmd.body.balance.instTypeEnum = SPOT;
                     strncpy(rcmd.body.balance.accountId, acc.accountId.c_str(), ACCOUNTID_SIZE);
@@ -332,17 +334,17 @@ void BinanceSpotTradeUnit::query_balance(const pubsub::TCommand& tcmd) { // ä¹Ÿé
                 }
             }
             else {
-                LOG_ERROR("%s",v.serialize().c_str());
+                LOG_ERROR("{}", v.serialize());
             }
         END_FORMAT_RESPONSE(request)
     }
     catch (std::exception& e) {
-        LOG_ERROR("%s", e.what());
+        LOG_ERROR("{}", e.what());
     }
 }
 
 
-void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand &tcmd){
+void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     ADD_NEW_ORDER_TCMD_2_RCMD(tcmd)
 
     if (!isConnected) {
@@ -487,20 +489,26 @@ void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand &tcmd){
                         }
                     }
 
-                    if (rcmd.body.orderResponse.volumeTraded < ZERO_NUM) {
-                        rcmd.body.orderResponse.orderStatus = OS_NEW; 
-                    }
-                    else if (rcmd.body.orderResponse.volumeTraded < rcmd.body.orderResponse.volumeTotal) {
-                        if (tcmd.body.newOrder.orderType == OT_IOC) {
+                    if (rcmd.body.orderResponse.orderType == OT_IOC) {
+                        if (rcmd.body.orderResponse.volumeTraded < rcmd.body.orderResponse.volumeTotal) {
                             rcmd.body.orderResponse.orderStatus = OS_CANCELED; 
                         }
                         else {
-                            rcmd.body.orderResponse.orderStatus = OS_PARTFILLED;
+                            rcmd.body.orderResponse.orderStatus = OS_FILLED; 
                         }
                     }
                     else {
-                        rcmd.body.orderResponse.orderStatus = OS_FILLED; 
+                        if (rcmd.body.orderResponse.volumeTraded < ZERO_NUM) {
+                            rcmd.body.orderResponse.orderStatus = OS_NEW; 
+                        }
+                        else if (rcmd.body.orderResponse.volumeTraded < rcmd.body.orderResponse.volumeTotal) {
+                            rcmd.body.orderResponse.orderStatus = OS_PARTFILLED;
+                        }
+                        else {
+                            rcmd.body.orderResponse.orderStatus = OS_FILLED; 
+                        }
                     }
+
                     rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
                     PUSH_RCMD(rcmd)
                 }
@@ -663,6 +671,10 @@ void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
                     }
                 }
                 else {
+                    if (v.has_field("orderId")) {
+                        strncpy(rcmd.body.orderResponse.orderId, v.at("orderId").as_string().c_str(), ORDER_SIZE);
+                    }
+
                     rcmd.body.orderResponse.volumeTotal = std::stod(v.at("origQty").as_string().c_str()) * info.magnifyNumber;
                     rcmd.body.orderResponse.limitPrice = std::stod(v.at("price").as_string().c_str()) * info.reduceNumber;
                     rcmd.body.orderResponse.volumeTraded = std::stod(v.at("executedQty").as_string().c_str()) * info.magnifyNumber;

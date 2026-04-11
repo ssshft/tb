@@ -6,17 +6,18 @@ BinanceTradeClient::BinanceTradeClient(rapidjson::Value& accCfg, sm::SecurityMan
         auto& acc = vAccount[i];
 
     #ifdef USE_BINANCE_UNIFIED
+        unifiedTradeUnit = new BinanceUnifiedTradeUnit(acc, smc);
     #else
         
         if (acc.instTypeEnum == SPOT) {
+            std::cout << "----------spot created-------" << acc.accountId << " " << acc.strategyId << std::endl;
             spotTradeUnit = new BinanceSpotTradeUnit(acc, smc);
         }
         else if (acc.instTypeEnum == USDT_SWAP) {
-
+            ufTradeUnit = new BinanceUFTradeUnit(acc, smc);
         }
     #endif
-        
-
+    
     }
 }
 
@@ -26,15 +27,17 @@ BinanceTradeClient::~BinanceTradeClient(){
         spotTradeUnit = nullptr;
     }
 
-    // if(nullptr != binanceUFTradingClient){
-    //     delete binanceUFTradingClient;
-    // }
+    if(ufTradeUnit){
+        delete ufTradeUnit;
+        ufTradeUnit = nullptr;
+    }
     // if(nullptr != binanceCFTradingClient ){
     //     delete binanceCFTradingClient;
     // }
-    // if (nullptr != binanceUnifiedTradingClient) {
-    //     delete binanceUnifiedTradingClient;
-    // }
+    if (unifiedTradeUnit) {
+        delete unifiedTradeUnit;
+        unifiedTradeUnit = nullptr;
+    }
 }
 
 void BinanceTradeClient::start() {
@@ -42,64 +45,49 @@ void BinanceTradeClient::start() {
         spotTradeUnit->start();
     }
 
-    // if(nullptr != binanceUFTradingClient ){
-    //     binanceUFTradingClient->start();
-    // }
+    if (ufTradeUnit) {
+        ufTradeUnit->start();
+    }
     // if(nullptr != binanceCFTradingClient ){
     //     binanceCFTradingClient->start();
     // }
-    // if(nullptr != binanceUnifiedTradingClient ){
-    //     binanceUnifiedTradingClient->start();
-    // }
+    if (unifiedTradeUnit) {
+        unifiedTradeUnit->start();
+    }
     initial();
 }
 
 void BinanceTradeClient::initial() {
     pubsub::TCommand tcmd;
     memset(&tcmd, 0, sizeof(tcmd));
-    
+    tcmd.cmdTypeEnum = pubsub::CMD_QUERY_ACCOUNT;
+
+    tcmd.body.queryAccount.instTypeEnum = SPOT;
+    query_account(tcmd);
+
 #ifdef USE_BINANCE_UNIFIED
-        if(nullptr != binanceUnifiedTradingClient ){
-            // tcmd.header.instTypeEnum = InstType_SPOT;
-            query_account(tcmd);
-        }
 #else
-    if(spotTradeUnit){
-        tcmd.body.queryAccount.instTypeEnum = SPOT;
-        spotTradeUnit->query_balance(tcmd);
-    }
-    // if(nullptr != binanceUFTradingClient){
-    //     tcmd.queryAccount.instTypeEnum = USDT_SWAP;
-    //     query_account(tcmd);
-    //     // binanceUFTradingClient->get_balances();
-    //     // binanceUFTradingClient->get_positions(tcmd);
-    //     // binanceUFTradingClient->get_adlquantile();
-    // }
-    // if(nullptr != binanceCFTradingClient){
-    //     // tcmd.queryAccount.instTypeEnum = C_SWAP;
-    //     // query_account(tcmd);
-    //     // binanceCFTradingClient->get_balances();
-    //     // binanceCFTradingClient->get_positions();
-    //     // binanceCFTradingClient->get_adlquantile();
-    // }
+    tcmd.body.queryAccount.instTypeEnum = USDT_SWAP;
+    query_account(tcmd);
 #endif
+
 }
 
 
-void BinanceTradeClient::query_account(const pubsub::TCommand& tcmd){
+void BinanceTradeClient::query_account(const pubsub::TCommand& tcmd) {
 #ifdef USE_BINANCE_UNIFIED
-        if(nullptr != binanceUnifiedTradingClient ){
-            binanceUnifiedTradingClient->get_balances(tcmd);
-            binanceUnifiedTradingClient->get_account(tcmd);
+        if (unifiedTradeClient) {
+            unifiedTradeClient->query_account(tcmd);
+
+            unifiedTradeClient->query_balance(tcmd);
 
             pubsub::TCommand tcmdUm = tcmd;
-            tcmdUm.header.instTypeEnum == USDT_SWAP;
+            tcmdUm.body.queryPosition.instTypeEnum == USDT_SWAP;
+            unifiedTradeClient->query_position(tcmdUm);
+
             pubsub::TCommand tcmdCm = tcmd;
-            tcmdCm.header.instTypeEnum == C_SWAP;
-            binanceUnifiedTradingClient->get_adlquantile(tcmdUm);
-            binanceUnifiedTradingClient->get_positions(tcmdUm);
-            binanceUnifiedTradingClient->get_adlquantile(tcmdCm);
-            binanceUnifiedTradingClient->get_positions(tcmdCm);
+            tcmdCm.body.queryPosition.instTypeEnum == C_SWAP;
+            unifiedTradeClient->query_position(tcmdCm);
         }
 #else
     if (tcmd.body.queryAccount.instTypeEnum == SPOT) {
@@ -107,13 +95,12 @@ void BinanceTradeClient::query_account(const pubsub::TCommand& tcmd){
             spotTradeUnit->query_balance(tcmd);
         }
     }
-    // else if(tcmd.queryAccount.instTypeEnum == USDT_SWAP || tcmd.queryAccount.instTypeEnum == USDT_FUTURES) {
-    //     if(nullptr != binanceUFTradingClient ){
-    //         binanceUFTradingClient->get_adlquantile(tcmd);
-    //         binanceUFTradingClient->get_balances(tcmd);
-    //         binanceUFTradingClient->get_positions(tcmd);
-    //     }
-    // }
+    else if (tcmd.body.queryAccount.instTypeEnum == USDT_SWAP || tcmd.body.queryAccount.instTypeEnum == USDT_FUTURES || tcmd.body.queryAccount.instTypeEnum == USDC_SWAP) {
+        if (ufTradeClient) {
+            ufTradeClient->query_balance(tcmd);
+            ufTradeClient->query_position(tcmd);
+        }
+    }
     // else if(tcmd.queryAccount.instTypeEnum == C_SWAP || tcmd.queryAccount.instTypeEnum == C_FUTURES){
     //     if(nullptr != binanceCFTradingClient ){
     //         binanceCFTradingClient->get_balances();
@@ -129,21 +116,22 @@ void BinanceTradeClient::query_account(const pubsub::TCommand& tcmd){
 
 void BinanceTradeClient::query_balance(const pubsub::TCommand& tcmd){
 #ifdef USE_BINANCE_UNIFIED
-        if(nullptr != binanceUnifiedTradingClient ){
-            query_account(tcmd);
+        if (unifiedTradeClient) {
+            unifiedTradeClient->query_balance(tcmd);
         }
 #else
 
-    if (tcmd.body.queryAccount.instTypeEnum == SPOT) {
+    if (tcmd.body.queryBalance.instTypeEnum == SPOT) {
         if (spotTradeUnit){
             spotTradeUnit->query_balance(tcmd);
         }
     }
-    // if(nullptr != binanceUFTradingClient){
-    //      binanceUFTradingClient->get_balances(tcmd);
-    //     // binanceUFTradingClient->get_positions(tcmd);
-    //     // binanceUFTradingClient->get_adlquantile();
-    // }
+    else if (tcmd.queryBalance.instTypeEnum == USDT_SWAP || tcmd.queryBalance.instTypeEnum == USDT_FUTURES || tcmd.queryBalance.instTypeEnum == USDC_SWAP) {
+        if (ufTradeClient) {
+            ufTradeClient->query_balance(tcmd);
+        }
+    }
+
     // if(nullptr != binanceCFTradingClient){
     //     // tcmd.header.instTypeEnum = InstType_C_SWAP;
     //     // query_account(tcmd);
@@ -156,19 +144,13 @@ void BinanceTradeClient::query_balance(const pubsub::TCommand& tcmd){
 
 void BinanceTradeClient::query_position(const pubsub::TCommand& tcmd){
 #ifdef USE_BINANCE_UNIFIED
-        if(nullptr != binanceUnifiedTradingClient ){
-            query_account(tcmd);
+        if (unifiedTradeClient) {
+            unifiedTradeClient->query_position(tcmd);
         }
 #else
-    if (spotTradeUnit){
+    if (ufTradeClient) {
+        ufTradeClient->query_position(tcmd);
     }
-    // if(nullptr != binanceUFTradingClient){
-    //     binanceUFTradingClient->get_adlquantile(tcmd);
-    //     binanceUFTradingClient->get_positions(tcmd);
-    //     // binanceUFTradingClient->get_balances();
-    //     // binanceUFTradingClient->get_positions(tcmd);
-    //     // binanceUFTradingClient->get_adlquantile();
-    // }
     // if(nullptr != binanceCFTradingClient){
     //     // tcmd.header.instTypeEnum = InstType_C_SWAP;
     //     // query_account(tcmd);
@@ -181,21 +163,20 @@ void BinanceTradeClient::query_position(const pubsub::TCommand& tcmd){
 
 void BinanceTradeClient::add_new_order(const pubsub::TCommand& tcmd) {
 #ifdef USE_BINANCE_UNIFIED
-        if(nullptr != binanceUnifiedTradingClient ){
-            return binanceUnifiedTradingClient->add_new_order(tcmd);
+        if (unifiedTradeClient) {
+            unifiedTradeClient->add_new_order(tcmd);
         }
 #else
-
     if (tcmd.body.newOrder.instTypeEnum == SPOT) {
         if (spotTradeUnit){
             spotTradeUnit->add_new_order(tcmd);
         }
     }
-    // else if(tcmd.newOrder.instTypeEnum == USDT_SWAP || tcmd.newOrder.instTypeEnum == InstType_USDT_FUTURES){
-    //     if(nullptr != binanceUFTradingClient ){
-    //         return binanceUFTradingClient->add_new_order(tcmd);
-    //     }
-    // }
+    else if (tcmd.newOrder.instTypeEnum == USDT_SWAP || tcmd.newOrder.instTypeEnum == USDT_FUTURES || tcmd.newOrder.instTypeEnum == USDC_SWAP) {
+        if (ufTradeClient) {
+            ufTradeClient->add_new_order(tcmd);
+        }
+    }
     // else if(tcmd.newOrder.instTypeEnum == InstType_C_SWAP || tcmd.newOrder.instTypeEnum == InstType_C_FUTURES){
     //     if(nullptr != binanceCFTradingClient ){
     //         return binanceCFTradingClient->add_new_order(tcmd);
@@ -209,8 +190,8 @@ void BinanceTradeClient::add_new_order(const pubsub::TCommand& tcmd) {
 
 void BinanceTradeClient::cancel_order(const pubsub::TCommand& tcmd) {
 #ifdef USE_BINANCE_UNIFIED
-        if(nullptr != binanceUnifiedTradingClient ){
-            return binanceUnifiedTradingClient->cancel_order(tcmd);
+        if (unifiedTradeClient) {
+            unifiedTradeClient->cancel_order(tcmd);
         }
 #else
 
@@ -219,11 +200,11 @@ void BinanceTradeClient::cancel_order(const pubsub::TCommand& tcmd) {
             spotTradeUnit->cancel_order(tcmd);
         }
     }
-    // else if(tcmd.cancelOrder.instTypeEnum == USDT_SWAP || tcmd.cancelOrder.instTypeEnum == USDT_FUTURES){
-    //     if(nullptr != binanceUFTradingClient ){
-    //         binanceUFTradingClient->cancel_order(tcmd);
-    //     }
-    // }
+    else if(tcmd.cancelOrder.instTypeEnum == USDT_SWAP || tcmd.cancelOrder.instTypeEnum == USDT_FUTURES || tcmd.cancelOrder.instTypeEnum == USDC_SWAP) {
+        if (ufTradeClient) {
+            ufTradeClient->cancel_order(tcmd);
+        }
+    }
     // else if(tcmd.cancelOrder.instTypeEnum == C_SWAP || tcmd.cancelOrder.instTypeEnum == C_FUTURES){
     //     if(nullptr != binanceCFTradingClient ){
     //         binanceCFTradingClient->cancel_order(tcmd);
@@ -237,8 +218,8 @@ void BinanceTradeClient::cancel_order(const pubsub::TCommand& tcmd) {
 
 void BinanceTradeClient::query_order(const pubsub::TCommand& tcmd) {
 #ifdef USE_BINANCE_UNIFIED
-        if(nullptr != binanceUnifiedTradingClient ){
-            return binanceUnifiedTradingClient->query_order(tcmd);
+        if (unifiedTradeClient) {
+            unifiedTradeClient->query_order(tcmd);
         }
 #else
     if (tcmd.body.queryOrder.instTypeEnum == SPOT) {
@@ -246,11 +227,11 @@ void BinanceTradeClient::query_order(const pubsub::TCommand& tcmd) {
             spotTradeUnit->query_order(tcmd);
         }
     }
-    // else if(tcmd.queryOrder.instTypeEnum == USDT_SWAP || tcmd.queryOrder.instTypeEnum == USDT_FUTURES){
-    //     if(nullptr != binanceUFTradingClient ){
-    //         binanceUFTradingClient->query_order(tcmd);
-    //     }
-    // }
+    else if (tcmd.queryOrder.instTypeEnum == USDT_SWAP || tcmd.queryOrder.instTypeEnum == USDT_FUTURES || tcmd.queryOrder.instTypeEnum == USDC_SWAP) {
+        if (ufTradeClient) {
+            ufTradeClient->query_order(tcmd);
+        }
+    }
     // else if(tcmd.queryOrder.instTypeEnum == C_SWAP || tcmd.queryOrder.instTypeEnum == C_FUTURES){
     //     if(nullptr != binanceCFTradingClient ){
     //         binanceCFTradingClient->query_order(tcmd);

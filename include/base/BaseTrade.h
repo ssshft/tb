@@ -231,6 +231,13 @@ protected:
     std::shared_ptr<websocket_callback_client> pWsClient{nullptr};
     web::http::client::http_client* pRestClient{nullptr};
     sm::SecurityManager* smc{nullptr};
+
+    web::uri newOrderUrl{""};
+    web::uri cancelOrderUrl{""};
+    web::uri queryOrderUrl{""};
+    web::uri accountUrl{""};
+    web::uri balanceUrl{""};
+    web::uri positionUrl{""};
 };
 
 

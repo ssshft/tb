@@ -1,0 +1,68 @@
+{  
+  "DBP": {
+    "mpath": "/dev/shm/DBP_TOPIC_20230328",
+    "dpath": "/dev/shm/DBP_DATAS_20230328"
+  },
+  "SMC": {
+    "host": "localhost", 
+    "port": 9379, 
+    "password": "refZa2KcTj$QjyXk"
+  },
+  "utrade":{
+    "这是utrade集群名字,每个名字对应utrade的配置里面的tag，独一无二，确保当前机器只能拉起一个该名字的utrade":"",
+    "tags":["utrade_btc", "utrade_eth", "utrade_doge"],
+    "这是AEC与SCC交互频道":"",
+    "AEC2SCCChannel":"AEC2SCCChannel",
+    "SCC2AECChannel":"SCC2AECChannel",
+    "这是AEC与utrade交互频道":"",
+    "AEC2UtradeChannel":"AEC2UtradeChannel",
+    "Utrade2AECChannel":"Utrade2AECChannel",
+    "这是utrade与SCC交互的频道":"",
+    "Utrade2SCCChannel":"Utrade2SCCChannel",
+    "SCC2UtradeChannel":"SCC2UtradeChannel"
+  },
+  "OMS":{
+    "Utrade2TbTCommandSHM":100031,
+    "Tb2UtradeRCommandSHM":"Tb2UtradeRCommandSHM"
+  },
+  "TB":{
+    "tb_accounts":{
+      "test1": [
+        {
+          "exchId": "BINANCE",
+          "strategyId": "sss_test",
+          "accountId": "test1",
+          "accounts": [
+            {
+              "instType": "USDT_SWAP",
+              "apiKey": "FgocEIkpKsEYJwGcYFqLsZf3yfTLi69lE4nAGVhWgs5PH1UztmtgRTOQbUJNAfXX",
+              "secretKey": "Fy8RBshAWWngK7MYVVRSmiYHgGdcXNsYQBmxdeuS3lSb0oyGmruKi0w9f9cefC6K",
+              "password": "",
+              "isSimulated": false,
+              "restUrl": "https://fapi.binance.com",
+              "wsUrl": "wss://fstream.binance.com"
+            }
+          ]
+        }
+      ],
+	    "test2":[
+        {
+	        "exchId": "BINANCE",
+	        "strategyId" : "sss_real",
+	        "accountId": "test12",
+	        "accounts": [
+            {
+              "instType": "SPOT",
+              "apiKey": "VzrC1q9vKaUQzSi6K57M6HKohQfz9SMGd8tOSBoYrMglB5QHrisLt1XeBypcgl6q",
+              "secretKey": "1jti07IXiRgTq6qLdDvpvi2F2h3GV08QkJT6Wdc6FsYNjQH6YPABlV8X8Hh6UM6J",
+              "password": "",
+              "isSimulated": false,
+              "restUrl": "https://fapi.binance.com",
+              "wsUrl": "wss://fstream.binance.com"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

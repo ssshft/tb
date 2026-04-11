@@ -4,5 +4,5 @@
       "level": "info",
       "log_path": "/logs"
   },
-  "tb_accounts":["test1", "test2"]
+  "tb_accounts":["test1"]
 }

@@ -5,13 +5,17 @@ BaseTradeUnit::BaseTradeUnit(AccountCfg& a, sm::SecurityManager* s) {
     isConnected = "";
     latestPingPongTime.store(0);
     pWsClient = nullptr;
-    pRestClient = nullptr;
     acc = a;
     smc = s;
+
+    pRestClient = new web::http::client::http_client(acc.restUrl);
 }
 
 BaseTradeUnit::~BaseTradeUnit() {
-
+    if (pRestClient) {
+        delete pRestClient;
+        pRestClient = nullptr;
+    }
 }
 
 void BaseTradeUnit::start() {
@@ -25,13 +29,15 @@ void BaseTradeUnit::start() {
 }
 
 void BaseTradeUnit::monitorWs() {
+    constexpr int pingPongInterval = 10; //s
     while (1) {
         try {
             LOG_INFO("TB {} start to connect ws: {}", acc.accountId, acc.wsUrl);
             subWebsocekt();
             std::this_thread::sleep_for(std::chrono::seconds(5));
+            long lastPingPongTime = crypto::getCurrentTimeSeconds();
             while (isConnected) {
-                std::this_thread::sleep_for(std::chrono::seconds(10));
+                std::this_thread::sleep_for(std::chrono::seconds(1));
                 long now = crypto::getCurrentTimeSeconds();
                 long latestTime = latestPingPongTime.load();
 
@@ -46,16 +52,21 @@ void BaseTradeUnit::monitorWs() {
                     break;
                 }
                 else {
-                    switch (acc.exchangeTypeEnum) {
-                        case BINANCE: {
-                            break;
-                        }
-                        default: {
-                            LOG_INFO("{}.{}.{} ws is connected, will send ping!", ExchangeTypeEnum2StrMap[acc.exchangeTypeEnum], InstTypeEnum2StrMap[acc.instTypeEnum], acc.accountId);
-                            ping();
-                            break;
-                        }  
-                    }   
+                    if (now - lastPingPongTime > pingPongInterval) {
+                        switch (acc.exchangeTypeEnum) {
+                            case BINANCE: {
+                                break;
+                            }
+                            default: {
+                                LOG_INFO("{}.{}.{} ws is connected, will send ping!", ExchangeTypeEnum2StrMap[acc.exchangeTypeEnum], InstTypeEnum2StrMap[acc.instTypeEnum], acc.accountId);
+                                ping();
+                                break;
+                            }  
+                        } 
+                        
+                        lastPingPongTime = now;
+                    }
+  
                 }
             }
         }
@@ -100,6 +111,8 @@ BaseTradeClient::BaseTradeClient(rapidjson::Value& accCfg, sm::SecurityManager* 
         AccountCfg acc;
         acc.exchangeTypeEnum = ExchangeTypeStr2EnumMap[exchId];
         acc.instTypeEnum = InstTypeStr2EnumMap[account["instType"].GetString()];
+        acc.accountId = accountId;
+        acc.strategyId = strategyId;
         acc.apiKey = account["apiKey"].GetString();
         acc.secretKey = account["secretKey"].GetString();
         acc.password = account["password"].GetString();
@@ -108,7 +121,6 @@ BaseTradeClient::BaseTradeClient(rapidjson::Value& accCfg, sm::SecurityManager* 
         acc.wsUrl = account["wsUrl"].GetString();
         vAccount.push_back(acc);
     }
-
     smc = s;
 }
 

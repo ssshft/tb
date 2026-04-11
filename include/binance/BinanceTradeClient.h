@@ -1,9 +1,9 @@
 #pragma once
 #include "base/BaseTrade.h"
 #include "binance/BinanceSpotTrade.h"
-// #include "binance/BinanceUFTradingClient.h"
+#include "binance/BinanceUFTrade.h"
 // #include "binance/BinanceCFTradingClient.h"
-// #include "binance/BinanceUnifiedTradingClient.h"
+#include "binance/BinanceUnifiedTrade.h"
 
 
 class BinanceTradeClient : public BaseTradeClient {
@@ -23,7 +23,7 @@ public:
 
 protected:
     BinanceSpotTradeUnit* spotTradeUnit = nullptr;
-    // BinanceUFTradingClient   *binanceUFTradingClient = nullptr;
+    BinanceUFTradeClient* ufTradeClient = nullptr;
     // BinanceCFTradingClient *binanceCFTradingClient = nullptr;
-    // BinanceUnifiedTradingClient* binanceUnifiedTradingClient = nullptr;
+    BinanceUnifiedTradeClient* unifiedTradeClient = nullptr;
 };
