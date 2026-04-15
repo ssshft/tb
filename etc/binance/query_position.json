@@ -1,0 +1,7 @@
+{
+  "type":"query_position",
+  "exchangeType": "BINANCE",
+  "instType":"USDT_SWAP",
+  "strategyId": "qy01_test",
+  "instId": "SOL-USDT"
+}

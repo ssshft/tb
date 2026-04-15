@@ -104,3 +104,5 @@ add_executable(TB
         # ${BYBIT_SRCS}
         ${DIR_SHMQUEU_SRCS}
 )
+
+add_executable(InputOrder test/InputOrder.cpp ${DIR_SHMQUEU_SRCS})

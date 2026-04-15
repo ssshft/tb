@@ -1,0 +1,8 @@
+{
+  "type":"cancel_order",
+  "exchangeType": "BINANCE",
+  "instType":"USDT_SWAP",
+  "strategyId": "qyang01_test",
+  "instId": "BTC-USDT",
+  "orderId": "1234567890"
+}

@@ -1,0 +1,46 @@
+{
+  "tag": "binance_metric_test",
+  "log": {
+    "level": "debug",
+    "logfile": "/logs/%s_%d%02d%02d.log",
+    "printno": true
+  },
+  "DB and smc redis": "",
+  "DB": {
+    "host": "localhost",
+    "port": 9379,
+    "passwd": "refZa2KcTj$QjyXk"
+  },
+  "SMC": {
+    "host": "172.31.28.54",
+    "port": 9379,
+    "passwd": "refZa2KcTj$QjyXk"
+  }, 
+  "exchIdList":[
+    {
+      "exchId": "BINANCE",
+      "accountId":"qyang_binance",
+      "strategyId" : "qyang01",
+      "accounts": [
+        {
+          "description": "u本位, InstType_USDT_SWAP, InstType_USDT_FUTURES",
+          "use": true,
+          "instType": "InstType_USDT_SWAP",
+          "apiKey": "76b0c55f2fc6c581fa7ae709242a3adfe3debc1c4ca1313c29101f1e677ea981",
+          "apiSecret": "eef0a231880cea1eabbe6daa82376fbd367551517f184d54a822714c5363d9e7",
+          "restBaseUrl": "https://testnet.binancefuture.com",
+          "wsBaseUrl": "wss://stream.binancefuture.com"
+        },
+        {
+          "description": "c本位,InstType_C_SWAP, InstType_C_FUTURES",
+          "use": false,
+          "instType": "InstType_C_SWAP",
+          "apiKey": "76b0c55f2fc6c581fa7ae709242a3adfe3debc1c4ca1313c29101f1e677ea981",
+          "apiSecret": "eef0a231880cea1eabbe6daa82376fbd367551517f184d54a822714c5363d9e7",
+          "restBaseUrl": "https://testnet.binancefuture.com",
+          "wsBaseUrl": "wss://dstream.binancefuture.com"
+        }
+      ]
+    }
+  ]
+}

@@ -131,7 +131,7 @@ void BinanceSpotTradeUnit::onWebsocketMsg(const websocket_incoming_message& msg)
 
                 const std::string& originInstId = ev["s"].GetString();
                 md::InstrumentInfo info;
-                if (smc->get_instrument_info("BINANCE", "SPOT", originInstId.c_str(), info)) {
+                if (smc->get_instrument_info(BINANCE, SPOT, originInstId.c_str(), info)) {
                     pubsub::RCommand rcmd;
                     memset(&rcmd, 0, sizeof(pubsub::RCommand));
                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
@@ -552,10 +552,10 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
             builder.append_query("symbol", info.originInstId);
             builder.append_query("timestamp", crypto::getCurrentTimeMilli());
           
-            if (crypto::str_cmp(tcmd.body.cancelOrder.orderId, "")) {
+            if (!crypto::str_cmp(tcmd.body.cancelOrder.orderId, "")) {
                 builder.append_query("orderId", tcmd.body.cancelOrder.orderId);
             }
-            else if (crypto::str_cmp(tcmd.body.cancelOrder.orderSysId, "")) {
+            else if (!crypto::str_cmp(tcmd.body.cancelOrder.orderSysId, "")) {
                 builder.append_query("origClientOrderId", tcmd.body.cancelOrder.orderSysId);
             }
             else {
@@ -590,8 +590,7 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
                     PUSH_RCMD(rcmd);
                 }
                 else {
-                    strncpy(rcmd.body.orderResponse.orderId, v.at("orderId").as_string().c_str(), INSTID_SIZE);
-                    strncpy(rcmd.body.orderResponse.orderSysId, v.at("origClientOrderId").as_string().c_str(), INSTID_SIZE);
+                    strncpy(rcmd.body.orderResponse.orderId, v.at("orderId").as_string().c_str(), ORDER_SIZE);
                     rcmd.body.orderResponse.volumeTraded = std::stod(v.at("executedQty").as_string().c_str()) * info.magnifyNumber;
 
                     if (v.has_field("cummulativeQuoteQty")) {
@@ -615,7 +614,7 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
             PUSH_RCMD(rcmd)
         }
     }
-    catch (std::exception& e) {
+    catch (const std::exception& e) {
         LOG_ERROR("cancel_order exception: {}", e.what());
         rcmd.body.orderResponse.orderStatus = OS_FAILED;
         rcmd.body.orderResponse.errorId = NetworkError;
@@ -625,13 +624,12 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     }
 }
 
-
 void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     QUERY_ORDER_TCMD_2_RCMD(tcmd);
     try {
         md::InstrumentInfo info;
         if (smc->get_instrument_info(tcmd.body.queryOrder.exchangeTypeEnum, tcmd.body.queryOrder.instTypeEnum, tcmd.body.queryOrder.instId, info)) {
-            web::http::http_request request(web::http::methods::DEL);
+            web::http::http_request request(web::http::methods::GET);
             FROMAT_BINANCE_REQUEST(request)
 
             web::http::uri_builder builder(queryOrderUrl);
@@ -639,10 +637,10 @@ void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
             builder.append_query("symbol", info.originInstId);
             builder.append_query("timestamp", crypto::getCurrentTimeMilli());
           
-            if (crypto::str_cmp(tcmd.body.queryOrder.orderId, "")) {
+            if (!crypto::str_cmp(tcmd.body.queryOrder.orderId, "")) {
                 builder.append_query("orderId", tcmd.body.queryOrder.orderId);
             }
-            else if (crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
+            else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
                 builder.append_query("origClientOrderId", tcmd.body.queryOrder.orderSysId);
             }
             else {

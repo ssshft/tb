@@ -1,0 +1,6 @@
+{
+  "type":"query_account",
+  "exchangeType": "BINANCE",
+  "instType":"USDT_SWAP",
+  "strategyId": "qy01_test"
+}

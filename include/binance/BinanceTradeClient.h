@@ -23,7 +23,7 @@ public:
 
 protected:
     BinanceSpotTradeUnit* spotTradeUnit = nullptr;
-    BinanceUFTradeClient* ufTradeClient = nullptr;
+    BinanceUFTradeUnit* ufTradeUnit = nullptr;
     // BinanceCFTradingClient *binanceCFTradingClient = nullptr;
-    BinanceUnifiedTradeClient* unifiedTradeClient = nullptr;
+    BinanceUnifiedTradeUnit* unifiedTradeUnit = nullptr;
 };

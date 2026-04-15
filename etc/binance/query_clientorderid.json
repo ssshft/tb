@@ -1,0 +1,8 @@
+{
+  "type":"query_order",
+  "exchangeType": "BINANCE",
+  "instType":"USDT_SWAP",
+  "strategyId": "qy01_mock",
+  "instId": "BTC-USDT",
+  "clientOrderId": 123456789
+}

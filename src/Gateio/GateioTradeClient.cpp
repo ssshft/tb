@@ -1,4 +1,4 @@
-#include "binance/GateioTradeClient.h"
+#include "gateio/GateioTradeClient.h"
 
 
 GateioTradeClient::GateioTradeClient(rapidjson::Value& accCfg, sm::SecurityManager* s) : BaseTradeClient(accCfg, s) {
@@ -9,7 +9,7 @@ GateioTradeClient::GateioTradeClient(rapidjson::Value& accCfg, sm::SecurityManag
             spotTradeUnit = new GateioSpotTradeUnit(acc, smc);
         }
         else if (acc.instTypeEnum == USDT_SWAP) {
-            usTradeClient = new GateioUSTradeClient(acc, smc);
+            usTradeClient = new GateioUSTradeUnit(acc, smc);
         }    
     }
 }
@@ -89,7 +89,7 @@ void GateioTradeClient::query_balance(const pubsub::TCommand& tcmd) {
             spotTradeUnit->query_balance(tcmd);
         }
     }
-    else if (tcmd.queryBalance.instTypeEnum == USDT_SWAP) {
+    else if (tcmd.body.queryBalance.instTypeEnum == USDT_SWAP) {
         if (usTradeClient) {
             usTradeClient->query_balance(tcmd);
         }
@@ -109,7 +109,7 @@ void GateioTradeClient::add_new_order(const pubsub::TCommand& tcmd) {
             spotTradeUnit->add_new_order(tcmd);
         }
     }
-    else if (tcmd.newOrder.instTypeEnum == USDT_SWAP) {
+    else if (tcmd.body.newOrder.instTypeEnum == USDT_SWAP) {
         if (usTradeClient) {
             usTradeClient->add_new_order(tcmd);
         }
@@ -122,7 +122,7 @@ void GateioTradeClient::cancel_order(const pubsub::TCommand& tcmd) {
             spotTradeUnit->cancel_order(tcmd);
         }
     }
-    else if(tcmd.cancelOrder.instTypeEnum == USDT_SWAP) {
+    else if(tcmd.body.cancelOrder.instTypeEnum == USDT_SWAP) {
         if (usTradeClient) {
             usTradeClient->cancel_order(tcmd);
         }
@@ -135,7 +135,7 @@ void GateioTradeClient::query_order(const pubsub::TCommand& tcmd) {
             spotTradeUnit->query_order(tcmd);
         }
     }
-    else if (tcmd.queryOrder.instTypeEnum == USDT_SWAP) {
+    else if (tcmd.body.queryOrder.instTypeEnum == USDT_SWAP) {
         if (usTradeClient) {
             usTradeClient->query_order(tcmd);
         }

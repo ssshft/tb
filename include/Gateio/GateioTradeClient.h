@@ -1,7 +1,7 @@
 #pragma once
 #include "base/BaseTrade.h"
-#include "binance/GateioSpotTrade.h"
-#include "binance/GateioUSTrade.h"
+#include "gateio/GateioSpotTrade.h"
+#include "gateio/GateioUSTrade.h"
 
 
 
@@ -22,5 +22,5 @@ public:
 
 protected:
     GateioSpotTradeUnit* spotTradeUnit = nullptr;
-    GateioUSTradeClient* usTradeClient = nullptr;
+    GateioUSTradeUnit* usTradeClient = nullptr;
 };

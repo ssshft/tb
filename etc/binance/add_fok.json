@@ -1,0 +1,15 @@
+{
+  "type":"add_new_order",
+  "exchangeType": "BINANCE",
+  "instType":"InstType_USDT_SWAP",
+  "strategyId": "qyang01_test",
+  "instId": "BTC-USDT",
+  "offsetFlag": "OffsetFlag_OPEN",
+  "direction": "Direction_LONG",
+  "orderType": "OrderType_FOK",
+  "price": 16118.12345678,
+  "volume": 0.00212456789,
+  "clientOrderId": 1234567890,
+  "strategyRef": "iamfok",
+  "reduceOnly":false
+}

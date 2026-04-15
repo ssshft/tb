@@ -238,7 +238,7 @@ void BinanceUnifiedTradeUnit::onWebsocketMsg(const websocket_incoming_message& m
             else if (e[0] == 'e') {
                 const std::string& originInstId = rawData["s"].GetString();
                 md::InstrumentInfo info;
-                if (smc->get_instrument_info("BINANCE", "SPOT", originInstId.c_str(), info)) {
+                if (smc->get_instrument_info(BINANCE, SPOT, originInstId.c_str(), info)) {
                     pubsub::RCommand rcmd;
                     memset(&rcmd, 0, sizeof(pubsub::RCommand));
                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
@@ -1065,7 +1065,7 @@ void BinanceUnifiedTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     try {
         md::InstrumentInfo info;
         if (smc->get_instrument_info(tcmd.body.queryOrder.exchangeTypeEnum, tcmd.body.queryOrder.instTypeEnum, tcmd.body.queryOrder.instId, info)) {
-            web::http::http_request request(web::http::methods::DEL);
+            web::http::http_request request(web::http::methods::GET);
             FROMAT_BINANCE_REQUEST(request)
 
             web::http::uri_builder builder(queryOrderUrl);
@@ -1073,10 +1073,10 @@ void BinanceUnifiedTradeUnit::query_order(const pubsub::TCommand& tcmd) {
             builder.append_query("symbol", info.originInstId);
             builder.append_query("timestamp", crypto::getCurrentTimeMilli());
           
-            if (crypto::str_cmp(tcmd.body.queryOrder.orderId, "")) {
+            if (!crypto::str_cmp(tcmd.body.queryOrder.orderId, "")) {
                 builder.append_query("orderId", tcmd.body.queryOrder.orderId);
             }
-            else if (crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
+            else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
                 builder.append_query("origClientOrderId", tcmd.body.queryOrder.orderSysId);
             }
             else {

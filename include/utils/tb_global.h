@@ -58,7 +58,7 @@ constexpr auto ORDER_REJECTED_TIME_OUT = 30 * 1e6;
     rcmd.body.orderResponse.clientOrderId = tcmd.body.queryOrder.clientOrderId; \
     strncpy(rcmd.body.orderResponse.orderSysId, tcmd.body.queryOrder.orderSysId, ORDER_SIZE); \
     strncpy(rcmd.body.orderResponse.orderId, tcmd.body.queryOrder.orderId, ORDER_SIZE); \
-    rcmd.body.orderResponse.apiSourceEnum = AS_CANCEL_ORDER; \
+    rcmd.body.orderResponse.apiSourceEnum = AS_QUERY_ORDER; \
 
 
 extern Tb2OmsRCommandInnerQueue tb2OmsRCommandInnerQueue;

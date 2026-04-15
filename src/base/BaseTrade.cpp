@@ -63,7 +63,7 @@ void BaseTradeUnit::monitorWs() {
                                 break;
                             }  
                         } 
-                        
+
                         lastPingPongTime = now;
                     }
   
@@ -116,6 +116,7 @@ BaseTradeClient::BaseTradeClient(rapidjson::Value& accCfg, sm::SecurityManager* 
         acc.apiKey = account["apiKey"].GetString();
         acc.secretKey = account["secretKey"].GetString();
         acc.password = account["password"].GetString();
+        acc.userId = account["userId"].GetString();
         acc.isSimulated = account["isSimulated"].GetBool();
         acc.restUrl = account["restUrl"].GetString();
         acc.wsUrl = account["wsUrl"].GetString();

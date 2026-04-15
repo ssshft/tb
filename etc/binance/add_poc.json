@@ -1,0 +1,15 @@
+{
+  "type":"add_new_order",
+  "exchangeType": "BINANCE",
+  "instType":"InstType_USDT_SWAP",
+  "strategyId": "qyang01_test",
+  "instId": "ETH-USDT",
+  "offsetFlag": "OffsetFlag_OPEN",
+  "direction": "Direction_LONG",
+  "orderType": "OrderType_POST_ONLY",
+  "price": 1780.12345678,
+  "volume": 1,
+  "clientOrderId": 1543831069945638,
+  "strategyRef": "iampostonly",
+  "reduceOnly":false
+}

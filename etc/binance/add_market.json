@@ -1,0 +1,15 @@
+{
+  "type":"add_new_order",
+  "exchangeType": "BINANCE",
+  "instType":"InstType_USDT_SWAP",
+  "strategyId": "qy01_mock",
+  "instId": "BTC-USDT",
+  "offsetFlag": "OffsetFlag_OPEN",
+  "direction": "Direction_LONG",
+  "orderType": "OrderType_MARKET",
+  "price": 39678.12345678,
+  "volume": 0.0512456789,
+  "clientOrderId": 123456789,
+  "strategyRef": "Iammarket",
+  "reduceOnly":false
+}

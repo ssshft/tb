@@ -1,0 +1,15 @@
+{
+  "type":"add_new_order",
+  "exchangeType": "BINANCE",
+  "instType":"USDT_SWAP",
+  "strategyId": "qy01_test",
+  "instId": "BTC-USDT",
+  "offsetFlag": "OF_OPEN",
+  "direction": "DT_LONG",
+  "orderType": "OT_LIMIT",
+  "price": 16118.12345678,
+  "volume": 0.00112456789,
+  "clientOrderId": 1122315812586,
+  "strategyRef": "LIMIT",
+  "reduceOnly":false
+}
