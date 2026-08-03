@@ -2,100 +2,92 @@
 
 
 BaseTradeUnit::BaseTradeUnit(AccountCfg& a, sm::SecurityManager* s) {
-    isConnected = "";
-    latestPingPongTime.store(0);
-    pWsClient = nullptr;
+    isConnected.store(0);
     acc = a;
     smc = s;
-
-    pRestClient = new web::http::client::http_client(acc.restUrl);
 }
 
 BaseTradeUnit::~BaseTradeUnit() {
-    if (pRestClient) {
-        delete pRestClient;
-        pRestClient = nullptr;
-    }
 }
 
 void BaseTradeUnit::start() {
     try {
-        std::thread monitorThread(&BaseTradeUnit::monitorWs, this);
-        monitorThread.detach();
+        subWebsocekt();
     }
     catch (const std::exception& e) {
         LOG_ERROR("trade start error: {}", e.what());
     }
 }
 
-void BaseTradeUnit::monitorWs() {
-    constexpr int pingPongInterval = 10; //s
-    while (1) {
-        try {
-            LOG_INFO("TB {} start to connect ws: {}", acc.accountId, acc.wsUrl);
-            subWebsocekt();
-            std::this_thread::sleep_for(std::chrono::seconds(5));
-            long lastPingPongTime = crypto::getCurrentTimeSeconds();
-            while (isConnected) {
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-                long now = crypto::getCurrentTimeSeconds();
-                long latestTime = latestPingPongTime.load();
+void BaseTradeUnit::onOpen() {
+    isConnected.store(true);
+    LOG_INFO("TB {}.{}.{} ws opened", ExchangeTypeEnum2StrMap[acc.exchangeTypeEnum], InstTypeEnum2StrMap[acc.instTypeEnum], acc.accountId);
+}
 
-                long diff = now - latestTime;
-                if (diff > kTradeTimeOutTime) {
-                    LOG_ERROR("trade: {} lastPingPongTime: {} too old, time diff: {} seconds, will reconnect now.", acc.accountId, latestTime, diff);
-                    break;
-                }
+void BaseTradeUnit::onCloseMsg(int code, const std::string& reason) {
+    isConnected.store(true);
+    LOG_ERROR("TB {} ws closed: code={} reason={} (BeastWsClient will auto-reconnect)", acc.accountId, code, reason);
+}
 
-                if (!isConnected) {
-                    LOG_WARN("trade: {}, wsUrl: {} address disconnected, connecting now", acc.accountId, acc.wsUrl);
-                    break;
-                }
-                else {
-                    if (now - lastPingPongTime > pingPongInterval) {
-                        switch (acc.exchangeTypeEnum) {
-                            case BINANCE: {
-                                break;
-                            }
-                            default: {
-                                LOG_INFO("{}.{}.{} ws is connected, will send ping!", ExchangeTypeEnum2StrMap[acc.exchangeTypeEnum], InstTypeEnum2StrMap[acc.instTypeEnum], acc.accountId);
-                                ping();
-                                break;
-                            }  
-                        } 
+void BaseTradeUnit::initRestClient(const std::string& host, std::vector<std::pair<std::string, std::string>> default_headers, size_t max_connections) {
+    net::RestClientConfig cfg;
+    cfg.host = host;
+    cfg.port = 443;
+    cfg.use_tls = true;
+    cfg.verify_peer = false;
+    cfg.max_connections = max_connections;
+    cfg.parallel_establish_threads = std::min<size_t>(4, max_connections);
+    cfg.request_queue_capacity = 256;
+    cfg.request_timeout_ms = 30000;
 
-                        lastPingPongTime = now;
-                    }
-  
-                }
-            }
-        }
-        catch (const std::exception& e) {
-            isConnected = false;
-            LOG_ERROR("ws connect exception: {}", e.what());
+    try {
+        pRestClient = std::make_shared<net::RestClient>(cfg);
+        restHost = host;
+        defaultHeaders_ = std::move(default_headers);
+        for (auto& kv : defaultHeaders_) {
+            pRestClient->set_default_header(kv.first, kv.second);
         }
 
-        std::this_thread::sleep_for(std::chrono::microseconds(100));
+        LOG_INFO("Tb {} rest client to {} ready ({} conns)", acc.accountId, host, max_connections);
+    }
+    catch(const std::exception& e) {
+        LOG_ERROR("TB {} initRestClient({}) failed: {}", acc.accountId, host, e.what());
+        pRestClient.reset();
     }
 }
 
-void BaseTradeUnit::onCloseMsg(web::websockets::client::websocket_close_status status, const utility::string_t& reason, const std::error_code& code, std::shared_ptr<websocket_callback_client> selfWs) {
-    try {
-        if (selfWs != pWsClient) {
-            LOG_INFO("DB old websocket callback client closed successfully!");
-            return;
-        }
-
-        isConnected = false;
-        LOG_ERROR("DB receive close msg, reason: {}, error: {}", reason, code.message());
-
-        if (crypto::str_cmp(reason.c_str(), "End of File") || crypto::str_cmp(reason.c_str(), "Underlying Transport Error") || crypto::str_cmp(reason.c_str(), "Normal")) {
-            return;
+void BaseTradeUnit::asyncRequest(boost::beast::http::verb method, std::string path, std::string body, std::string content_type, net::HttpCallback cb) {
+    if (!pRestClient) {
+        LOG_ERROR("TB {} asyncRequest: pRestClient not initialized (call initRestClient first)", acc.accountId);
+        if (cb) {
+            boost::system::error_code ec(static_cast<int>(std::errc::not_connected), boost::system::systemm_category());
+            cb(ec, net::HttpResponse());
         }
     }
-    catch (const std::exception& e) {
-        LOG_ERROR("{}", e.what());
-    }
+
+    pRestClient->async_request(method, std::move(path), std::move(body), std::move(content_type), std::move(cb));
+}
+
+void BaseTradeUnit::subWebsocketWithConfig(net::WsConfig cfg) {
+    pWsClient = net::WsClient::create(std::move(cfg));
+
+    pWsClient->on_open([this]() {
+        this->onOpen();
+    });
+
+    pWsClient->on_message([this](const uint8_t* d, size_t n, bool b, int64_t t) {
+        this->onWebsocketMsg(d, n, b, t);
+    });
+
+    pWsClient->on_close([this](int c, const::std::string& r) {
+        this->onCloseMsg(c, r);
+    });
+
+    pWsClient->on_error([this](const std::string& m) {
+        LOG_ERROR("TB {} ws error: {}", acc.accountId, m);
+    });
+
+    pWsClient->start();
 }
 
 
