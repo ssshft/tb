@@ -1,897 +1,792 @@
 #include "gateio/GateioSpotTrade.h"
 
+#include <cmath>
+
+#include <fmt/format.h>
+#include <simdjson.h>
+
+
+namespace {
+    inline std::string host_of(const std::string& url) {
+        std::string h = url;
+        auto p = h.find("://");
+        if (p != std::string::npos) h = h.substr(p + 3);
+        auto q = h.find('/');
+        if (q != std::string::npos) h = h.substr(0, q);
+        return h;
+    }
+    thread_local simdjson::ondemand::parser g_parser;
+
+    // Gate 的 orderSysId / apiKey 通常都是 [A-Za-z0-9_-]+, 不必转义。 但保险起见:
+    inline std::string escape_json(const std::string& s) {
+        std::string out; out.reserve(s.size() + 4);
+        for (char c : s) {
+            switch (c) {
+                case '"': out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default:
+                    if (static_cast<unsigned char>(c) < 0x20) {
+                        char buf[8]; std::snprintf(buf, sizeof(buf), "\\u%04x", c); out += buf;
+                    } else {
+                        out += c;
+                    }
+            }
+        }
+        return out;
+    }
+    // 同 string_view
+    inline std::string escape_json_sv(std::string_view sv) {
+        return escape_json(std::string(sv));
+    }
+
+    // 已用 sha256 的 body hash payload; Gate signature 支持空 body
+    inline std::string gate_sign_get(const std::string& path, const std::string& query,
+                                     const std::string& time, const std::string& secret) {
+        return crypto::getGateioSignatureRest("GET", path, time, query, "", secret);
+    }
+
+    // 构造 Gate 每次都要变的 3 个 header
+    inline std::vector<std::pair<std::string, std::string>>
+    gate_auth_headers(const std::string& key, const std::string& time, const std::string& sign) {
+        return {{"KEY", key}, {"Timestamp", time}, {"SIGN", sign}};
+    }
+}
+
+
 GateioSpotTradeUnit::GateioSpotTradeUnit(AccountCfg& a, sm::SecurityManager* s) : BaseTradeUnit(a, s) {
-    newOrderUrl = "/api/v3/order";
-    cancelOrderUrl = "/api/v3/order";
-    queryOrderUrl = "/api/v3/order";
-    balanceUrl = "/api/v3/account";
-    unifiedUrl = "";
 }
-
 GateioSpotTradeUnit::~GateioSpotTradeUnit() {
-
 }
 
+
+// ============================================================================
+// subWebsocekt: 建 REST + WS
+// ============================================================================
 void GateioSpotTradeUnit::subWebsocekt() {
-    web::http::uri_builder builder(acc.wsUrl);
-    START_SUB_WEBSOCKET(builder);
+    // REST
+    std::string restHost = host_of(acc.restUrl);
+    initRestClient(restHost, /*headers=*/{}, /*conns=*/4);
 
-    if (isConnected) {
-    #ifdef USE_GATEIO_UNIFIED  // 统一账户不需要订阅现货的balance推送
-        // websocket_outgoing_message unifiedBalanceOutMsg = sub_unified_balance_channel();   
-        // pWsClient->send(unifiedBalanceOutMsg).wait(); 
-    #else
-        web::websockets::client::websocket_outgoing_message balanceOutMsg = sub_balance_channel();
-        pWsClient->send(balanceOutMsg).wait();
-    #endif
+    // WS
+    ::net::WsConfig cfg;
+    cfg.url                      = acc.wsUrl;
+    cfg.ping_mode                = ::net::WsConfig::PingMode::ClientPeriodicText;
+    cfg.client_ping_interval_sec = 20;
+    // Gate ping 允许无 time 字段; 若加 time 会被固化在 cfg 里, 老 timestamp 服务器一般也接受。
+    cfg.client_ping_text         = R"({"channel":"spot.ping"})";
+    cfg.auto_reconnect           = true;
+    cfg.idle_timeout_sec         = 60;
 
-        web::websockets::client::websocket_outgoing_message orderOutMsg = sub_orders_channel();
-        pWsClient->send(orderOutMsg).wait();
-      
-        // websocket_outgoing_message tradesOutMsg  = sub_trades_channel();
-        // pWsClient->send(tradesOutMsg).wait();
-
-        LOG_INFO("connected with gateio spot api: {}", builder.to_string());
-
-    }
-    else {
-        LOG_ERROR("{} ws: {} connect failed, cannot sub.", acc.accountId, acc.wsUrl);
-    }
-}
-
-web::websockets::client::websocket_outgoing_message GateioSpotTradeUnit::sub_balance_channel() {
-    std::string channel = "spot.balances";
-    web::websockets::client::websocket_outgoing_message outMsg;
-    web::json::value subValue;
-    subValue["time"] = crypto::getCurrentTimeSeconds();
-    subValue["channel"] = web::json::value::string(channel);
-    subValue["event"] = web::json::value::string("subscribe");
-    std::string time = std::to_string(crypto::getCurrentTimeSeconds());
-    std::string sign = crypto::getGateioSignatureWs(channel, "subscribe", time, acc.secretKey);
-    web::json::value signValue;
-    signValue["method"] = web::json::value::string("api_key");
-    signValue["KEY"] = web::json::value::string(acc.apiKey);
-    signValue["SIGN"] = web::json::value::string(sign);
-    subValue["auth"] = signValue;
-    outMsg.set_utf8_message(subValue.serialize().c_str());
-    return outMsg;
-}
-
-web::websockets::client::websocket_outgoing_message GateioSpotTradeUnit::sub_orders_channel() {
-    std::string channel = "spot.orders";
-    web::websockets::client::websocket_outgoing_message outMsg;
-    web::json::value subValue;
-    subValue["time"] = crypto::getCurrentTimeSeconds();
-    subValue["channel"] = web::json::value::string(channel);
-    subValue["event"] = web::json::value::string("subscribe");
-    subValue["payload"][0] = web::json::value::string("BTC_USDT");
-    subValue["payload"][1] = web::json::value::string("!all");
-    std::string time = std::to_string(crypto::getCurrentTimeSeconds());
-    std::string sign = crypto::getGateioSignatureWs(channel, "subscribe", time, acc.secretKey);
-    web::json::value signValue;
-    signValue["method"] = web::json::value::string("api_key");
-    signValue["KEY"] = web::json::value::string(acc.apiKey);
-    signValue["SIGN"] = web::json::value::string(sign);
-    subValue["auth"] = signValue;
-    outMsg.set_utf8_message(subValue.serialize().c_str());
-    return outMsg;
+    LOG_INFO("TB {} Gate spot ws {} rest {}", acc.accountId, cfg.url, restHost);
+    subWebsocketWithConfig(std::move(cfg));
 }
 
 
-/*
-websocket_outgoing_message GateioSpotTradingClient::sub_cross_balance_channel() {
-     string channel = "spot.cross_balances";
-    websocket_outgoing_message outMsg;
-    json::value subValue;
-    subValue["time"] = crypto::getCurrentTimeSeconds();
-    subValue["channel"] = json::value::string(channel);
-    subValue["event"] = json::value::string("subscribe");
-    string time = to_string(crypto::getCurrentTimeSeconds());
-    string sign = get_signature_ws(channel.c_str(), "subscribe", time.c_str());
-    json::value signValue;
-    signValue["method"] = json::value::string("api_key");
-    signValue["KEY"] = json::value::string(m_curcfg.apiKey);
-    signValue["SIGN"] = json::value::string(sign);
-    subValue["auth"] = signValue;
-    outMsg.set_utf8_message(subValue.serialize().c_str());
-    return outMsg;
+// ============================================================================
+// onOpen: 现场签发 subscribe (auth signature TTL 短, 不能复用)
+// ============================================================================
+void GateioSpotTradeUnit::onOpen() {
+    BaseTradeUnit::onOpen();
+    if (!pWsClient) return;
+
+    std::string orders   = buildOrdersSubscribeJson();
+    std::string balances = buildBalancesSubscribeJson();
+
+    LOG_INFO("TB {} Gate spot subscribe orders={} balances={}", acc.accountId, orders, balances);
+    pWsClient->send_text(std::move(orders));
+    pWsClient->send_text(std::move(balances));
 }
 
-websocket_outgoing_message GateioSpotTradingClient::sub_unified_balance_channel() {
-     string channel = "unified.balances";
-    websocket_outgoing_message outMsg;
-    json::value subValue;
-    subValue["time"] = crypto::getCurrentTimeSeconds();
-    subValue["channel"] = json::value::string(channel);
-    subValue["event"] = json::value::string("subscribe");
-    string time = to_string(crypto::getCurrentTimeSeconds());
-    string sign = get_signature_ws(channel.c_str(), "subscribe", time.c_str());
-    json::value signValue;
-    signValue["method"] = json::value::string("api_key");
-    signValue["KEY"] = json::value::string(m_curcfg.apiKey);
-    signValue["SIGN"] = json::value::string(sign);
-    subValue["auth"] = signValue;
-    outMsg.set_utf8_message(subValue.serialize().c_str());
-    return outMsg;
+
+// ---- subscribe JSON builders ----
+std::string GateioSpotTradeUnit::buildOrdersSubscribeJson() const {
+    long ts   = crypto::getCurrentTimeSeconds();
+    std::string time_str = std::to_string(ts);
+    std::string channel  = "spot.orders";
+    std::string sign     = crypto::getGateioSignatureWs(channel, "subscribe", time_str, acc.secretKey);
+    return fmt::format(
+        R"({{"time":{},"channel":"{}","event":"subscribe",)"
+        R"("payload":["!all"],)"
+        R"("auth":{{"method":"api_key","KEY":"{}","SIGN":"{}"}}}})",
+        ts, channel, escape_json(acc.apiKey), sign);
 }
 
-websocket_outgoing_message GateioSpotTradingClient::sub_trades_channel() {
-     string channel = "spot.usertrades";
-    websocket_outgoing_message outMsg;
-    json::value subValue;
-    subValue["time"] = crypto::getCurrentTimeSeconds();
-    subValue["channel"] = json::value::string(channel);
-    subValue["event"] = json::value::string("subscribe");
-    subValue["payload"][0] = json::value::string("BTC_USDT");
-    //If you want to subscribe to all user trades updates in all currency pairs,
-    // you can include !all in currency pair list.
-    subValue["payload"][1] = json::value::string("!all");
-    string time = to_string(crypto::getCurrentTimeSeconds());
-    string sign = get_signature_ws(channel.c_str(), "subscribe", time.c_str());
-    json::value signValue;
-    signValue["method"] = json::value::string("api_key");
-    signValue["KEY"] = json::value::string(m_curcfg.apiKey);
-    signValue["SIGN"] = json::value::string(sign);
-    subValue["auth"] = signValue;
-    outMsg.set_utf8_message(subValue.serialize().c_str());
-    return outMsg;
+std::string GateioSpotTradeUnit::buildBalancesSubscribeJson() const {
+    long ts   = crypto::getCurrentTimeSeconds();
+    std::string time_str = std::to_string(ts);
+    std::string channel  = "spot.balances";
+    std::string sign     = crypto::getGateioSignatureWs(channel, "subscribe", time_str, acc.secretKey);
+    return fmt::format(
+        R"({{"time":{},"channel":"{}","event":"subscribe",)"
+        R"("auth":{{"method":"api_key","KEY":"{}","SIGN":"{}"}}}})",
+        ts, channel, escape_json(acc.apiKey), sign);
 }
-*/
 
-void GateioSpotTradeUnit::onWebsocketMsg(const web::websockets::client::websocket_incoming_message& msg) {
+
+// ============================================================================
+// onWebsocketMsg
+// ============================================================================
+void GateioSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, int64_t) {
+    if (len == 0) return;
     try {
-        // text_message, binary_message, close, ping, pong
-        latestPingPongTime.store(crypto::getCurrentTimeSeconds());
-        auto ty = msg.message_type();
-        if (ty == web::websockets::client::websocket_message_type::text_message) {
-            const std::string s = msg.extract_string().get();
+        simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
+        auto doc = g_parser.iterate(padded);
+        if (doc.error()) return;
 
-            LOG_DEBUG("on_websocket_msg:%s", s.c_str());
-            rapidjson::Document d;
-            rapidjson::Value &rawData = d.Parse<rapidjson::kParseNumbersAsStringsFlag>(s.c_str());
-            if (d.HasParseError()) {
-                return;
-            }
+        std::string_view ch_sv, ev_sv;
+        if (doc["channel"].get(ch_sv) != simdjson::SUCCESS) return;
+        if (ch_sv == "spot.pong") return;
+        if (doc["event"].get(ev_sv) != simdjson::SUCCESS || ev_sv != "update") return;
 
-            //订阅成功的回报和ping pong之类的消息不用特别处理
-            std::string channel = "";
-            if (rawData.HasMember("channel")) {
-                channel = rawData["channel"].GetString();
-            }
-            else {
-                return;
-            }
+        simdjson::ondemand::value result;
+        if (doc["result"].get(result) != simdjson::SUCCESS) return;
 
-            if (crypto::str_cmp(channel.c_str(), "spot.pong")) {
-                return;
+        if (ch_sv == "spot.orders") {
+            handleOrdersUpdate(result);
+        } else if (ch_sv == "spot.balances" || ch_sv == "spot.cross_balances") {
+            handleBalancesUpdate(result);
+        }
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("TB {} Gate spot ws exc: {}", acc.accountId, e.what());
+    }
+}
+
+
+// ---- spot.orders update ----
+void GateioSpotTradeUnit::handleOrdersUpdate(simdjson::ondemand::value& result) {
+    simdjson::ondemand::array arr;
+    if (result.get_array().get(arr) != simdjson::SUCCESS) return;
+
+    for (auto it : arr) {
+        auto o = it.get_object();
+        if (o.error()) continue;
+
+        std::string_view pair_sv, id_sv, text_sv, price_sv, amount_sv, side_sv, tif_sv, left_sv, avg_sv, event_sv;
+        o["currency_pair"].get(pair_sv);
+        o["id"].get(id_sv);
+        o["text"].get(text_sv);
+        o["price"].get(price_sv);
+        o["amount"].get(amount_sv);
+        o["side"].get(side_sv);
+        o["time_in_force"].get(tif_sv);
+        o["left"].get(left_sv);
+        o["avg_deal_price"].get(avg_sv);
+        o["event"].get(event_sv);
+
+        std::string originInstId(pair_sv);
+        md::InstrumentInfo info;
+        if (!smc->get_instrument_info(GATEIO, SPOT, originInstId.c_str(), info)) {
+            LOG_ERROR("TB {} not found GATEIO.SPOT.{} smc info", acc.accountId, originInstId);
+            continue;
+        }
+
+        pubsub::RCommand rcmd;
+        memset(&rcmd, 0, sizeof(pubsub::RCommand));
+        rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
+        rcmd.body.orderResponse.exchangeTypeEnum = GATEIO;
+        rcmd.body.orderResponse.instTypeEnum     = SPOT;
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountId,  acc.accountId);
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId,     std::string_view(info.instId));
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId,    id_sv);
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, text_sv);
+
+        rcmd.body.orderResponse.limitPrice  = crypto::fast_atod(price_sv)  * info.reduceNumber;
+        rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(amount_sv) * info.magnifyNumber;
+        rcmd.body.orderResponse.offsetFlag  = OF_OPEN;
+        rcmd.body.orderResponse.direction   = (!side_sv.empty() && side_sv[0] == 's') ? DT_SHORT : DT_LONG;
+
+        if (!tif_sv.empty()) {
+            switch (tif_sv[0]) {
+                case 'g': rcmd.body.orderResponse.orderType = OT_LIMIT;      break;
+                case 'i': rcmd.body.orderResponse.orderType = OT_IOC;        break;
+                case 'p': rcmd.body.orderResponse.orderType = OT_POST_ONLY;  break;
+                case 'f': rcmd.body.orderResponse.orderType = OT_FOK;        break;
+                default:  break;
             }
-            //没有有效信息无需处理
-            if (rawData.HasMember("event")) {
-                if (!crypto::str_cmp(rawData["event"].GetString(), "update")) {
-                    return;
-                }
+        }
+
+        double left = std::fabs(crypto::fast_atod(left_sv));
+        rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
+
+        if (!avg_sv.empty()) rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
+
+        if (!event_sv.empty()) {
+            switch (event_sv[0]) {
+                case 'p': rcmd.body.orderResponse.orderStatus = OS_NEW;         break;
+                case 'u': rcmd.body.orderResponse.orderStatus = OS_PARTFILLED;  break;
+                case 'f':
+                    rcmd.body.orderResponse.orderStatus =
+                        (rcmd.body.orderResponse.volumeTotal - rcmd.body.orderResponse.volumeTraded < ZERO_NUM)
+                            ? OS_FILLED : OS_CANCELED;
+                    break;
+                default:  rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;     break;
             }
-            else {
-                return;
-            }
-        
-            if (crypto::str_cmp(channel.c_str(), "spot.orders")) {
-                const rapidjson::Value &data = rawData["result"];
-                for(rapidjson::SizeType i = 0; i < data.Size(); i++){
-                    std::string originInstId = data[i]["currency_pair"].GetString();
-                    md::InstrumentInfo info;
-                    if(this->smc->get_instrument_info(GATEIO, SPOT, originInstId.c_str(), info)) {
+        }
+        rcmd.body.orderResponse.updateTime    = crypto::getCurrentTime();
+        rcmd.body.orderResponse.apiSourceEnum = AS_WEBSOCKET;
+        PUSH_RCMD(rcmd)
+    }
+}
+
+
+// ---- spot.balances / spot.cross_balances update ----
+void GateioSpotTradeUnit::handleBalancesUpdate(simdjson::ondemand::value& result) {
+    simdjson::ondemand::array arr;
+    if (result.get_array().get(arr) != simdjson::SUCCESS) return;
+
+    std::vector<pubsub::RCommand> pending;
+    for (auto it : arr) {
+        auto o = it.get_object();
+        if (o.error()) continue;
+        std::string_view cur_sv, avail_sv, total_sv;
+        o["currency"].get(cur_sv);
+        o["available"].get(avail_sv);
+        o["total"].get(total_sv);
+
+        pubsub::RCommand rcmd;
+        memset(&rcmd, 0, sizeof(pubsub::RCommand));
+        rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
+        rcmd.body.balance.exchangeTypeEnum = GATEIO;
+        rcmd.body.balance.instTypeEnum     = SPOT;
+        crypto::copy_sv_to_char_array(rcmd.body.balance.accountId,  acc.accountId);
+        crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
+        crypto::copy_sv_to_char_array(rcmd.body.balance.currency,   crypto::to_upper(std::string(cur_sv)));
+        rcmd.body.balance.available  = crypto::fast_atod(avail_sv);
+        rcmd.body.balance.total      = crypto::fast_atod(total_sv);
+        rcmd.body.balance.updateTime = crypto::getCurrentTime();
+        rcmd.body.balance.apiSourceEnum = AS_WEBSOCKET;
+        pending.emplace_back(rcmd);
+    }
+    for (size_t i = 0; i < pending.size(); ++i) {
+        pending[i].body.balance.isLast = (i + 1 == pending.size());
+        PUSH_RCMD(pending[i])
+    }
+}
+
+
+// ============================================================================
+// query_account —— 只在 unified 账户下才有意义
+// ============================================================================
+void GateioSpotTradeUnit::query_account(const pubsub::TCommand&) {
+#ifndef USE_GATEIO_UNIFIED
+    return;   // 非统一账户模式不查
+#endif
+    if (!pRestClient) return;
+
+    std::string time_str = std::to_string(crypto::getCurrentTimeSeconds());
+    std::string sign     = gate_sign_get(unifiedUrl, "", time_str, acc.secretKey);
+    auto headers = gate_auth_headers(acc.apiKey, time_str, sign);
+
+    asyncRequest(boost::beast::http::verb::get, unifiedUrl, "", "", std::move(headers),
+        [this](boost::system::error_code ec, ::net::HttpResponse resp) {
+            if (ec) return;
+            try {
+                simdjson::padded_string padded(resp.body);
+                auto doc = g_parser.iterate(padded);
+                if (doc.error()) return;
+
+                // balances 是对象 (currency -> {...})
+                simdjson::ondemand::object balances;
+                if (doc["balances"].get(balances) == simdjson::SUCCESS) {
+                    std::vector<pubsub::RCommand> pending;
+                    for (auto field : balances) {
+                        auto ku = field.unescaped_key();
+                        if (ku.error()) continue;
+                        auto b = field.value().get_object();
+                        if (b.error()) continue;
+                        std::string_view av_sv, fr_sv, eq_sv;
+                        b["available"].get(av_sv);
+                        b["freeze"].get(fr_sv);
+                        b["equity"].get(eq_sv);
+
                         pubsub::RCommand rcmd;
                         memset(&rcmd, 0, sizeof(pubsub::RCommand));
-                        rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
-                        rcmd.body.orderResponse.exchangeTypeEnum = BINANCE;
-                        rcmd.body.orderResponse.instTypeEnum = SPOT;
-                        
-                        strncpy(rcmd.body.orderResponse.accountId, acc.accountId.c_str(), ACCOUNTID_SIZE);
-                        strncpy(rcmd.body.orderResponse.strategyId, acc.strategyId.c_str(), STRATEGYID_SIZE);
-                        strncpy(rcmd.body.orderResponse.instId, info.instId, INSTID_SIZE);
-
-                        strncpy(rcmd.body.orderResponse.orderId, data[i]["id"].GetString(), ORDER_SIZE);
-
-                        if (data[i].HasMember("text")) {
-                            strncpy(rcmd.body.orderResponse.orderSysId, data[i]["text"].GetString(), ORDER_SIZE);
-                        }
-
-                        rcmd.body.orderResponse.limitPrice = std::stod(data[i]["price"].GetString()) * info.reduceNumber;
-                        rcmd.body.orderResponse.volumeTotal = std::stod(data[i]["amount"].GetString()) * info.magnifyNumber;
-
-                        rcmd.body.orderResponse.offsetFlag = OF_OPEN;
-                        rcmd.body.orderResponse.direction = data[i]["side"].GetString()[0] == 's' ? DT_SHORT : DT_LONG;
-
-                        std::string tif = data[i]["time_in_force"].GetString();
-                        if (tif[0] == 'g') {
-                            rcmd.body.orderResponse.orderType = OT_LIMIT;
-                        }
-                        else if (tif[0] == 'i') {
-                            rcmd.body.orderResponse.orderType = OT_IOC;
-                        }
-                        else if (tif[0] == 'p') {
-                            rcmd.body.orderResponse.orderType = OT_POST_ONLY;
-                        }
-
-                        //成交数量
-                        double left = std::stod(data[i]["left"].GetString());
-                        left = left > 0 ? left : -left;
-                        rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
-
-                        if (data[i].HasMember("avg_deal_price")) {
-                            rcmd.body.orderResponse.tradePrice = std::stod(data[i]["avg_deal_price"].GetString());
-                        }
-                        
-                        std::string event = data[i]["event"].GetString();
-                        if (event[0] == 'p') {//put
-                            rcmd.body.orderResponse.orderStatus = OS_NEW;
-                        }
-                        else if (event[0] == 'u') {//update
-                            rcmd.body.orderResponse.orderStatus = OS_PARTFILLED;
-                        }
-                        else if (event[0] == 'f') {//finish
-                            //成交数量等于挂单数量
-                            if (rcmd.body.orderResponse.volumeTotal - rcmd.body.orderResponse.volumeTraded < ZERO_NUM) {
-                                rcmd.body.orderResponse.orderStatus = OS_FILLED;
-                            }
-                            else {
-                                rcmd.body.orderResponse.orderStatus = OS_CANCELED;
-                            }
-                        }
-                        else {
-                            rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
-                        }
-                        rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                        PUSH_RCMD(rcmd)
+                        rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
+                        rcmd.body.balance.exchangeTypeEnum = GATEIO;
+                        rcmd.body.balance.instTypeEnum     = SPOT;
+                        crypto::copy_sv_to_char_array(rcmd.body.balance.accountId,  acc.accountId);
+                        crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
+                        crypto::copy_sv_to_char_array(rcmd.body.balance.currency,   crypto::to_upper(std::string(ku.value_unsafe())));
+                        rcmd.body.balance.available  = crypto::fast_atod(av_sv);
+                        rcmd.body.balance.frozen     = crypto::fast_atod(fr_sv);
+                        rcmd.body.balance.total      = crypto::fast_atod(eq_sv);
+                        rcmd.body.balance.updateTime = crypto::getCurrentTime();
+                        rcmd.body.balance.apiSourceEnum = AS_REST;
+                        pending.emplace_back(rcmd);
                     }
-                    else {
-                        LOG_ERROR("not found GATEIO.SPOT.{} smc info", originInstId);
+                    for (size_t i = 0; i < pending.size(); ++i) {
+                        pending[i].body.balance.isLast = (i + 1 == pending.size());
+                        PUSH_RCMD(pending[i]);
                     }
                 }
+
+                // totalAccount
+                std::string_view teq_sv, tmb_sv, tmm_sv, tmr_sv;
+                doc["unified_account_total_equity"].get(teq_sv);
+                doc["total_margin_balance"].get(tmb_sv);
+                doc["total_maintenance_margin"].get(tmm_sv);
+                doc["total_maintenance_margin_rate"].get(tmr_sv);
+
+                pubsub::RCommand rcmd;
+                memset(&rcmd, 0, sizeof(pubsub::RCommand));
+                rcmd.cmdTypeEnum = pubsub::CMD_RPT_TOTAL_ACCOUNT;
+                rcmd.body.totalAccount.exchangeTypeEnum = GATEIO;
+                rcmd.body.totalAccount.instTypeEnum     = SPOT;
+                crypto::copy_sv_to_char_array(rcmd.body.totalAccount.accountId,  acc.accountId);
+                crypto::copy_sv_to_char_array(rcmd.body.totalAccount.strategyId, acc.strategyId);
+                rcmd.body.totalAccount.totalEquity = crypto::fast_atod(teq_sv);
+                rcmd.body.totalAccount.adjEquity   = crypto::fast_atod(tmb_sv);
+                rcmd.body.totalAccount.mmr         = crypto::fast_atod(tmm_sv);
+                rcmd.body.totalAccount.mgnRatio    = tmr_sv.empty() ? 9999.0 : crypto::fast_atod(tmr_sv);
+                rcmd.body.totalAccount.updateTime  = crypto::getCurrentTime();
+                rcmd.body.totalAccount.apiSourceEnum = AS_REST;
+                PUSH_RCMD(rcmd)
             }
-            // else if(crypto::str_cmp(channel.c_str(),"spot.usertrades") == true){
-    //                 const rapidjson::Value &data = rawData["result"];
-    //                 for(rapidjson::SizeType i = 0; i < data.Size(); i++){
-    //                     string originInstId = data[i]["currency_pair"].GetString();
-    //                     md::InstrumentInfo info;
-    //                     if(this->smc->get_instrument_info("GATEIO", "SPOT",originInstId.c_str(), info)){
-    // //                        MsgExt msgExt;
-    //                     }
-    //                     else{
-    //                         LOG_ERROR("not found GATEIO.SPOT.%s smc info", originInstId.c_str());
-    //                     }
-    //                 }
-            // }
-            else if (crypto::str_cmp(channel.c_str(), "spot.balances")) {
-                const rapidjson::Value &data = rawData["result"];
-                for (rapidjson::SizeType i = 0; i < data.Size(); i++) {
+            catch (const std::exception& e) {
+                LOG_ERROR("TB {} Gate query_account cb exc: {}", acc.accountId, e.what());
+            }
+        });
+}
+
+
+// ============================================================================
+// query_balance —— GET /api/v4/spot/accounts (array)
+// ============================================================================
+void GateioSpotTradeUnit::query_balance(const pubsub::TCommand&) {
+    if (!pRestClient) return;
+
+    std::string time_str = std::to_string(crypto::getCurrentTimeSeconds());
+    std::string sign     = gate_sign_get(balanceUrl, "", time_str, acc.secretKey);
+    auto headers = gate_auth_headers(acc.apiKey, time_str, sign);
+
+    asyncRequest(boost::beast::http::verb::get, balanceUrl, "", "", std::move(headers),
+        [this](boost::system::error_code ec, ::net::HttpResponse resp) {
+            if (ec) { LOG_ERROR("TB {} Gate query_balance ec: {}", acc.accountId, ec.message()); return; }
+            try {
+                simdjson::padded_string padded(resp.body);
+                auto doc = g_parser.iterate(padded);
+                if (doc.error()) return;
+                simdjson::ondemand::array arr;
+                if (doc.get_array().get(arr) != simdjson::SUCCESS) return;
+
+                std::vector<pubsub::RCommand> pending;
+                for (auto it : arr) {
+                    auto o = it.get_object();
+                    if (o.error()) continue;
+                    std::string_view cur_sv, avail_sv, lock_sv;
+                    o["currency"].get(cur_sv);
+                    o["available"].get(avail_sv);
+                    o["locked"].get(lock_sv);
+
                     pubsub::RCommand rcmd;
                     memset(&rcmd, 0, sizeof(pubsub::RCommand));
                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                     rcmd.body.balance.exchangeTypeEnum = GATEIO;
-                    rcmd.body.balance.instTypeEnum = SPOT;
-                    
-                    strncpy(rcmd.body.balance.accountId, acc.accountId.c_str(), ACCOUNTID_SIZE);
-                    strncpy(rcmd.body.balance.strategyId, acc.strategyId.c_str(), STRATEGYID_SIZE);
-                    strncpy(rcmd.body.balance.currency, crypto::to_upper(data[i]["currency"].GetString()).c_str(), INSTID_SIZE);
-                    rcmd.body.balance.available = std::stod(data[i]["available"].GetString());
-                    rcmd.body.balance.total = std::stod(data[i]["total"].GetString());
-                    rcmd.body.balance.isLast = data.Size() - 1;
+                    rcmd.body.balance.instTypeEnum     = SPOT;
+                    crypto::copy_sv_to_char_array(rcmd.body.balance.accountId,  acc.accountId);
+                    crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
+                    crypto::copy_sv_to_char_array(rcmd.body.balance.currency,   crypto::to_upper(std::string(cur_sv)));
+                    rcmd.body.balance.available = crypto::fast_atod(avail_sv);
+                    rcmd.body.balance.frozen    = crypto::fast_atod(lock_sv);
+                    rcmd.body.balance.total     = rcmd.body.balance.available + rcmd.body.balance.frozen;
                     rcmd.body.balance.updateTime = crypto::getCurrentTime();
-                    rcmd.body.balance.apiSourceEnum = AS_WEBSOCKET;
-
-                    PUSH_RCMD(rcmd)
+                    rcmd.body.balance.apiSourceEnum = AS_REST;
+                    pending.emplace_back(rcmd);
                 }
-            }
-            else if (crypto::str_cmp(channel.c_str(), "spot.cross_balances")) {
-                const rapidjson::Value &data = rawData["result"];
-                for (rapidjson::SizeType i = 0; i < data.Size(); i++) {
+                if (pending.empty()) {
                     pubsub::RCommand rcmd;
                     memset(&rcmd, 0, sizeof(pubsub::RCommand));
                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                     rcmd.body.balance.exchangeTypeEnum = GATEIO;
-                    rcmd.body.balance.instTypeEnum = SPOT;
-                    
-                    strncpy(rcmd.body.balance.accountId, acc.accountId.c_str(), ACCOUNTID_SIZE);
-                    strncpy(rcmd.body.balance.strategyId, acc.strategyId.c_str(), STRATEGYID_SIZE);
-                    strncpy(rcmd.body.balance.currency, crypto::to_upper(data[i]["currency"].GetString()).c_str(), INSTID_SIZE);
-                    rcmd.body.balance.available = std::stod(data[i]["available"].GetString());
-                    rcmd.body.balance.total = std::stod(data[i]["total"].GetString());
-                    rcmd.body.balance.isLast = data.Size() - 1;
+                    rcmd.body.balance.instTypeEnum     = SPOT;
+                    crypto::copy_sv_to_char_array(rcmd.body.balance.accountId,  acc.accountId);
+                    crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
+                    crypto::copy_sv_to_char_array(rcmd.body.balance.currency,   std::string("USDT"));
                     rcmd.body.balance.updateTime = crypto::getCurrentTime();
-                    rcmd.body.balance.apiSourceEnum = AS_WEBSOCKET;
-
-                    PUSH_RCMD(rcmd)
+                    rcmd.body.balance.apiSourceEnum = AS_REST;
+                    rcmd.body.balance.isLast = true;
+                    PUSH_RCMD(rcmd);
+                    return;
+                }
+                for (size_t i = 0; i < pending.size(); ++i) {
+                    pending[i].body.balance.isLast = (i + 1 == pending.size());
+                    PUSH_RCMD(pending[i]);
                 }
             }
-            else {
-                LOG_ERROR("%s",s.c_str());
-                return;
+            catch (const std::exception& e) {
+                LOG_ERROR("TB {} Gate query_balance cb exc: {}", acc.accountId, e.what());
             }
-        
-        }
-        else if (msg.message_type() == web::websockets::client::websocket_message_type::close) {
-            isConnected = false;
-        }
-        else {
-        }
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("{}", e.what());
-        isConnected = false;
-    }
+        });
 }
 
 
-void GateioSpotTradeUnit::ping(){
-    if (isConnected) {
-        web::websockets::client::websocket_outgoing_message outMsg;
-        web::json::value spotPingSubValue;
-        spotPingSubValue["time"] = crypto::getCurrentTimeSeconds();
-        spotPingSubValue["channel"] = web::json::value::string("spot.ping");
-        outMsg.set_utf8_message(spotPingSubValue.serialize().c_str());
-        pWsClient->send(outMsg).wait();
-    }
+void GateioSpotTradeUnit::query_position(const pubsub::TCommand&) {
+    // Spot 无持仓
 }
 
-void GateioSpotTradeUnit::pong(){
-    if (isConnected) {
-        web::websockets::client::websocket_outgoing_message outMsg;
-        outMsg.set_pong_message();
-        pWsClient->send(outMsg).wait();
-    }
-}
 
-void GateioSpotTradeUnit::query_account(const pubsub::TCommand& tcmd) {
-    try {
-        web::http::http_request request(web::http::methods::GET);
-        FORMAT_REQUEST(request)
-        std::string time = std::to_string(crypto::getCurrentTimeSeconds() );
-        std::string sign = crypto::getGateioSignatureRest("GET", unifiedUrl.to_string(), time, "", "", acc.secretKey);
-        request.headers().add("KEY", acc.apiKey);
-        request.headers().add("Timestamp", time);
-        request.headers().add("SIGN", sign);
-
-        web::http::uri_builder builder(unifiedUrl);
-        request.set_request_uri(builder.to_string());
-
-        auto& restClient = *pRestClient;
-        START_FORMAT_RESPONSE(request)
-            const web::json::value& v = previousTask.get();
-            auto balances = v.at("balances").as_object();
-            std::vector<pubsub::RCommand> needPushRcmd;
-            for (auto iter = balances.begin(); iter != balances.end(); ++iter) {
-                pubsub::RCommand rcmd;
-                memset(&rcmd, 0, sizeof(pubsub::RCommand));
-                rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
-                rcmd.body.balance.exchangeTypeEnum = GATEIO;
-                rcmd.body.balance.instTypeEnum = SPOT;
-                strncpy(rcmd.body.balance.accountId, acc.accountId.c_str(), ACCOUNTID_SIZE);
-                strncpy(rcmd.body.balance.strategyId, acc.strategyId.c_str(), STRATEGYID_SIZE);
-
-                strncpy(rcmd.body.balance.currency, crypto::to_upper(iter->first).c_str(), INSTID_SIZE);
-                rcmd.body.balance.available = std::stod(iter->second.at("available").as_string().c_str());
-                rcmd.body.balance.frozen = std::stod(iter->second.at("freeze").as_string().c_str());
-                rcmd.body.balance.total = std::stod(iter->second.at("equity").as_string().c_str());
-                rcmd.body.balance.updateTime = crypto::getCurrentTime();
-                rcmd.body.balance.apiSourceEnum = AS_REST;
-
-                needPushRcmd.emplace_back(rcmd);
-            }
-
-            if (needPushRcmd.size() > 0) {
-                size_t count = 0;
-                size_t size = needPushRcmd.size();
-                for (size_t i = 0; i < needPushRcmd.size(); ++i) {
-                    count++;
-                    needPushRcmd[i].body.balance.isLast = count == size;
-                    PUSH_RCMD(needPushRcmd[i]);
-                }
-            }
-            else {
-                LOG_INFO("{} no balance pushed, will push usdt balance=0 rcmd.", acc.accountId);
-                pubsub::RCommand rcmd;
-                memset(&rcmd, 0, sizeof(pubsub::RCommand));
-                rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
-                rcmd.body.balance.exchangeTypeEnum = GATEIO;
-                rcmd.body.balance.instTypeEnum = SPOT;
-                strncpy(rcmd.body.balance.accountId, acc.accountId.c_str(), ACCOUNTID_SIZE);
-                strncpy(rcmd.body.balance.strategyId, acc.strategyId.c_str(), STRATEGYID_SIZE);
-
-                strncpy(rcmd.body.balance.currency, "USDT", INSTID_SIZE);
-                rcmd.body.balance.updateTime = crypto::getCurrentTime();
-                rcmd.body.balance.apiSourceEnum = AS_REST;
-                rcmd.body.balance.isLast = true;
-                PUSH_RCMD(rcmd);
-            }
-
-            pubsub::RCommand rcmd;
-            memset(&rcmd, 0, sizeof(pubsub::RCommand));
-            rcmd.cmdTypeEnum = pubsub::CMD_RPT_TOTAL_ACCOUNT;
-            rcmd.body.totalAccount.exchangeTypeEnum = GATEIO;
-            rcmd.body.totalAccount.instTypeEnum = SPOT;
-            strncpy(rcmd.body.totalAccount.accountId, acc.accountId.c_str(), ACCOUNTID_SIZE);
-            strncpy(rcmd.body.totalAccount.strategyId, acc.strategyId.c_str(), STRATEGYID_SIZE);
-
-            rcmd.body.totalAccount.totalEquity = stod(v.at("unified_account_total_equity").as_string());
-            rcmd.body.totalAccount.adjEquity = stod(v.at("total_margin_balance").as_string());
-            rcmd.body.totalAccount.mmr = stod(v.at("total_maintenance_margin").as_string());
-            std::string mgnStr = v.at("total_maintenance_margin_rate").as_string();
-            if (mgnStr != "") {
-                rcmd.body.totalAccount.mgnRatio = stod(mgnStr);
-            } else {
-                rcmd.body.totalAccount.mgnRatio = 9999;
-            }
-            rcmd.body.totalAccount.apiSourceEnum = AS_REST;
-    
-            PUSH_RCMD(rcmd)  
-      
-        END_FORMAT_RESPONSE(request)
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("get_unified_account {}", e.what());
-    }
-}
-
-void GateioSpotTradeUnit::query_balance(const pubsub::TCommand& tcmd) { // 也需要 magnifyNumber/reduceNumber
-    try {
-        web::http::http_request request(web::http::methods::GET);
-        FORMAT_REQUEST(request)
-        std::string time = std::to_string(crypto::getCurrentTimeSeconds() );
-        std::string sign = crypto::getGateioSignatureRest("GET", balanceUrl.to_string(), time, "", "", acc.secretKey);
-        request.headers().add("KEY", acc.apiKey);
-        request.headers().add("Timestamp", time);
-        request.headers().add("SIGN", sign);
-
-        web::http::uri_builder builder(balanceUrl);
-        request.set_request_uri(builder.to_string());
-
-        auto& restClient = *pRestClient;
-        START_FORMAT_RESPONSE(request)
-            const web::json::value& v = previousTask.get();
-            auto& array = v.as_array();
-            std::vector<pubsub::RCommand> needPushRcmd;
-            for (auto& it : array) {
-                pubsub::RCommand rcmd;
-                memset(&rcmd, 0, sizeof(pubsub::RCommand));
-                rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
-                rcmd.body.balance.exchangeTypeEnum = GATEIO;
-                rcmd.body.balance.instTypeEnum = SPOT;
-                strncpy(rcmd.body.balance.accountId, acc.accountId.c_str(), ACCOUNTID_SIZE);
-                strncpy(rcmd.body.balance.strategyId, acc.strategyId.c_str(), STRATEGYID_SIZE);
-
-                strncpy(rcmd.body.balance.currency, crypto::to_upper(it.at("currency").as_string().c_str()).c_str(), INSTID_SIZE);
-                rcmd.body.balance.available = std::stod(it.at("available").as_string().c_str());
-                rcmd.body.balance.frozen = std::stod(it.at("locked").as_string().c_str());
-                rcmd.body.balance.total = rcmd.body.balance.available + rcmd.body.balance.frozen;
-                rcmd.body.balance.updateTime = crypto::getCurrentTime();
-                rcmd.body.balance.apiSourceEnum = AS_REST;
-
-                needPushRcmd.emplace_back(rcmd);
-            }
-
-            if (needPushRcmd.size() > 0) {
-                size_t count = 0;
-                size_t size = needPushRcmd.size();
-                for (size_t i = 0; i < needPushRcmd.size(); ++i) {
-                    count++;
-                    needPushRcmd[i].body.balance.isLast = count == size;
-                    PUSH_RCMD(needPushRcmd[i]);
-                }
-            }
-            else {
-                LOG_INFO("{} no balance pushed, will push usdt balance=0 rcmd.", acc.accountId);
-                pubsub::RCommand rcmd;
-                memset(&rcmd, 0, sizeof(pubsub::RCommand));
-                rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
-                rcmd.body.balance.exchangeTypeEnum = GATEIO;
-                rcmd.body.balance.instTypeEnum = SPOT;
-                strncpy(rcmd.body.balance.accountId, acc.accountId.c_str(), ACCOUNTID_SIZE);
-                strncpy(rcmd.body.balance.strategyId, acc.strategyId.c_str(), STRATEGYID_SIZE);
-
-                strncpy(rcmd.body.balance.currency, "USDT", INSTID_SIZE);
-                rcmd.body.balance.updateTime = crypto::getCurrentTime();
-                rcmd.body.balance.apiSourceEnum = AS_REST;
-                rcmd.body.balance.isLast = true;
-                PUSH_RCMD(rcmd);
-            }
-      
-        END_FORMAT_RESPONSE(request)
-    }
-    catch (std::exception& e) {
-        LOG_ERROR("{}", e.what());
-    }
-}
-
-void GateioSpotTradeUnit::query_position(const pubsub::TCommand& tcmd) {
-
-}
-
+// ============================================================================
+// add_new_order —— POST /api/v4/spot/orders (body 是 JSON)
+// ============================================================================
 void GateioSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     ADD_NEW_ORDER_TCMD_2_RCMD(tcmd)
 
-    if (!isConnected) {
-        rcmd.body.orderResponse.orderStatus = OS_REJECTED; 
-        rcmd.body.orderResponse.errorId = TBDisconnectError;
+    if (!isConnected.load()) {
+        rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+        rcmd.body.orderResponse.errorId     = TBDisconnectError;
+        rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
+        PUSH_RCMD(rcmd)
+        return;
+    }
+    md::InstrumentInfo info;
+    if (!smc->get_instrument_info(tcmd.body.newOrder.exchangeTypeEnum,
+                                  tcmd.body.newOrder.instTypeEnum,
+                                  tcmd.body.newOrder.instId, info)) {
+        rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+        rcmd.body.orderResponse.errorId     = SMCInstrumentNotExistError;
+        rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
+        PUSH_RCMD(rcmd)
+        return;
+    }
+
+    const char* side = nullptr;
+    if (tcmd.body.newOrder.offsetFlag == OF_OPEN) {
+        if      (tcmd.body.newOrder.direction == DT_LONG)  side = "buy";
+        else if (tcmd.body.newOrder.direction == DT_SHORT) side = "sell";
+    } else if (tcmd.body.newOrder.offsetFlag == OF_CLOSE) {
+        if      (tcmd.body.newOrder.direction == DT_LONG)  side = "sell";
+        else if (tcmd.body.newOrder.direction == DT_SHORT) side = "buy";
+    }
+    if (!side) {
+        rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+        rcmd.body.orderResponse.errorId     =
+            (tcmd.body.newOrder.offsetFlag == OF_OPEN || tcmd.body.newOrder.offsetFlag == OF_CLOSE)
+                ? DirectionError : OffsetFlagError;
         rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
         PUSH_RCMD(rcmd)
         return;
     }
 
-    try {
-        md::InstrumentInfo info;
-        if (smc->get_instrument_info(tcmd.body.newOrder.exchangeTypeEnum, tcmd.body.newOrder.instTypeEnum, tcmd.body.newOrder.instId, info)) {
-            web::http::http_request request(web::http::methods::POST);
-            FORMAT_REQUEST(request)
-            web::http::uri_builder builder(newOrderUrl);
+    double price  = crypto::getFixedPrecision(tcmd.body.newOrder.limitPrice  * info.magnifyNumber, info.tickSize);
+    double volume = crypto::getFixedPrecision(tcmd.body.newOrder.volumeTotal * info.reduceNumber,  info.lotSize);
 
-            double price = crypto::getFixedPrecision(tcmd.body.newOrder.limitPrice * info.magnifyNumber, info.tickSize);
-            double volume = crypto::getFixedPrecision(tcmd.body.newOrder.volumeTotal * info.reduceNumber, info.lotSize);
-    
-            web::json::value value;
-            value["text"] = json::value::string(tcmd.body.newOrder.orderSysId);
-            value["currency_pair"] = json::value::string(info.originInstId);
-            value["price"] = json::value::string(std::to_string(price));
-            value["amount"] = json::value::string(std::to_string(volume));
-
-            if (tcmd.body.newOrder.offsetFlag == OF_OPEN) {
-                if (tcmd.body.newOrder.direction == DT_LONG) {
-                    value["side"] = json::value::string("buy");
-                }
-                else if (tcmd.body.newOrder.direction == DT_SHORT) {
-                    value["side"] = json::value::string("sell");
-                }
-                else {
-                    rcmd.body.orderResponse.orderStatus = OS_REJECTED; 
-                    rcmd.body.orderResponse.errorId = DirectionError;
-                    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                    PUSH_RCMD(rcmd)
-                    return;
-                }
-            }
-            else if (tcmd.body.newOrder.offsetFlag == OF_CLOSE) {
-                if (tcmd.body.newOrder.direction == DT_LONG) {
-                    value["side"] = json::value::string("sell");
-                }
-                else if (tcmd.body.newOrder.direction == DT_SHORT) {
-                    value["side"] = json::value::string("buy");
-                }
-                else {
-                    rcmd.body.orderResponse.orderStatus = OS_REJECTED; 
-                    rcmd.body.orderResponse.errorId = DirectionError;
-                    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                    PUSH_RCMD(rcmd)
-                    return;
-                }
-            }
-            else {
-                rcmd.body.orderResponse.orderStatus = OS_REJECTED; 
-                rcmd.body.orderResponse.errorId = OffsetFlagError;
-                rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                PUSH_RCMD(rcmd)
-                return;
-            }
-            
-            switch (tcmd.body.newOrder.orderType) {
-                case OT_LIMIT: {
-                    value["time_in_force"] = json::value::string("gtc");
-                    break;  
-                }
-                case OT_MARKET: {
-                    value["time_in_force"] = json::value::string("ioc");
-                    value["price"] = json::value::string("0");
-                    break;
-                }
-                case OT_POST_ONLY: {
-                    value["time_in_force"] = json::value::string("poc");
-                    break;
-                }
-                case OT_FOK: {
-                    value["time_in_force"] = json::value::string("fok");
-                    break;
-                }
-                case OT_IOC: {
-                    value["time_in_force"] = json::value::string("ioc");
-                    break;
-                }
-                default: {
-                    rcmd.body.orderResponse.orderStatus = OS_REJECTED; 
-                    rcmd.body.orderResponse.errorId = OrderTypeError;
-                    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                    PUSH_RCMD(rcmd)
-                    return;    
-                }
-            }
-
-            if(tcmd.body.newOrder.instTypeEnum == SPOT){
-                value["account"] = json::value::string("spot");
-            }
-            else if(tcmd.body.newOrder.instTypeEnum == MARGIN){
-                value["account"] = json::value::string("margin");
-            }
-            else{
-                rcmd.body.orderResponse.errorId = InstTypeError;
-                PUSH_RCMD(rcmd)
-                return;
-            }
-
-        #ifdef USE_GATEIO_UNIFIED
-            value["account"] = json::value::string("unified");
-            value["auto_borrow"] = json::value::boolean(true);
-            value["auto_repay"] = json::value::boolean(true);
-        #endif
-
-            std::string time = std::to_string(crypto::getCurrentTimeSeconds());
-            std::string sign = crypto::getGateioSignatureRest("POST", newOrderUrl.to_string(), time, "", value.serialize(), acc.secretKey);
-            request.headers().add("KEY", acc.apiKey);
-            request.headers().add("Timestamp", time);
-            request.headers().add("SIGN", sign);
-            request.set_body(value);
-            request.set_request_uri(builder.to_string());
-
-            auto& restClient = *pRestClient;
-            START_FORMAT_RESPONSE(request)
-                if (tcmd.body.newOrder.clientOrderId == TESTCLIENTORDERID) {
-                    return;
-                }
-  
-                std::string s = previousTask.get().serialize();
-                LOG_DEBUG("add_new_order reponse: {}", s);
-                rapidjson::Document d;
-                rapidjson::Value &rawData = d.Parse<rapidjson::kParseNumbersAsStringsFlag>(s.c_str());
-
-                if(rawData.HasMember("status")){
-                    rcmd.body.orderResponse.orderStatus = crypto::get_gateio_orderstatus(rcmd.body.orderResponse.instTypeEnum, rawData);
-                    strcpy(rcmd.body.orderResponse.orderId, rawData["id"].GetString());
-                    rcmd.body.orderResponse.errorId = NoError;
-
-                    if (rawData.HasMember("avg_deal_price")) {
-                        rcmd.body.orderResponse.tradePrice = stod(rawData["avg_deal_price"].GetString());
-                    }
-                    
-                    double left = std::stod(rawData["left"].GetString());
-                    left = left > 0 ? left : -left;
-                    rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
-                    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                    PUSH_RCMD(rcmd)
-                }
-                else if(rawData.HasMember("label")){
-                    rcmd.body.orderResponse.errorId = crypto::get_gateio_errorid(s.c_str());
-                    strncpy(rcmd.body.orderResponse.originMsg, rawData["label"].GetString(), sizeof(rcmd.body.orderResponse.originMsg));
-
-                    rcmd.body.orderResponse.orderStatus = OS_REJECTED; 
-                    rcmd.body.orderResponse.errorId = UnknownError;
-                    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                    PUSH_RCMD(rcmd) 
-                }
-                else {
-                    rcmd.body.orderResponse.orderStatus = OS_REJECTED; 
-                    rcmd.body.orderResponse.errorId = UnknownError;
-                    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                    PUSH_RCMD(rcmd)       
-                }
-            END_FORMAT_RESPONSE(request)
-        }
-        else {
-            rcmd.body.orderResponse.orderStatus = OS_REJECTED; 
-            rcmd.body.orderResponse.errorId = SMCInstrumentNotExistError;
-            rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+    const char* tif = nullptr;
+    bool priceZero  = false;
+    switch (tcmd.body.newOrder.orderType) {
+        case OT_LIMIT:     tif = "gtc"; break;
+        case OT_MARKET:    tif = "ioc"; priceZero = true; break;
+        case OT_POST_ONLY: tif = "poc"; break;
+        case OT_FOK:       tif = "fok"; break;
+        case OT_IOC:       tif = "ioc"; break;
+        default:
+            rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+            rcmd.body.orderResponse.errorId     = OrderTypeError;
+            rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
             PUSH_RCMD(rcmd)
-        }
+            return;
     }
-    catch (std::exception& e) {
-        LOG_ERROR("add_new_order exception: {}", e.what());
-        rcmd.body.orderResponse.orderStatus = OS_REJECTED; 
-        rcmd.body.orderResponse.errorId = NetworkError;
-        strncpy(rcmd.body.orderResponse.originMsg, e.what(), ORIGINMSG_SIZE);
-        rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+
+    const char* account = nullptr;
+#ifdef USE_GATEIO_UNIFIED
+    account = "unified";
+#else
+    if      (tcmd.body.newOrder.instTypeEnum == SPOT)   account = "spot";
+    else if (tcmd.body.newOrder.instTypeEnum == MARGIN) account = "margin";
+    else {
+        rcmd.body.orderResponse.errorId = InstTypeError;
         PUSH_RCMD(rcmd)
+        return;
     }
+#endif
+
+    std::string price_str = priceZero ? "0" : fmt::format("{}", price);
+    std::string amount_str = fmt::format("{}", volume);
+
+#ifdef USE_GATEIO_UNIFIED
+    std::string body = fmt::format(
+        R"({{"text":"{}","currency_pair":"{}","price":"{}","amount":"{}","side":"{}","time_in_force":"{}","account":"unified","auto_borrow":true,"auto_repay":true}})",
+        escape_json(tcmd.body.newOrder.orderSysId), info.originInstId, price_str, amount_str, side, tif);
+#else
+    std::string body = fmt::format(
+        R"({{"text":"{}","currency_pair":"{}","price":"{}","amount":"{}","side":"{}","time_in_force":"{}","account":"{}"}})",
+        escape_json(tcmd.body.newOrder.orderSysId), info.originInstId, price_str, amount_str, side, tif, account);
+#endif
+
+    std::string time_str = std::to_string(crypto::getCurrentTimeSeconds());
+    std::string sign     = crypto::getGateioSignatureRest("POST", newOrderUrl, time_str, "", body, acc.secretKey);
+    auto headers = gate_auth_headers(acc.apiKey, time_str, sign);
+
+    LOG_INFO("TB {} Gate spot add_new_order body={}", acc.accountId, body);
+
+    auto info_captured = info;
+
+    asyncRequest(boost::beast::http::verb::post, newOrderUrl, std::move(body), "application/json",
+                 std::move(headers),
+        [this, rcmd, info_captured](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
+            if (ec) {
+                rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+                rcmd.body.orderResponse.errorId     = NetworkError;
+                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, ec.message());
+                rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
+                PUSH_RCMD(rcmd)
+                return;
+            }
+            if (rcmd.body.orderResponse.clientOrderId == TESTCLIENTORDERID) return;
+
+            try {
+                simdjson::padded_string padded(resp.body);
+                auto doc = g_parser.iterate(padded);
+                if (doc.error()) {
+                    rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+                    rcmd.body.orderResponse.errorId     = UnknownError;
+                    rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
+                    PUSH_RCMD(rcmd)
+                    return;
+                }
+
+                std::string_view id_sv, status_sv, left_sv, avg_sv, label_sv;
+                bool has_status = (doc.find_field_unordered("status").get(status_sv) == simdjson::SUCCESS);
+                bool has_label  = (doc.find_field_unordered("label").get(label_sv)  == simdjson::SUCCESS);
+
+                if (has_status) {
+                    doc.find_field_unordered("id").get(id_sv);
+                    doc.find_field_unordered("left").get(left_sv);
+                    doc.find_field_unordered("avg_deal_price").get(avg_sv);
+
+                    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
+                    rcmd.body.orderResponse.errorId = NoError;
+                    if (!avg_sv.empty()) rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
+
+                    double left = std::fabs(crypto::fast_atod(left_sv));
+                    rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
+
+                    std::string st(status_sv);
+                    // Gate spot status: open / closed / cancelled
+                    if      (st == "open")      rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.volumeTraded > ZERO_NUM) ? OS_PARTFILLED : OS_NEW;
+                    else if (st == "closed")    rcmd.body.orderResponse.orderStatus = OS_FILLED;
+                    else if (st == "cancelled") rcmd.body.orderResponse.orderStatus = OS_CANCELED;
+                    else                        rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
+
+                    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+                    PUSH_RCMD(rcmd)
+                } else if (has_label) {
+                    rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+                    rcmd.body.orderResponse.errorId     = crypto::get_gateio_errorid(resp.body.c_str());
+                    if (rcmd.body.orderResponse.errorId == 0) rcmd.body.orderResponse.errorId = UnknownError;
+                    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, label_sv);
+                    rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
+                    PUSH_RCMD(rcmd)
+                } else {
+                    rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+                    rcmd.body.orderResponse.errorId     = UnknownError;
+                    rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
+                    PUSH_RCMD(rcmd)
+                }
+            }
+            catch (const std::exception& e) {
+                LOG_ERROR("TB {} Gate spot add_new_order cb exc: {}", acc.accountId, e.what());
+                rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+                rcmd.body.orderResponse.errorId     = NetworkError;
+                rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
+                PUSH_RCMD(rcmd)
+            }
+        });
 }
 
+
+// ============================================================================
+// cancel_order —— DELETE /api/v4/spot/orders/{id}?currency_pair=X
+// ============================================================================
 void GateioSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     CANCEL_ORDER_TCMD_2_RCMD(tcmd)
 
-    try {
-        md::InstrumentInfo info;
-        if (smc->get_instrument_info(tcmd.body.cancelOrder.exchangeTypeEnum, tcmd.body.cancelOrder.instTypeEnum, tcmd.body.cancelOrder.instId, info)) {
-            web::http::http_request request(web::http::methods::DEL);
-            FORMAT_REQUEST(request)
-        
-            std::string queryStr{"currency_pair="};
-            queryStr.append(info.originInstId);
+    md::InstrumentInfo info;
+    if (!smc->get_instrument_info(tcmd.body.cancelOrder.exchangeTypeEnum,
+                                  tcmd.body.cancelOrder.instTypeEnum,
+                                  tcmd.body.cancelOrder.instId, info)) {
+        rcmd.body.orderResponse.orderStatus = OS_FAILED;
+        rcmd.body.orderResponse.errorId     = SMCInstrumentNotExistError;
+        rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
+        PUSH_RCMD(rcmd)
+        return;
+    }
 
-        #ifdef USE_GATEIO_UNIFIED
-            queryStr.append("&account=unified");
-        #endif
+    std::string idSeg;
+    if (!crypto::str_cmp(tcmd.body.cancelOrder.orderId, "")) {
+        idSeg = tcmd.body.cancelOrder.orderId;
+    } else if (!crypto::str_cmp(tcmd.body.cancelOrder.orderSysId, "")) {
+        idSeg = tcmd.body.cancelOrder.orderSysId;
+    } else {
+        rcmd.body.orderResponse.orderStatus = OS_FAILED;
+        rcmd.body.orderResponse.errorId     = OrderIdError;
+        rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
+        PUSH_RCMD(rcmd)
+        return;
+    }
 
-            std::string cancelOrderUrlStr = cancelOrderUrl.to_string();
-            if (!crypto::str_cmp(tcmd.body.cancelOrder.orderId, "")) {
-                cancelOrderUrlStr.append("/").append(tcmd.body.cancelOrder.orderId);
-            }
-            else if (!crypto::str_cmp(tcmd.body.cancelOrder.orderSysId, "")) {
-                cancelOrderUrlStr.append("/").append(tcmd.body.cancelOrder.orderSysId);
-            }
-            else {
-                LOG_ERROR("cancel order need orderId or orderSysId" );
+    std::string pathBase = cancelOrderUrl + "/" + idSeg;
+    std::string queryStr = "currency_pair=" + std::string(info.originInstId);
+#ifdef USE_GATEIO_UNIFIED
+    queryStr += "&account=unified";
+#endif
+
+    std::string time_str = std::to_string(crypto::getCurrentTimeSeconds());
+    std::string sign     = crypto::getGateioSignatureRest("DELETE", pathBase, time_str, queryStr, "", acc.secretKey);
+    auto headers = gate_auth_headers(acc.apiKey, time_str, sign);
+
+    std::string fullPath = pathBase + "?" + queryStr;
+    LOG_INFO("TB {} Gate spot cancel_order: {}", acc.accountId, fullPath);
+
+    auto info_captured = info;
+
+    asyncRequest(boost::beast::http::verb::delete_, std::move(fullPath), "", "", std::move(headers),
+        [this, rcmd, info_captured](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
+            if (ec) {
                 rcmd.body.orderResponse.orderStatus = OS_FAILED;
-                rcmd.body.orderResponse.errorId = OrderIdError;
-                strcpy(rcmd.body.orderResponse.originMsg, "cancel order need orderId or clientOrderId");
-                rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+                rcmd.body.orderResponse.errorId     = NetworkError;
+                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, ec.message());
+                rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
                 PUSH_RCMD(rcmd)
                 return;
             }
+            try {
+                simdjson::padded_string padded(resp.body);
+                auto doc = g_parser.iterate(padded);
+                if (doc.error()) return;
 
-            std::string time = std::to_string(crypto::getCurrentTimeSeconds());
-            std::string sign = crypto::getGateioSignatureRest("DELETE", cancelOrderUrlStr, time, queryStr, "", acc.secretKey);
-            request.headers().add("KEY", acc.apiKey);
-            request.headers().add("Timestamp", time);
-            request.headers().add("SIGN", sign);
-     
-            cancelOrderUrlStr.append("?").append(queryStr);
-            web::uri clOrdUrl = cancelOrderUrlStr;
-            uri_builder builder(clOrdUrl);
-            request.set_request_uri(builder.to_string());
+                std::string_view status_sv, label_sv, id_sv, avg_sv, amount_sv, left_sv;
+                bool has_status = (doc.find_field_unordered("status").get(status_sv) == simdjson::SUCCESS);
+                bool has_label  = (doc.find_field_unordered("label").get(label_sv)  == simdjson::SUCCESS);
 
-            LOG_INFO("cancel_order builder: {}", builder.to_string());
+                if (has_status) {
+                    doc.find_field_unordered("id").get(id_sv);
+                    doc.find_field_unordered("avg_deal_price").get(avg_sv);
+                    doc.find_field_unordered("amount").get(amount_sv);
+                    doc.find_field_unordered("left").get(left_sv);
 
-            auto& restClient = *pRestClient;
-            START_FORMAT_RESPONSE(request)
-                const web::json::value& v = previousTask.get();
-                LOG_INFO("cancel_order response: {}", v.serialize().c_str());
-
-                if (v.has_field("status")) {
-                    rcmd.body.orderResponse.orderStatus = OS_CANCELED;
-                    strncpy(rcmd.body.orderResponse.orderId, v.at("id").as_string().c_str(), ORDER_SIZE);
-                    if (v.has_field("avg_deal_price")) {
-                        rcmd.body.orderResponse.tradePrice = std::stod(v.at("avg_deal_price").as_string().c_str());
-                    }
-                    double amount = std::stod(v.at("amount").as_string().c_str());
-                    double left = std::stod(v.at("left").as_string().c_str());
-                    left = left > 0 ? left : -left;
+                    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
+                    if (!avg_sv.empty()) rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
+                    double amount = crypto::fast_atod(amount_sv);
+                    double left   = std::fabs(crypto::fast_atod(left_sv));
                     rcmd.body.orderResponse.volumeTraded = amount - left;
-                    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+                    rcmd.body.orderResponse.orderStatus  = OS_CANCELED;
+                    rcmd.body.orderResponse.updateTime   = crypto::getCurrentTime();
                     PUSH_RCMD(rcmd)
-                }
-                else if (v.has_field("label")) {
+                } else if (has_label) {
                     rcmd.body.orderResponse.orderStatus = OS_FAILED;
-                    rcmd.body.orderResponse.errorId = crypto::get_gateio_errorid(v.serialize().c_str());
-                    if (rcmd.body.orderResponse.errorId == OrderNotFoundError) {
-                        rcmd.body.orderResponse.orderStatus = OS_REJECTED;
-                    }
-                    strncpy(rcmd.body.orderResponse.originMsg, v.at("label").as_string().c_str(), ORIGINMSG_SIZE);
-                    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+                    rcmd.body.orderResponse.errorId     = crypto::get_gateio_errorid(resp.body.c_str());
+                    if (rcmd.body.orderResponse.errorId == OrderNotFoundError) rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+                    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, label_sv);
+                    rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
                     PUSH_RCMD(rcmd)
                 }
-
-            END_FORMAT_RESPONSE(request)   
-        }
-        else {
-            rcmd.body.orderResponse.orderStatus = OS_FAILED; 
-            rcmd.body.orderResponse.errorId = SMCInstrumentNotExistError;
-            rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-            PUSH_RCMD(rcmd)
-        }
-    }
-    catch (std::exception& e) {
-        LOG_ERROR("cancel_order exception: {}", e.what());
-        rcmd.body.orderResponse.orderStatus = OS_FAILED;
-        rcmd.body.orderResponse.errorId = NetworkError;
-        strncpy(rcmd.body.orderResponse.originMsg, e.what(), ORIGINMSG_SIZE);
-        rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-        PUSH_RCMD(rcmd)
-    }
+            }
+            catch (const std::exception& e) {
+                LOG_ERROR("TB {} Gate spot cancel_order cb exc: {}", acc.accountId, e.what());
+            }
+        });
 }
 
+
+// ============================================================================
+// query_order —— GET /api/v4/spot/orders/{id}?currency_pair=X
+// ============================================================================
 void GateioSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     QUERY_ORDER_TCMD_2_RCMD(tcmd);
-    try {
-        md::InstrumentInfo info;
-        if (smc->get_instrument_info(tcmd.body.queryOrder.exchangeTypeEnum, tcmd.body.queryOrder.instTypeEnum, tcmd.body.queryOrder.instId, info)) {
-            web::http::http_request request(web::http::methods::GET);
-            FORMAT_REQUEST(request)
 
-            std::string queryStr{"currency_pair="};
-            queryStr.append(info.originInstId);
+    md::InstrumentInfo info;
+    if (!smc->get_instrument_info(tcmd.body.queryOrder.exchangeTypeEnum,
+                                  tcmd.body.queryOrder.instTypeEnum,
+                                  tcmd.body.queryOrder.instId, info)) {
+        LOG_INFO("TB {} Gate spot query_order smc miss: {}", acc.accountId, tcmd.body.queryOrder.instId);
+        return;
+    }
 
-        #ifdef USE_UNIFIED
-            queryStr.append("&account=unified");
-        #endif
+    std::string idSeg;
+    // Fix: 老代码把逻辑写反了 (少了 !), 这里改对: id 非空才 append。
+    if (!crypto::str_cmp(tcmd.body.queryOrder.orderId, "")) {
+        idSeg = tcmd.body.queryOrder.orderId;
+    } else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
+        idSeg = tcmd.body.queryOrder.orderSysId;
+    } else {
+        return;
+    }
 
-            std::string queryOrderUrlStr = queryOrderUrl.to_string();          
-            if (crypto::str_cmp(tcmd.body.queryOrder.orderId, "")) {
-                queryOrderUrlStr.append("/").append(tcmd.body.queryOrder.orderId);
-            }
-            else if (crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
-                queryOrderUrlStr.append("/").append(tcmd.body.queryOrder.orderSysId);
-            }
-            else {
-                LOG_ERROR("query order need orderId or orderSysId {}", tcmd.body.queryOrder.instId);
-                return;
-            }
+    std::string pathBase = queryOrderUrl + "/" + idSeg;
+    std::string queryStr = "currency_pair=" + std::string(info.originInstId);
+#ifdef USE_GATEIO_UNIFIED
+    queryStr += "&account=unified";
+#endif
 
-            std::string time = std::to_string(crypto::getCurrentTimeSeconds());
-            std::string sign = crypto::getGateioSignatureRest("GET", queryOrderUrlStr, time, queryStr, "", acc.secretKey);
-            request.headers().add("KEY", acc.apiKey);
-            request.headers().add("Timestamp", time);
-            request.headers().add("SIGN", sign);
-     
-            queryOrderUrlStr.append("?").append(queryStr);
-            web::uri quOrdUrl = queryOrderUrlStr;
-            uri_builder builder(quOrdUrl);
-            request.set_request_uri(builder.to_string());
+    std::string time_str = std::to_string(crypto::getCurrentTimeSeconds());
+    std::string sign     = crypto::getGateioSignatureRest("GET", pathBase, time_str, queryStr, "", acc.secretKey);
+    auto headers = gate_auth_headers(acc.apiKey, time_str, sign);
 
-            LOG_INFO("query_order builder: {}", builder.to_string());
+    std::string fullPath = pathBase + "?" + queryStr;
+    LOG_INFO("TB {} Gate spot query_order: {}", acc.accountId, fullPath);
 
-            auto& restClient = *pRestClient;
-            START_FORMAT_RESPONSE(request)
-                const web::json::value& v = previousTask.get();
-                LOG_INFO("query_order response: {}", v.serialize().c_str());
-                
-                rapidjson::Document d;
-                rapidjson::Value &rawData = d.Parse<rapidjson::kParseNumbersAsStringsFlag>(v.serialize().c_str());
-                if (rawData.HasMember("status")) {
-                    strncpy(rcmd.body.orderResponse.orderId, rawData["id"].GetString(), ORDER_SIZE);
-                    strncpy(rcmd.body.orderResponse.orderSysId, rawData["text"].GetString(), ORDER_SIZE);
-                    rcmd.body.orderResponse.volumeTotal = std::stod(rawData["amount"].GetString());
-                    rcmd.body.orderResponse.limitPrice = std::stod(rawData["price"].GetString());
-                    double left = std::stod(rawData["left"].GetString());
-                    left = left > 0 ? left : -left;
-                    rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
+    auto info_captured = info;
 
-                    if (rawData.HasMember("avg_deal_price")) {
-                        rcmd.body.orderResponse.tradePrice = std::stod(rawData["avg_deal_price"].GetString());
-                    }
+    asyncRequest(boost::beast::http::verb::get, std::move(fullPath), "", "", std::move(headers),
+        [this, rcmd, info_captured](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
+            if (ec) return;
+            try {
+                simdjson::padded_string padded(resp.body);
+                auto doc = g_parser.iterate(padded);
+                if (doc.error()) return;
 
-                    std::string status = rawData["status"].GetString();
-                    if (crypto::str_cmp(status.c_str(), "open")) {
-                        if (rcmd.body.orderResponse.volumeTotal > rcmd.body.orderResponse.volumeTraded && rcmd.body.orderResponse.volumeTraded > ZERO_NUM) {
-                            rcmd.body.orderResponse.orderStatus = OS_PARTFILLED;  
-                        }
-                        else {
-                            rcmd.body.orderResponse.orderStatus = OS_NEW;
-                        }
-                    }
-                    else if (crypto::str_cmp(status.c_str(), "close")) {
-                        rcmd.body.orderResponse.orderStatus = OS_FILLED;
-                    }
-                    else if (crypto::str_cmp(status.c_str(), "cancelled")) {
-                        rcmd.body.orderResponse.orderStatus = OS_CANCELED;
-                    }
-                    else {
-                        std::string finish_as = rawData["finish_as"].GetString();
-                        if(crypto::str_cmp(finish_as.c_str(), "filled")){
-                            return rcmd.body.orderResponse.orderStatus = OS_FILLED;
-                        }
-                        else {
-                            rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
-                        }
-                    }
+                std::string_view status_sv;
+                if (doc.find_field_unordered("status").get(status_sv) != simdjson::SUCCESS) {
+                    // error
+                    rcmd.body.orderResponse.errorId = crypto::get_gateio_errorid(resp.body.c_str());
+                    rcmd.body.orderResponse.orderStatus =
+                        (rcmd.body.orderResponse.errorId == OrderNotFoundError) ? OS_REJECTED : OS_UNKNOWN;
                     rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
                     PUSH_RCMD(rcmd)
+                    return;
                 }
-                else{
-                    LOG_ERROR("%s",v.serialize().c_str());
-                    rcmd.body.orderResponse.errorId = crypto::get_gateio_errorid(v.serialize().c_str());
-                    if (rcmd.body.orderResponse.errorId == OrderNotFoundError) {
-                        rcmd.body.orderResponse.orderStatus = OS_REJECTED;
-                    }
-                    else {
-                        rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
-                    }
-                    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                    PUSH_RCMD(rcmd)
-                }
-          
 
-            END_FORMAT_RESPONSE(request)   
-        }
-        else {
-            LOG_INFO("query_order smc not found: {}", tcmd.body.queryOrder.instId);
-        }
-    }
-    catch (std::exception& e) {
-        LOG_ERROR("query_order exception: {}", e.what());
-    }
+                std::string_view id_sv, text_sv, amount_sv, price_sv, left_sv, avg_sv, finishAs_sv;
+                doc.find_field_unordered("id").get(id_sv);
+                doc.find_field_unordered("text").get(text_sv);
+                doc.find_field_unordered("amount").get(amount_sv);
+                doc.find_field_unordered("price").get(price_sv);
+                doc.find_field_unordered("left").get(left_sv);
+                doc.find_field_unordered("avg_deal_price").get(avg_sv);
+                doc.find_field_unordered("finish_as").get(finishAs_sv);
+
+                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId,    id_sv);
+                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, text_sv);
+                rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(amount_sv);
+                rcmd.body.orderResponse.limitPrice  = crypto::fast_atod(price_sv);
+                double left = std::fabs(crypto::fast_atod(left_sv));
+                rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
+                if (!avg_sv.empty()) rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
+
+                std::string st(status_sv);
+                if (st == "open") {
+                    rcmd.body.orderResponse.orderStatus =
+                        (rcmd.body.orderResponse.volumeTotal > rcmd.body.orderResponse.volumeTraded && rcmd.body.orderResponse.volumeTraded > ZERO_NUM)
+                            ? OS_PARTFILLED : OS_NEW;
+                } else if (st == "closed") {
+                    rcmd.body.orderResponse.orderStatus = OS_FILLED;
+                } else if (st == "cancelled") {
+                    rcmd.body.orderResponse.orderStatus = OS_CANCELED;
+                } else if (finishAs_sv == "filled") {
+                    rcmd.body.orderResponse.orderStatus = OS_FILLED;
+                } else {
+                    rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
+                }
+                rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+                PUSH_RCMD(rcmd)
+            }
+            catch (const std::exception& e) {
+                LOG_ERROR("TB {} Gate spot query_order cb exc: {}", acc.accountId, e.what());
+            }
+        });
 }

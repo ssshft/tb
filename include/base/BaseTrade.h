@@ -48,6 +48,8 @@ protected:
 
     void asyncRequest(boost::beast::http::verb method, std::string path, std::string body, std::string content_type, net::HttpCallback cb);
 
+    void asyncRequest(boost::beast::http::verb method, std::string path, std::string body, std::string content_type, std::vector<std::pair<std::string, std::string>> extra_headers, net::HttpCallback cb);
+
     void subWebsocketWithConfig(net::WsConfig cfg);
 
     virtual void onOpen();

@@ -1,5 +1,11 @@
 #pragma once
+//
+// Gateio USDT-M Futures Trade Unit —— REST + WS。
+// 与 GateioSpot 结构一致, 只是订阅 channel / URL / body 换成 futures 版。
+//
 #include "base/BaseTrade.h"
+
+#include <simdjson.h>
 
 
 class GateioUSTradeUnit : public BaseTradeUnit {
@@ -8,21 +14,35 @@ public:
     GateioUSTradeUnit(AccountCfg& a, sm::SecurityManager* s);
     virtual ~GateioUSTradeUnit();
 
-    virtual void subWebsocekt();
-    virtual void onWebsocketMsg(const web::websockets::client::websocket_incoming_message& msg);
-    virtual void ping();
-    virtual void pong();
+    virtual void subWebsocekt() override;
+    virtual void onWebsocketMsg(const uint8_t* data, size_t len, bool isBinary, int64_t recv_ns) override;
+    virtual void onOpen() override;
 
-    web::websockets::client::websocket_outgoing_message sub_balance_channel();
-    web::websockets::client::websocket_outgoing_message sub_orders_channel();
-    web::websockets::client::websocket_outgoing_message sub_trades_channel();
-    web::websockets::client::websocket_outgoing_message sub_positions_channel();
+    virtual void query_account (const pubsub::TCommand& tcmd) override;
+    virtual void query_balance (const pubsub::TCommand& tcmd) override;
+    virtual void query_position(const pubsub::TCommand& tcmd) override;
+    virtual void add_new_order (const pubsub::TCommand& tcmd) override;
+    virtual void cancel_order  (const pubsub::TCommand& tcmd) override;
+    virtual void query_order   (const pubsub::TCommand& tcmd) override;
 
-    virtual void query_account(const pubsub::TCommand& tcmd);
-    virtual void query_balance(const pubsub::TCommand& tcmd);
-    virtual void query_position(const pubsub::TCommand& tcmd);
-    virtual void add_new_order(const pubsub::TCommand& tcmd);
-    virtual void cancel_order(const pubsub::TCommand& tcmd);
-    virtual void query_order(const pubsub::TCommand& tcmd);
+private:
+    // ---- subscribe builder ----
+    std::string buildOrdersSubscribeJson()    const;
+    std::string buildBalancesSubscribeJson()  const;
+    std::string buildPositionsSubscribeJson() const;
 
+    // ---- msg 分派 ----
+    void handleOrdersUpdate   (simdjson::ondemand::value& result);
+    void handleBalancesUpdate (simdjson::ondemand::value& result);
+    void handlePositionsUpdate(simdjson::ondemand::value& result);
+
+    // Gate 的 adl_ranking (1-5) → adlQuantile 的自定义映射
+    static int mapAdlRanking(int r);
+
+private:
+    std::string newOrderUrl    = "/api/v4/futures/usdt/orders";
+    std::string cancelOrderUrl = "/api/v4/futures/usdt/orders";
+    std::string queryOrderUrl  = "/api/v4/futures/usdt/orders";
+    std::string balanceUrl     = "/api/v4/futures/usdt/accounts";
+    std::string positionUrl    = "/api/v4/futures/usdt/positions";
 };

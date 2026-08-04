@@ -68,6 +68,18 @@ void BaseTradeUnit::asyncRequest(boost::beast::http::verb method, std::string pa
     pRestClient->async_request(method, std::move(path), std::move(body), std::move(content_type), std::move(cb));
 }
 
+void BaseTradeUnit::asyncRequest(boost::beast::http::verb method, std::string path, std::string body, std::string content_type, std::vector<std::pair<std::string, std::string>> extra_headers, net::HttpCallback cb) {
+    if (!pRestClient) {
+        LOG_ERROR("TB {} asyncRequest: pRestClient not initialized (call initRestClient first)", acc.accountId);
+        if (cb) {
+            boost::system::error_code ec(static_cast<int>(std::errc::not_connected), boost::system::systemm_category());
+            cb(ec, net::HttpResponse());
+        }
+    }
+
+    pRestClient->async_request(method, std::move(path), std::move(body), std::move(content_type), std::move(extra_headers), std::move(cb));
+}
+
 void BaseTradeUnit::subWebsocketWithConfig(net::WsConfig cfg) {
     pWsClient = net::WsClient::create(std::move(cfg));
 

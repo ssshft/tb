@@ -1,0 +1,26 @@
+#pragma once
+#include "base/BaseTrade.h"
+#include "bybit/BybitTrade.h"
+
+
+class BybitTradeClient : public TradingClientBase{
+
+public:
+    BybitTradeClient(rapidjson::Value &accountConfig, sm::SecurityManager *smc);
+    ~BybitTradeClient();
+
+    void start();
+    void Initial();
+    void add_new_order(pubsub::TCommand &tcmd);
+    void cancel_order(pubsub::TCommand &tcmd);
+    void query_order(pubsub::TCommand &tcmd);
+    void query_account(pubsub::TCommand &tcmd);
+    void query_position(pubsub::TCommand &tcmd);
+    void query_balance(pubsub::TCommand &tcmd);
+
+protected:
+
+    BybitTradeUnit* tradeUnit = nullptr;
+    sm::SecurityManager *smc;
+
+};
