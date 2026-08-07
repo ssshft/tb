@@ -50,9 +50,9 @@ private:
 
     // ---- 解析助手 (simdjson ondemand) ----
     // 走 outboundAccountPosition (余额 push) → PUSH_RCMD
-    void handleAccountPosition(simdjson::ondemand::object& ev);
+    void handleAccountPosition(simdjson::ondemand::value& ev);
     // 走 executionReport (订单状态 push) → PUSH_RCMD
-    void handleExecutionReport (simdjson::ondemand::object& ev);
+    void handleExecutionReport (simdjson::ondemand::value& ev);
 
 
 private:
