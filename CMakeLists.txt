@@ -83,8 +83,7 @@ link_libraries(
         pthread
         boost_system 
         crypto 
-        ssl 
-        cpprest 
+        ssl  
         z 
         rt  
         dl 
@@ -95,6 +94,7 @@ link_libraries(
         fmt
         zmq
         uv
+        simdjson
 )
 
 add_executable(TB
