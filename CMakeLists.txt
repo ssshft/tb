@@ -15,6 +15,13 @@ set(EXECUTABLE_OUTPUT_PATH ${CMAKE_CURRENT_SOURCE_DIR}/bin)
 add_definitions("-D_TURN_OFF_PLATFORM_STRING")
 # add_definitions("-DUSE_BINANCE_UNIFIED")
 
+option(USE_INFO_SHM "publish instrument into via share memory instead of redis" OFF)
+if(USE_INFO_SHM)
+    add_definitions(-DUSE_INFO_SHM)
+    message(STATUS "USE_IFNO_SHM = ON (SHM writer enabled)")
+else()
+    message(STATUS "USE_IFNO_SHM = OFF (redis writer)")
+endif()
 
 
 # 读取整个文件
