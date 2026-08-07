@@ -327,8 +327,10 @@ void BybitWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len,
     if (len == 0) return;
     try {
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
-        auto doc = g_parser.iterate(padded);
-        if (doc.error()) return;
+        auto doc_res = g_parser.iterate(padded);
+        if (doc_res.error()) return;
+        auto& doc = doc_res.value_unsafe();
+
         handleTradeWsMsg(doc);
     } catch (const std::exception& e) {
         LOG_ERROR("TB {} Bybit trade ws exc: {}", acc.accountId, e.what());
@@ -446,8 +448,10 @@ void BybitWsTradeUnit::onPrivateWsMsg(const uint8_t* data, size_t len,
     if (len == 0) return;
     try {
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
-        auto doc = g_parser.iterate(padded);
-        if (doc.error()) return;
+        auto doc_res = g_parser.iterate(padded);
+        if (doc_res.error()) return;
+
+        auto& doc = doc_res.value_unsafe();
 
         // auth / subscribe ack: {"success":true, "op":"auth", ...} 或 {"retCode":0,"op":"auth",...}
         std::string_view op_sv;

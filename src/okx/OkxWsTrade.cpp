@@ -315,8 +315,10 @@ void OkxWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len,
 
     try {
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
-        auto doc = g_parser.iterate(padded);
-        if (doc.error()) return;
+        auto doc_res = g_parser.iterate(padded);
+        if (doc_res.error()) return;
+
+        auto& doc = doc_res.value_unsafe();
 
         // 三种消息 (基于 top-level 字段区分):
         //   1) event  → login / subscribe / error ack

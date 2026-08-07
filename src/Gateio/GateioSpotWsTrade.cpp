@@ -280,8 +280,9 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len,
     if (len == 0) return;
     try {
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
-        auto doc = g_parser.iterate(padded);
-        if (doc.error()) return;
+        auto doc_res = g_parser.iterate(padded);
+        if (doc_res.error()) return;
+        auto& doc = doc_res.value_unsafe();
 
         // Gate v4 WS 有两类消息:
         //   1) RPC 响应: {"request_id":"...", "ack":..., "header":{...}, "data":{...}}
