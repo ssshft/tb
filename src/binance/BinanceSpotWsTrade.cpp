@@ -282,8 +282,9 @@ void BinanceSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len,
     if (len == 0) return;
     try {
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
-        auto doc = g_parser.iterate(padded);
-        if (doc.error()) return;
+        auto doc_res = g_parser.iterate(padded);
+        if (doc_res.error()) return;
+        auto& doc = doc_res.value_unsafe();
 
         // ws-api 响应有 "id" 字段, userDataStream 推送外层是 {"event":{...}}
         int64_t id_val = 0;
