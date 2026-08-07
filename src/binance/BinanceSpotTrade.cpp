@@ -194,7 +194,7 @@ void BinanceSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
 // ---- outboundAccountPosition ----
 //   { "e":"outboundAccountPosition", "E":ts, "u":ts,
 //     "B":[{"a":"BTC","f":"1.0","l":"0.0"},...] }
-void BinanceSpotTradeUnit::handleAccountPosition(simdjson::ondemand::value& ev) {
+void BinanceSpotTradeUnit::handleAccountPosition(simdjson::ondemand::object& ev) {
     simdjson::ondemand::array balances;
     if (ev.find_field_unordered("B").get(balances) != simdjson::SUCCESS) return;
 
@@ -239,7 +239,7 @@ void BinanceSpotTradeUnit::handleAccountPosition(simdjson::ondemand::value& ev) 
 //     "C":<origClientOrderId>, "S":"BUY"/"SELL", "f":"GTC"/... , "o":"LIMIT"/... ,
 //     "X":"NEW"/"FILLED"/... , "l":"lastQty", "L":"lastPx", "z":"cumQty",
 //     "Z":"cumQuoteQty", "q":"origQty", "p":"limitPx" }
-void BinanceSpotTradeUnit::handleExecutionReport(simdjson::ondemand::value& ev) {
+void BinanceSpotTradeUnit::handleExecutionReport(simdjson::ondemand::object& ev) {
     std::string_view s_sv;
     if (ev.find_field_unordered("s").get(s_sv) != simdjson::SUCCESS) return;
 
