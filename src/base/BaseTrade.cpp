@@ -60,7 +60,7 @@ void BaseTradeUnit::asyncRequest(boost::beast::http::verb method, std::string pa
     if (!pRestClient) {
         LOG_ERROR("TB {} asyncRequest: pRestClient not initialized (call initRestClient first)", acc.accountId);
         if (cb) {
-            boost::system::error_code ec(static_cast<int>(std::errc::not_connected), boost::system::systemm_category());
+            boost::system::error_code ec(static_cast<int>(std::errc::not_connected), boost::system::system_category());
             cb(ec, net::HttpResponse());
         }
     }
@@ -72,7 +72,7 @@ void BaseTradeUnit::asyncRequest(boost::beast::http::verb method, std::string pa
     if (!pRestClient) {
         LOG_ERROR("TB {} asyncRequest: pRestClient not initialized (call initRestClient first)", acc.accountId);
         if (cb) {
-            boost::system::error_code ec(static_cast<int>(std::errc::not_connected), boost::system::systemm_category());
+            boost::system::error_code ec(static_cast<int>(std::errc::not_connected), boost::system::system_category());
             cb(ec, net::HttpResponse());
         }
     }
