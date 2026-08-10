@@ -73,7 +73,8 @@ protected:
     std::string balanceUrl{""};
     std::string positionUrl{""};
 
-    inline static thread_local simdjson::ondemand::parser g_parser;
+    // inline static thread_local simdjson::ondemand::parser g_parser;
+    simdjson::ondemand::parser g_parser;
 };
 
 
