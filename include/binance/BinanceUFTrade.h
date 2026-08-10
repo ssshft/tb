@@ -14,9 +14,7 @@
 // 无 WS 下单 (order.place ws-api 版本, Phase 后续再加)。
 //
 #include "base/BaseTrade.h"
-
 #include <simdjson.h>
-
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -38,17 +36,16 @@ public:
     // FAPI 不需要 subscribe, 保持 base 的实现即可 (isConnected + log)。
     // override 不写。
 
-    virtual void query_account (const pubsub::TCommand& tcmd) override;
-    virtual void query_balance (const pubsub::TCommand& tcmd) override;
+    virtual void query_account(const pubsub::TCommand& tcmd) override;
+    virtual void query_balance(const pubsub::TCommand& tcmd) override;
     virtual void query_position(const pubsub::TCommand& tcmd) override;
-    virtual void add_new_order (const pubsub::TCommand& tcmd) override;
-    virtual void cancel_order  (const pubsub::TCommand& tcmd) override;
-    virtual void query_order   (const pubsub::TCommand& tcmd) override;
+    virtual void add_new_order(const pubsub::TCommand& tcmd) override;
+    virtual void cancel_order(const pubsub::TCommand& tcmd) override;
+    virtual void query_order(const pubsub::TCommand& tcmd) override;
 
 private:
     // ---- URL / 签名 ----
-    std::string buildSignedPath(std::string_view basePath,
-                                const std::vector<std::pair<std::string, std::string>>& kvs) const;
+    std::string buildSignedPath(std::string_view basePath, const std::vector<std::pair<std::string, std::string>>& kvs) const;
 
     // ---- listenKey ----
     // sync 生成: 内部起 promise/future, 阻塞不超过 15s (启动路径, 非 hot path)。
@@ -65,24 +62,24 @@ private:
     // "e":"ACCOUNT_UPDATE" → 余额 + 持仓 push
     void handleAccountUpdate(simdjson::ondemand::object& root);
     // "e":"ORDER_TRADE_UPDATE" → 订单回报
-    void handleOrderUpdate  (simdjson::ondemand::object& root);
+    void handleOrderUpdate(simdjson::ondemand::object& root);
 
 
 private:
     // REST 相对路径
-    std::string newOrderUrl    = "/fapi/v1/order";
+    std::string newOrderUrl = "/fapi/v1/order";
     std::string cancelOrderUrl = "/fapi/v1/order";
-    std::string queryOrderUrl  = "/fapi/v1/order";
-    std::string balanceUrl     = "/fapi/v3/account";
-    std::string positionUrl    = "/fapi/v3/positionRisk";
-    std::string listenKeyUrl   = "/fapi/v1/listenKey";
-    std::string wsSubPath      = "/ws/";   // Binance FAPI live: wsBase + "/ws/" + listenKey
+    std::string queryOrderUrl = "/fapi/v1/order";
+    std::string balanceUrl = "/fapi/v3/account";
+    std::string positionUrl = "/fapi/v3/positionRisk";
+    std::string listenKeyUrl = "/fapi/v1/listenKey";
+    std::string wsSubPath = "/ws/";   // Binance FAPI live: wsBase + "/ws/" + listenKey
 
     std::string listenKey_;                // ws 连接开始后不再改动
 
     // ---- listenKey 续期后台线程 ----
-    std::thread                    renewThread_;
-    std::atomic<bool>              renewStop_{false};
-    std::mutex                     renewMtx_;
-    std::condition_variable        renewCv_;
+    std::thread renewThread_;
+    std::atomic<bool> renewStop_{false};
+    std::mutex renewMtx_;
+    std::condition_variable renewCv_;
 };

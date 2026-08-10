@@ -141,40 +141,38 @@ namespace crypto {
      * @return false
      */
     inline bool is_order_invert(const om::OrderTrade &ot, const pubsub::RCommand &rcmd){
-        if(rcmd.body.orderResponse.orderStatus <= OS_NEW && ot.orderStatus >OS_NEW){
+        if (rcmd.body.orderResponse.orderStatus <= OS_NEW && ot.orderStatus > OS_NEW){
             return true;
         }
         return false;
     }
 
     inline bool is_order_finished(const OrderStatus &orderStatus){
-        if(orderStatus == OS_CANCELED
-        || orderStatus == OS_FILLED
-        || orderStatus == OS_REJECTED){
+        if (orderStatus == OS_CANCELED || orderStatus == OS_FILLED || orderStatus == OS_REJECTED) {
             return true;
         }
         return false;
     }
 
-    inline OrderType get_bybit_ordertype(const char *timeInForce, const char *orderType){
-        if(orderType[0] == 'M'){
+    inline OrderType get_bybit_ordertype(const char *timeInForce, const char *orderType) {
+        if (orderType[0] == 'M') {
             return OT_MARKET;
         }
-        else if(orderType[0] == 'L'){
-            if( timeInForce[0] == 'I' ){//IOC - Immediate or Cancel 无法立即成交(吃单)的部分就撤销
+        else if (orderType[0] == 'L') {
+            if (timeInForce[0] == 'I' ) {//IOC - Immediate or Cancel 无法立即成交(吃单)的部分就撤销
                 return OT_IOC;
             }
-            else if(timeInForce[0] == 'F'){//Fill or Kill 无法全部立即成交就撤销
+            else if (timeInForce[0] == 'F') {//Fill or Kill 无法全部立即成交就撤销
                 return OT_FOK;
             }
-            else if(timeInForce[0] == 'P'){
+            else if (timeInForce[0] == 'P') {
                 return OT_POST_ONLY;
             }
-            else{//GTC 一直有效至取消
+            else {//GTC 一直有效至取消
                 return OT_LIMIT;
             }
         }
-        else{
+        else {
             return OT_MIN;
         }
     }

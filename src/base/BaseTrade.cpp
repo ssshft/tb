@@ -25,8 +25,13 @@ void BaseTradeUnit::onOpen() {
 }
 
 void BaseTradeUnit::onCloseMsg(int code, const std::string& reason) {
-    isConnected.store(true);
+    isConnected.store(false);
     LOG_ERROR("TB {} ws closed: code={} reason={} (BeastWsClient will auto-reconnect)", acc.accountId, code, reason);
+}
+
+void BaseTradeUnit::onError(const std::string& reason) {
+    isConnected.store(false);
+    LOG_ERROR("TB {} ws error: {}", acc.accountId, reason);
 }
 
 void BaseTradeUnit::initRestClient(const std::string& host, std::vector<std::pair<std::string, std::string>> default_headers, size_t max_connections) {
@@ -96,12 +101,12 @@ void BaseTradeUnit::subWebsocketWithConfig(net::WsConfig cfg) {
     });
 
     pWsClient->on_error([this](const std::string& m) {
-        LOG_ERROR("TB {} ws error: {}", acc.accountId, m);
+        this->onError(m);
+        
     });
 
     pWsClient->start();
 }
-
 
 BaseTradeClient::BaseTradeClient(rapidjson::Value& accCfg, sm::SecurityManager* s) {
     vAccount.clear();

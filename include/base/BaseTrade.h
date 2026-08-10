@@ -22,6 +22,7 @@
 #include "utils/order_util.h"
 #include "log_engine.h"
 #include <simdjson.h>
+#include "net_helper.h"
 
 
 class BaseTradeUnit {
@@ -34,6 +35,8 @@ public:
     virtual void subWebsocekt() = 0;
     virtual void onWebsocketMsg(const uint8_t* data, size_t len, bool isBinary, int64_t recvNs) = 0;
     virtual void onCloseMsg(int code, const std::string& reason);
+    virtual void onOpen();
+    virtual void onError(const std::string& reason);
 
     virtual void query_account(const pubsub::TCommand& tcmd) = 0;
     virtual void query_balance(const pubsub::TCommand& tcmd) = 0;
@@ -52,8 +55,6 @@ protected:
 
     void subWebsocketWithConfig(net::WsConfig cfg);
 
-    virtual void onOpen();
-
     AccountCfg acc;
     std::atomic<bool> isConnected{false};
 
@@ -64,6 +65,8 @@ protected:
     std::vector<std::pair<std::string, std::string>> defaultHeaders_;
 
     sm::SecurityManager* smc{nullptr};
+
+    thread_local simdjson::ondemand::parser g_parser;
 
     std::string newOrderUrl{""};
     std::string cancelOrderUrl{""};
