@@ -66,7 +66,7 @@ protected:
 
     sm::SecurityManager* smc{nullptr};
 
-    thread_local simdjson::ondemand::parser g_parser;
+    inline static thread_local simdjson::ondemand::parser g_parser;
 
     std::string newOrderUrl{""};
     std::string cancelOrderUrl{""};
