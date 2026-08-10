@@ -7,36 +7,9 @@
 
 
 namespace {
-    inline std::string host_of(const std::string& url) {
-        std::string h = url;
-        auto p = h.find("://");
-        if (p != std::string::npos) h = h.substr(p + 3);
-        auto q = h.find('/');
-        if (q != std::string::npos) h = h.substr(0, q);
-        return h;
-    }
     thread_local simdjson::ondemand::parser g_parser;
 
-    // Gate 的 orderSysId / apiKey 通常都是 [A-Za-z0-9_-]+, 不必转义。 但保险起见:
-    inline std::string escape_json(const std::string& s) {
-        std::string out; out.reserve(s.size() + 4);
-        for (char c : s) {
-            switch (c) {
-                case '"': out += "\\\""; break;
-                case '\\': out += "\\\\"; break;
-                case '\n': out += "\\n"; break;
-                case '\r': out += "\\r"; break;
-                case '\t': out += "\\t"; break;
-                default:
-                    if (static_cast<unsigned char>(c) < 0x20) {
-                        char buf[8]; std::snprintf(buf, sizeof(buf), "\\u%04x", c); out += buf;
-                    } else {
-                        out += c;
-                    }
-            }
-        }
-        return out;
-    }
+
     // 同 string_view
     inline std::string escape_json_sv(std::string_view sv) {
         return escape_json(std::string(sv));

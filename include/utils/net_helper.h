@@ -26,7 +26,7 @@ inline std::string host_of(const std::string& url) {
 // Binance ws-api 消息 payload: 数字保持不 stringify (HFT 时省一次分配)
 // 拼成 {"id":"<ts>","method":"userDataStream.subscribe.signature",
 //       "params":{"apiKey":"...","timestamp":<ts>,"recvWindow":5000,"signature":"..."}}
-inline std::string escape_json_str(const std::string& s) {
+inline std::string escape_json(const std::string& s) {
     std::string out; 
     out.reserve(s.size() + 8);
     for (char c : s) {

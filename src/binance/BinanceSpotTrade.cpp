@@ -59,7 +59,7 @@ std::string BinanceSpotTradeUnit::buildSubscribeJson(long ts_ms, const std::stri
     return fmt::format(
         R"({{"id":"{}","method":"userDataStream.subscribe.signature",)"
         R"("params":{{"apiKey":"{}","timestamp":{},"recvWindow":5000,"signature":"{}"}}}})",
-        ts_ms, escape_json_str(acc.apiKey), ts_ms, escape_json_str(signature));
+        ts_ms, escape_json(acc.apiKey), ts_ms, escape_json(signature));
 }
 
 

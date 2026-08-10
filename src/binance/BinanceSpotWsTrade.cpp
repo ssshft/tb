@@ -52,7 +52,7 @@ std::string BinanceSpotWsTradeUnit::buildLogonJson() {
     // Ed25519 payload: 字母序 → "apiKey=X&timestamp=T"
     std::string payload = fmt::format("apiKey={}&timestamp={}", acc.apiKey, ts);
     std::string sig = signer_.sign_base64(payload);   // 放 JSON body, 不 URL-encode
-    return fmt::format(R"({{"id":{},"method":"session.logon","params":{{"apiKey":"{}","timestamp":{},"signature":"{}"}}}})", kSessionLogonId, escape_json_str(acc.apiKey), ts, sig);
+    return fmt::format(R"({{"id":{},"method":"session.logon","params":{{"apiKey":"{}","timestamp":{},"signature":"{}"}}}})", kSessionLogonId, escape_json(acc.apiKey), ts, sig);
 }
 
 std::string BinanceSpotWsTradeUnit::buildUserSubscribeJson() const {
@@ -82,7 +82,7 @@ std::string BinanceSpotWsTradeUnit::buildOrderPlaceJson(
         j.append(R"(,"price":")");         j.append(price);                                        j.push_back('"');
     }
     j.append(R"(,"quantity":")");                  j.append(amount);                               j.push_back('"');
-    j.append(R"(,"newClientOrderId":")");          j.append(escape_json_str(tcmd.body.newOrder.orderSysId));  j.push_back('"');
+    j.append(R"(,"newClientOrderId":")");          j.append(escape_json(tcmd.body.newOrder.orderSysId));  j.push_back('"');
     j.append(R"(,"newOrderRespType":")");          j.append(respType);                             j.push_back('"');
     j.append("}}");
     return j;
@@ -100,7 +100,7 @@ std::string BinanceSpotWsTradeUnit::buildOrderCancelJson(
     if (!crypto::str_cmp(tcmd.body.cancelOrder.orderId, "")) {
         j.append(R"(,"orderId":)");          j.append(tcmd.body.cancelOrder.orderId);
     } else {
-        j.append(R"(,"origClientOrderId":")");   j.append(escape_json_str(tcmd.body.cancelOrder.orderSysId));  j.push_back('"');
+        j.append(R"(,"origClientOrderId":")");   j.append(escape_json(tcmd.body.cancelOrder.orderSysId));  j.push_back('"');
     }
     j.append("}}");
     return j;

@@ -8,38 +8,11 @@
 
 
 namespace {
-    inline std::string host_of(const std::string& url) {
-        std::string h = url;
-        auto p = h.find("://");
-        if (p != std::string::npos) h = h.substr(p + 3);
-        auto q = h.find('/');
-        if (q != std::string::npos) h = h.substr(0, q);
-        return h;
-    }
     thread_local simdjson::ondemand::parser g_parser;
 
     constexpr int64_t kPendingTtlMs   = 30 * 1000;
     constexpr size_t  kPendingHardMax = 10000;
     constexpr int64_t kGcIntervalMs   = 5000;
-
-    inline std::string escape_json(std::string_view s) {
-        std::string out;
-        out.reserve(s.size() + 4);
-        for (char c : s) {
-            switch (c) {
-                case '"':  out += "\\\""; break;
-                case '\\': out += "\\\\"; break;
-                case '\n': out += "\\n";  break;
-                case '\r': out += "\\r";  break;
-                case '\t': out += "\\t";  break;
-                default:
-                    if (static_cast<unsigned char>(c) < 0x20) {
-                        char buf[8]; std::snprintf(buf, sizeof(buf), "\\u%04x", c); out += buf;
-                    } else { out += c; }
-            }
-        }
-        return out;
-    }
 
     inline int parse_int_id(std::string_view sv) {
         if (sv.empty()) return 0;

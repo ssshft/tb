@@ -14,14 +14,6 @@
 
 
 namespace {
-    inline std::string host_of(const std::string& url) {
-        std::string h = url;
-        auto p = h.find("://");
-        if (p != std::string::npos) h = h.substr(p + 3);
-        auto q = h.find('/');
-        if (q != std::string::npos) h = h.substr(0, q);
-        return h;
-    }
     thread_local simdjson::ondemand::parser g_parser;
 
     inline std::string hmac_sha256_base64(const std::string& secret, const std::string& data) {
@@ -33,26 +25,6 @@ namespace {
                data.size(),
                digest, &digest_len);
         return websocketpp::base64_encode(digest, digest_len);
-    }
-
-    inline std::string escape_json(const std::string& s) {
-        std::string out; out.reserve(s.size() + 4);
-        for (char c : s) {
-            switch (c) {
-                case '"': out += "\\\""; break;
-                case '\\': out += "\\\\"; break;
-                case '\n': out += "\\n"; break;
-                case '\r': out += "\\r"; break;
-                case '\t': out += "\\t"; break;
-                default:
-                    if (static_cast<unsigned char>(c) < 0x20) {
-                        char buf[8]; std::snprintf(buf, sizeof(buf), "\\u%04x", c); out += buf;
-                    } else {
-                        out += c;
-                    }
-            }
-        }
-        return out;
     }
 
     inline InstType okx_inst_to_enum(std::string_view s) {
