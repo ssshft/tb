@@ -116,7 +116,6 @@ void BinanceSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
         std::string msg(reinterpret_cast<const char*>(data), len);
         std::cout << "onWebsocketMsg: " << msg << std::endl;
 
-
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
         auto doc = g_parser.iterate(padded);
         if (doc.error()) {
