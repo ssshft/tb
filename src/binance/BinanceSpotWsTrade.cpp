@@ -254,7 +254,7 @@ void BinanceSpotWsTradeUnit::handleWsApiResponse(simdjson::ondemand::document& d
         LOG_WARN("TB {} spot ws-api unknown response id={}", acc.accountId, id);
         return;
     }
-    if (pending.type == pubsub::NewOrder) {
+    if (pending.type == pubsub::CMD_NEW_ORDER {
         onOrderPlaceResponse(pending, status, doc, recv_ns);
     } else {
         onOrderCancelResponse(pending, status, doc, recv_ns);
@@ -767,7 +767,7 @@ void BinanceSpotWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     std::string msg = buildOrderPlaceJson(wsId, tcmd, info, price_str, amount_str, side, type, tif, respTyp);
 
     // 先记 pending, 再发 msg —— 反过来的话回执可能先到达 lookup miss
-    recordPending(wsId, pubsub::NEW_ORDER, rcmd);
+    recordPending(wsId, pubsub::CMD_NEW_ORDER, rcmd);
     LOG_INFO("TB {} spot ws order.place id={} msg={}", acc.accountId, wsId, msg);
     pWsClient->send_text(std::move(msg));
 }
@@ -807,7 +807,7 @@ void BinanceSpotWsTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     const int wsId = nextWsId_.fetch_add(1, std::memory_order_relaxed);
     std::string msg = buildOrderCancelJson(wsId, tcmd, info);
 
-    recordPending(wsId, pubsub::CANCEL_ORDER, rcmd);
+    recordPending(wsId, pubsub::CMD_CANCEL_ORDER, rcmd);
     LOG_INFO("TB {} spot ws order.cancel id={} msg={}", acc.accountId, wsId, msg);
     pWsClient->send_text(std::move(msg));
 }
