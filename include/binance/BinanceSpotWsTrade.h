@@ -107,15 +107,15 @@ private:
     std::atomic<bool> wsLoggedIn_{false};
     std::atomic<int> nextWsId_{100};
 
-    tbb::concurrent_hash_map<int, WsPending>; pendingMap_;
+    tbb::concurrent_hash_map<int, WsPending> pendingMap_;
     std::atomic<int64_t> pendingLastGcMs_{0};
 
     // REST 端点 (query 才走)
     std::string balanceUrl = "/api/v3/account";
     std::string queryOrderUrl = "/api/v3/order";
 
-    constexpr int64_t kPendingTtlMs = 30 * 1000;
-    constexpr size_t kPendingHardMax = 10000;
-    constexpr int64_t kGcIntervalMs = 5000;
+    int64_t kPendingTtlMs = 30 * 1000;
+    size_t kPendingHardMax = 10000;
+    int64_t kGcIntervalMs = 5000;
 
 };
