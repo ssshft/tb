@@ -59,7 +59,7 @@ std::string BinanceSpotTradeUnit::buildSubscribeJson(long ts_ms, const std::stri
     return fmt::format(
         R"({{"id":"{}","method":"userDataStream.subscribe.signature",)"
         R"("params":{{"apiKey":"{}","timestamp":{},"recvWindow":5000,"signature":"{}"}}}})",
-        ts_ms, escape_json(acc.apiKey), ts_ms, escape_json(signature));
+        ts_ms, acc.apiKey, ts_ms, signature);
 }
 
 
@@ -75,7 +75,7 @@ void BinanceSpotTradeUnit::subWebsocekt() {
     // Binance ws-api server 主动 PING → beast 自动回 PONG (ServerOnly)。
     net::WsConfig cfg;
     cfg.url = acc.wsUrl;
-    cfg.ping_mode = ::net::WsConfig::PingMode::ServerOnly;
+    cfg.ping_mode = net::WsConfig::PingMode::ServerOnly;
     cfg.auto_reconnect = true;
     cfg.idle_timeout_sec = 60;
     // subscribe 不能塞进 cfg.subscribe_messages —— timestamp 5s 内失效, 重连必 stale。
