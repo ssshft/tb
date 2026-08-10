@@ -740,20 +740,20 @@ void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
                 doc.find_field_unordered("status").get(status_sv);
 
                 if (!origQ_sv.empty()) {
-                    rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(origQ_sv) * info_captured.magnifyNumber;
+                    rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(origQ_sv) * info.magnifyNumber;
                 }
 
                 if (!price_sv.empty()) {
-                    rcmd.body.orderResponse.limitPrice = crypto::fast_atod(price_sv) * info_captured.reduceNumber;
+                    rcmd.body.orderResponse.limitPrice = crypto::fast_atod(price_sv) * info.reduceNumber;
                 }
 
                 if (!execQ_sv.empty()) {
-                    rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(execQ_sv) * info_captured.magnifyNumber;
+                    rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(execQ_sv) * info.magnifyNumber;
                 }
 
                 if (rcmd.body.orderResponse.volumeTraded > 0 && !cumQ_sv.empty()) {
                     double cumQ = crypto::fast_atod(cumQ_sv);
-                    rcmd.body.orderResponse.tradePrice = cumQ / rcmd.body.orderResponse.volumeTraded * info_captured.reduceNumber;
+                    rcmd.body.orderResponse.tradePrice = cumQ / rcmd.body.orderResponse.volumeTraded * info.reduceNumber;
                 }
                 if (!status_sv.empty()) {
                     std::string st(status_sv);
