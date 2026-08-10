@@ -66,14 +66,14 @@ protected:
 
     sm::SecurityManager* smc{nullptr};
 
-    inline static thread_local simdjson::ondemand::parser g_parser;
-
     std::string newOrderUrl{""};
     std::string cancelOrderUrl{""};
     std::string queryOrderUrl{""};
     std::string accountUrl{""};
     std::string balanceUrl{""};
     std::string positionUrl{""};
+
+    inline static thread_local simdjson::ondemand::parser g_parser;
 };
 
 
