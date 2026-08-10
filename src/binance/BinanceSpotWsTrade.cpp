@@ -254,7 +254,7 @@ void BinanceSpotWsTradeUnit::handleWsApiResponse(simdjson::ondemand::document& d
         LOG_WARN("TB {} spot ws-api unknown response id={}", acc.accountId, id);
         return;
     }
-    if (pending.type == pubsub::CMD_NEW_ORDER {
+    if (pending.type == pubsub::CMD_NEW_ORDER) {
         onOrderPlaceResponse(pending, status, doc, recv_ns);
     } else {
         onOrderCancelResponse(pending, status, doc, recv_ns);
