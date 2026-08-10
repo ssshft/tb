@@ -121,9 +121,9 @@ void BinanceSpotWsTradeUnit::recordPending(int id, pubsub::CommandType type, con
 
     tbb::concurrent_hash_map<int, WsPending>::accessor acc;
     pendingMap_.insert(acc, id);
-    acc->type = type;
-    acc->rcmd = rcmd;
-    acc->ts_ms = now_ms;
+    acc->second.type = type;
+    acc->second.rcmd = rcmd;
+    acc->second.ts_ms = now_ms;
 }
 
 bool BinanceSpotWsTradeUnit::takePending(int id, WsPending& out) {
