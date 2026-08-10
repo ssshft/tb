@@ -127,13 +127,13 @@ void BinanceSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
         // ws-api 回复外层: {"id":"...","status":200,"result":{...}} 也可能命中,
         // userDataStream event 外层: {"event":{"e":"...", ...}}
         simdjson::ondemand::object ev;
-        if (doc.find_field_unordered("event").get(ev) != simdjson::SUCCESS) {
+        if (doc["event"].get(ev) != simdjson::SUCCESS) {
             // subscribe.signature 的 ACK / 心跳等, 无 event 字段, 忽略。
             return;
         }
 
         std::string_view e_sv;
-        if (ev.find_field_unordered("e").get(e_sv) != simdjson::SUCCESS) {
+        if (ev["e"].get(e_sv) != simdjson::SUCCESS) {
             return;
         }
 
@@ -155,32 +155,49 @@ void BinanceSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
 //     "B":[{"a":"BTC","f":"1.0","l":"0.0"},...] }
 void BinanceSpotTradeUnit::handleAccountPosition(simdjson::ondemand::object& ev) {
     simdjson::ondemand::array balances;
-    if (ev.find_field_unordered("B").get(balances) != simdjson::SUCCESS) {
+    if (ev["B"].get(balances) != simdjson::SUCCESS) {
         return;
     }
 
     // 先收集再回填 isLast (Binance 数组无长度头, ondemand 无 size())
     std::vector<pubsub::RCommand> pending;
-
+    
     for (auto b_val : balances) {
-        auto b = b_val.get_object();
-        if (b.error()) {
+        auto b_res = b_val.get_object();
+        if (b_res.error()) {
             continue;
         }
+        auto& b = b_res.value_unsafe();
 
-        std::string_view a_sv, f_sv, l_sv;
-        b["a"].get(a_sv);
-        b["f"].get(f_sv);
-        b["l"].get(l_sv);
+        std::string_view a_sv;
+        std::string_view f_sv;
+        std::string_view l_sv;
+        for (auto field : b) {
+            std::string_view k = field.unescaped_key().value_unsafe();
+
+            switch (k[0]) {
+                case 'a':
+                    field.value().get(a_sv);
+                    break;
+                case 'f':
+                    field.value().get(f_sv);
+                    break;
+                case 'l':
+                    field.value().get(l_sv);
+                    break;
+                default:
+                    break;
+            }
+        }
 
         pubsub::RCommand rcmd;
         memset(&rcmd, 0, sizeof(pubsub::RCommand));
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
         rcmd.body.balance.exchangeTypeEnum = BINANCE;
         rcmd.body.balance.instTypeEnum = SPOT;
-        crypto::copy_sv_to_char_array(rcmd.body.balance.accountId,  acc.accountId);
+        crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
         crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
-        crypto::copy_sv_to_char_array(rcmd.body.balance.currency,   crypto::to_upper(std::string(a_sv)));
+        crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(a_sv)));
         rcmd.body.balance.available = crypto::fast_atod(f_sv);
         rcmd.body.balance.frozen = crypto::fast_atod(l_sv);
         rcmd.body.balance.total = rcmd.body.balance.available + rcmd.body.balance.frozen;
@@ -198,7 +215,78 @@ void BinanceSpotTradeUnit::handleAccountPosition(simdjson::ondemand::object& ev)
 //     "Z":"cumQuoteQty", "q":"origQty", "p":"limitPx" }
 void BinanceSpotTradeUnit::handleExecutionReport(simdjson::ondemand::object& ev) {
     std::string_view s_sv;
-    if (ev.find_field_unordered("s").get(s_sv) != simdjson::SUCCESS) {
+    std::string_view c_sv;
+    std::string_view C_sv;
+    std::string_view S_sv;
+    std::string_view f_sv;
+    std::string_view o_sv;
+    std::string_view X_sv;
+    std::string_view l_sv;
+    std::string_view L_sv;
+    std::string_view z_sv;
+    std::string_view Z_sv;
+    std::string_view q_sv;
+    std::string_view p_sv;
+
+    int64_t i_val = 0;
+    std::string_view i_sv;
+    bool has_i = false;
+
+    for (auto field : ev) {
+        std::string_view k = field.unescaped_key().value_unsafe();
+
+        switch (k[0]) {
+            case 's':
+                field.value().get(s_sv);
+                break;
+            case 'c':
+                field.value().get(c_sv);
+                break;
+            case 'C':
+                field.value().get(C_sv);
+                break;
+            case 'S':
+                field.value().get(S_sv);
+                break;
+            case 'f':
+                field.value().get(f_sv);
+                break;
+            case 'o':
+                field.value().get(o_sv);
+                break;
+            case 'X':
+                field.value().get(X_sv);
+                break;
+            case 'i':
+                has_i = field.value().get(i_sv) == simdjson::SUCCESS;
+                if (!has_i) {
+                    field.value().get(i_sv);
+                }
+                break;
+            case 'l':
+                field.value().get(l_sv);
+                break;
+            case 'L':
+                field.value().get(L_sv);
+                break;
+            case 'z':
+                field.value().get(z_sv);
+                break;
+            case 'Z':
+                field.value().get(Z_sv);
+                break;
+            case 'q':
+                field.value().get(q_sv);
+                break;
+            case 'p':
+                field.value().get(p_sv);
+                break;
+            default:
+                break;
+        }
+    }
+
+    if (s_sv.empty()) {
         return;
     }
 
@@ -218,54 +306,35 @@ void BinanceSpotTradeUnit::handleExecutionReport(simdjson::ondemand::object& ev)
     crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
     crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
 
-    // orderId: Binance 用整数
-    int64_t i_val = 0;
-    if (ev.find_field_unordered("i").get(i_val) == simdjson::SUCCESS) {
+    if (has_i) {
         fmt::format_to(rcmd.body.orderResponse.orderId, "{}", i_val);
-    } else {
-        std::string_view i_sv;
-        if (ev.find_field_unordered("i").get(i_sv) == simdjson::SUCCESS) {
+    }
+    else {
+        if (!i_sv.empty()) {
             crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, i_sv);
         }
     }
 
     // orderSysId: 优先 C (origClientOrderId, 非空), 否则 c (clientOrderId)
-    std::string_view C_sv, c_sv;
-    bool used_C = false;
-    if (ev.find_field_unordered("C").get(C_sv) == simdjson::SUCCESS && !C_sv.empty()) {
+    if (!C_sv.empty()) {
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, C_sv);
-        used_C = true;
     }
-    if (!used_C && ev.find_field_unordered("c").get(c_sv) == simdjson::SUCCESS) {
+    if (!c_sv.empty()) {
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, c_sv);
     }
 
     rcmd.body.orderResponse.offsetFlag = OF_OPEN;
-    std::string_view S_sv;
-    if (ev.find_field_unordered("S").get(S_sv) == simdjson::SUCCESS && !S_sv.empty()) {
+    if (!S_sv.empty()) {
         rcmd.body.orderResponse.direction = (S_sv[0] == 'B') ? DT_LONG : DT_SHORT;
     }
 
-    std::string_view f_sv, o_sv;
-    ev.find_field_unordered("f").get(f_sv);
-    ev.find_field_unordered("o").get(o_sv);
     std::string tif(f_sv), oty(o_sv);
     rcmd.body.orderResponse.orderType = crypto::get_binance_ordertype(tif.c_str(), oty.c_str());
 
-    std::string_view X_sv;
-    if (ev.find_field_unordered("X").get(X_sv) == simdjson::SUCCESS) {
+    if (!X_sv.empty()) {
         std::string X_str(X_sv);
         rcmd.body.orderResponse.orderStatus = crypto::get_binance_orderstatus(X_str);
     }
-
-    std::string_view l_sv, L_sv, z_sv, Z_sv, q_sv, p_sv;
-    ev.find_field_unordered("l").get(l_sv);
-    ev.find_field_unordered("L").get(L_sv);
-    ev.find_field_unordered("z").get(z_sv);
-    ev.find_field_unordered("Z").get(Z_sv);
-    ev.find_field_unordered("q").get(q_sv);
-    ev.find_field_unordered("p").get(p_sv);
-
     if (!l_sv.empty()) {
         rcmd.body.orderResponse.tradeDiff = crypto::fast_atod(l_sv) * info.magnifyNumber;
     }
