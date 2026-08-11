@@ -132,16 +132,24 @@ void BinanceSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
         }
 
         std::string_view e_sv;
-        if (ev["e"].get(e_sv) != simdjson::SUCCESS) {
-            return;
-        }
+        for (auto field : ev) {
+            std::string_view k = field.unescaped_key().value_unsafe();
+            std::cout << "ws: " << std::string(k) << std::endl;
+        }   
 
-        if (e_sv == "outboundAccountPosition") {
-            handleAccountPosition(ev);
-        }
-        else if (e_sv == "executionReport") {
-            handleExecutionReport(ev);
-        }
+
+
+        // std::string_view e_sv;
+        // if (ev["e"].get(e_sv) != simdjson::SUCCESS) {
+        //     return;
+        // }
+
+        // if (e_sv == "outboundAccountPosition") {
+        //     handleAccountPosition(ev);
+        // }
+        // else if (e_sv == "executionReport") {
+        //     handleExecutionReport(ev);
+        // }
         // 其他 e 值 (balanceUpdate / listStatus 等) 目前策略不消费, 跳过。
     }
     catch (const std::exception& e) {
@@ -231,8 +239,7 @@ void BinanceSpotTradeUnit::handleExecutionReport(simdjson::ondemand::object& ev)
     std::string_view i_sv;
     bool has_i = false;
 
-    auto& ev_value = ev.value_unsafe();
-    for (auto field : ev_value) {
+    for (auto field : ev) {
         std::string_view k = field.unescaped_key().value_unsafe();
 
         switch (k[0]) {
