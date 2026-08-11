@@ -446,9 +446,9 @@ void BinanceSpotTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                 rcmd.body.balance.instTypeEnum = SPOT;
                 crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
-                crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(asset_sv)));
-                rcmd.body.balance.available = crypto::fast_atod(free_sv);
-                rcmd.body.balance.frozen = crypto::fast_atod(locked_sv);
+                crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(a_sv)));
+                rcmd.body.balance.available = crypto::fast_atod(f_sv);
+                rcmd.body.balance.frozen = crypto::fast_atod(l_sv);
                 rcmd.body.balance.total = rcmd.body.balance.available + rcmd.body.balance.frozen;
                 rcmd.body.balance.updateTime = crypto::getCurrentTime();
                 rcmd.body.balance.apiSourceEnum = AS_REST;
