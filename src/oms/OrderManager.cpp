@@ -60,6 +60,7 @@ bool om::OrderManager::processTcmd(pubsub::TCommand& tcmd) {
                 return true;
             }
             ADD_NEW_ORDER_2_ORDER_RESPONSE(tcmd)
+            strncpy(tcmd.body.newOrder.orderSysId, rcmd.body.orderResponse.orderSysId, ORDER_SIZE);
             orderSysId2OrderResponseMap[rcmd.body.orderResponse.orderSysId] = rcmd;
             const std::string& clientOrderIdStra = fmt::format("{}{}", rcmd.body.orderResponse.strategyId, rcmd.body.orderResponse.clientOrderId);
             clientOrderId2OrderSysIdMap[clientOrderIdStra] = rcmd.body.orderResponse.orderSysId;

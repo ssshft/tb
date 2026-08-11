@@ -367,16 +367,17 @@ void BinanceSpotTradeUnit::handleExecutionReport(simdjson::ondemand::object& ev)
 // ============================================================================
 // Trade API
 // ============================================================================
-void BinanceSpotTradeUnit::query_account(const pubsub::TCommand& /*tcmd*/) {
+void BinanceSpotTradeUnit::query_account(const pubsub::TCommand& tcmd) {
     // 走 query_balance 已够, 这里保留占位
+    query_balance(tcmd);
 }
 
-void BinanceSpotTradeUnit::query_position(const pubsub::TCommand& /*tcmd*/) {
+void BinanceSpotTradeUnit::query_position(const pubsub::TCommand& tcmd) {
     // Spot 无 position
 }
 
 // ---- GET /api/v3/account?recvWindow=5000&timestamp=...&signature=... ----
-void BinanceSpotTradeUnit::query_balance(const pubsub::TCommand& /*tcmd*/) {
+void BinanceSpotTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
     if (!pRestClient) {
         LOG_ERROR("TB {} query_balance: rest not ready", acc.accountId);
         return;
@@ -402,23 +403,41 @@ void BinanceSpotTradeUnit::query_balance(const pubsub::TCommand& /*tcmd*/) {
             }
 
             simdjson::ondemand::array balances;
-            if (doc.find_field_unordered("balances").get(balances) != simdjson::SUCCESS) {
+            if (doc["balances"].get(balances) != simdjson::SUCCESS) {
                 LOG_ERROR("TB {} query_balance no 'balances': {}", acc.accountId, resp.body);
                 return;
             }
 
             std::vector<pubsub::RCommand> pending;
             pending.reserve(32);
+
             for (auto b_val : balances) {
-                auto b = b_val.get_object();
-                if (b.error()) {
+                auto b_res = b_val.get_object();
+                if (b_res.error()) {
                     continue;
                 }
+                auto& b = b_res.value_unsafe();
 
-                std::string_view asset_sv, free_sv, locked_sv;
-                b["asset"].get(asset_sv);
-                b["free"].get(free_sv);
-                b["locked"].get(locked_sv);
+                std::string_view a_sv;
+                std::string_view f_sv;
+                std::string_view l_sv;
+                for (auto field : b) {
+                    std::string_view k = field.unescaped_key().value_unsafe();
+
+                    switch (k[0]) {
+                        case 'a':
+                            field.value().get(a_sv);
+                            break;
+                        case 'f':
+                            field.value().get(f_sv);
+                            break;
+                        case 'l':
+                            field.value().get(l_sv);
+                            break;
+                        default:
+                            break;
+                    }
+                }
 
                 pubsub::RCommand rcmd;
                 memset(&rcmd, 0, sizeof(pubsub::RCommand));
@@ -571,7 +590,7 @@ void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
         [this, rcmd, info](boost::system::error_code ec, net::HttpResponse resp) mutable {
             if (ec) {
                 LOG_ERROR("TB {} add_new_order ec: {}", acc.accountId, ec.message());
-                rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+                rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
                 rcmd.body.orderResponse.errorId = NetworkError;
                 crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, ec.message());
                 rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
@@ -589,7 +608,7 @@ void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
                 auto doc = g_parser.iterate(padded);
                 if (doc.error()) {
                     LOG_ERROR("TB {} add_new_order parse err: {}", acc.accountId, resp.body);
-                    rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+                    rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
                     rcmd.body.orderResponse.errorId = UnknownError;
                     rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
                     PUSH_RCMD(rcmd)
