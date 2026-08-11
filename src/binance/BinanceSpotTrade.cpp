@@ -595,7 +595,7 @@ void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
                 return;
             }
 
-            auto& doc_value = doc.get_object().value_unsafe();
+            auto doc_value = doc.get_object().value_unsafe();
 
             int64_t code = 0;
             int64_t orderId = 0;
@@ -736,7 +736,7 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
                     return;
                 }
 
-                auto& doc_value = doc.get_object().value_unsafe();
+                auto doc_value = doc.get_object().value_unsafe();
 
                 int64_t code = 0;
                 int64_t orderId = 0;
@@ -842,7 +842,7 @@ void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
                     return;
                 }
 
-                auto& doc_value = doc.get_object().value_unsafe();
+                auto doc_value = doc.get_object().value_unsafe();
 
                 int64_t code = 0;
                 int64_t orderId = 0;
