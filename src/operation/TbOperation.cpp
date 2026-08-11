@@ -110,30 +110,30 @@ void TbOperation::run() {
     }
 
     LOG_INFO("start execute tcmd");
-    /*
+    
     std::thread executeThread(&TbOperation::execute, this);
     executeThread.detach();
 
     std::thread executeTcmdThread(&TbOperation::executeTcmd, this);
     executeTcmdThread.detach();
-    */
+    
 }
 
 void TbOperation::execute() {
     pubsub::TCommand tcmd;
     pubsub::RCommand rcmd;
     while (1) {
-        if (utrade2TbTCommandShm->pop(tcmd)) {
+        if (utrade2TbTCommandShm->pop(tcmd)) { // 策略端的请求
             LOG_INFO("{}", tcmd.getString());
             processTcmd(tcmd);
         }
 
-        if (rcmdInnerQueue.pop(rcmd)) {
+        if (rcmdInnerQueue.pop(rcmd)) {  // 系统内部的回报
             LOG_INFO("{}", rcmd.getString());
             PUBLISH_RCMD(rcmd);
         }
 
-        if (tb2OmsRCommandInnerQueue.pop(rcmd)) {
+        if (tb2OmsRCommandInnerQueue.pop(rcmd)) { // 交易所返回的回报
             LOG_INFO("{}", rcmd.getString());
             processRcmd(rcmd);
         }
