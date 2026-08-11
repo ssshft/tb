@@ -595,6 +595,8 @@ void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
                 return;
             }
 
+            auto doc_value = doc.value_unsafe();
+
             int64_t code = 0;
             int64_t orderId = 0;
             std::string_view msg_sv;
@@ -604,7 +606,7 @@ void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             bool has_code = false;
             bool has_orderId = false;
 
-            for (auto field : doc) {
+            for (auto field : doc_value) {
                 std::string_view k = field.unescaped_key().value_safe();
 
                 if (k == "code") {
@@ -734,6 +736,8 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
                     return;
                 }
 
+                auto doc_value = doc.value_unsafe();
+
                 int64_t code = 0;
                 int64_t orderId = 0;
                 std::string_view msg_sv;
@@ -743,7 +747,7 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
                 bool has_code = false;
                 bool has_orderId = false;
 
-                for (auto field : doc) {
+                for (auto field : doc_value) {
                     std::string_view k = field.unescaped_key().value_safe();
                     if (k == "code") {
                         has_code = field.value().get(code) == simdjson::SUCCESS;
@@ -838,6 +842,8 @@ void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
                     return;
                 }
 
+                auto doc_value = doc.value_unsafe();
+
                 int64_t code = 0;
                 int64_t orderId = 0;
                 std::string_view origQ_sv;
@@ -849,7 +855,7 @@ void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
                 bool has_code = false;
                 bool has_orderId = false;
 
-                for (auto field : doc) {
+                for (auto field : doc_value) {
                     std::string_view k = field.unescaped_key().value_safe();
                     if (k == "code") {
                         has_code = field.value().get(code) == simdjson::SUCCESS;
