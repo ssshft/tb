@@ -34,8 +34,8 @@ int main(int argc, char *argv[]){
     std::string tb2UtradeRCommandSHM = tradeConfig["OMS"]["Tb2UtradeRCommandSHM"].GetString();
 
     om::TradeClient* tradeClient = new om::TradeClient(utrade2TbTCommandSHM);
-    std::shared_ptr<Tb2TradeRCommandPubSHM> rcmdQueue = std::make_shared<Tb2TradeRCommandPubSHM>(tb2UtradeRCommandSHM.c_str());
-    
+    std::shared_ptr<Tb2TradeRCommandSubSHM> rcmdQueue = std::make_shared<Tb2TradeRCommandSubSHM>(tb2UtradeRCommandSHM.c_str());
+
     std::thread t([&]() {
         pubsub::RCommand rcmd;
         pubsub::Position position;
