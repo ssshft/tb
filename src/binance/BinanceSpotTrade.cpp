@@ -595,7 +595,7 @@ void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
                 return;
             }
 
-            auto& doc_value = doc.value_unsafe();
+            auto& doc_value = doc.get_object().value_unsafe();
 
             int64_t code = 0;
             int64_t orderId = 0;
@@ -607,7 +607,7 @@ void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             bool has_orderId = false;
 
             for (auto field : doc_value) {
-                std::string_view k = field.unescaped_key().value_safe();
+                std::string_view k = field.unescaped_key().value_unsafe();
 
                 if (k == "code") {
                     has_code = field.value().get(code) == simdjson::SUCCESS;
@@ -736,7 +736,7 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
                     return;
                 }
 
-                auto& doc_value = doc.value_unsafe();
+                auto& doc_value = doc.get_object().value_unsafe();
 
                 int64_t code = 0;
                 int64_t orderId = 0;
@@ -748,7 +748,7 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
                 bool has_orderId = false;
 
                 for (auto field : doc_value) {
-                    std::string_view k = field.unescaped_key().value_safe();
+                    std::string_view k = field.unescaped_key().value_unsafe();
                     if (k == "code") {
                         has_code = field.value().get(code) == simdjson::SUCCESS;
                     }
@@ -842,7 +842,7 @@ void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
                     return;
                 }
 
-                auto& doc_value = doc.value_unsafe();
+                auto& doc_value = doc.get_object().value_unsafe();
 
                 int64_t code = 0;
                 int64_t orderId = 0;
@@ -856,7 +856,7 @@ void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
                 bool has_orderId = false;
 
                 for (auto field : doc_value) {
-                    std::string_view k = field.unescaped_key().value_safe();
+                    std::string_view k = field.unescaped_key().value_unsafe();
                     if (k == "code") {
                         has_code = field.value().get(code) == simdjson::SUCCESS;
                     }
