@@ -393,6 +393,7 @@ void BinanceSpotTradeUnit::query_balance(const pubsub::TCommand& /*tcmd*/) {
             return;
         }
         try {
+            std::cout << "query balance: " << resp.body << std::endl;
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -583,6 +584,7 @@ void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             }
 
             try {
+                std::cout << "add new order: " << resp.body << std::endl;
                 simdjson::padded_string padded(resp.body);
                 auto doc = g_parser.iterate(padded);
                 if (doc.error()) {
@@ -701,6 +703,7 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
                 return;
             }
             try {
+                std::cout << "cancel order: " << resp.body << std::endl;
                 simdjson::padded_string padded(resp.body);
                 auto doc = g_parser.iterate(padded);
                 if (doc.error()) {
@@ -780,6 +783,7 @@ void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
                 return;
             }
             try {
+                std::cout << "query order: " << resp.body << std::endl;
                 simdjson::padded_string padded(resp.body);
                 auto doc = g_parser.iterate(padded);
                 if (doc.error()) {
