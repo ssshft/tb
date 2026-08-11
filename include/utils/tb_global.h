@@ -49,7 +49,7 @@ constexpr auto ORDER_REJECTED_TIME_OUT = 30 * 1e6;
 #define QUERY_ORDER_TCMD_2_RCMD(tcmd) \
     pubsub::RCommand rcmd; \
     memset(&rcmd, 0, sizeof(pubsub::RCommand)); \
-    rcmd.cmdTypeEnum = pubsub::CMD_RPT_CANCEL_ORDER; \
+    rcmd.cmdTypeEnum = pubsub::CMD_RPT_QUERY_ORDER \
     rcmd.body.orderResponse.exchangeTypeEnum = tcmd.body.queryOrder.exchangeTypeEnum; \
     rcmd.body.orderResponse.instTypeEnum = tcmd.body.queryOrder.instTypeEnum; \
     strncpy(rcmd.body.orderResponse.accountId, tcmd.body.queryOrder.accountId, ACCOUNTID_SIZE); \
