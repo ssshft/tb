@@ -595,7 +595,7 @@ void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
                 return;
             }
 
-            auto doc_value = doc.value_unsafe();
+            auto& doc_value = doc.value_unsafe();
 
             int64_t code = 0;
             int64_t orderId = 0;
@@ -644,7 +644,7 @@ void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
                 PUSH_RCMD(rcmd)
             }
             else {
-                fmt::format_to(rcmd.body.orderResponse.orderId, "{}", oid);
+                fmt::format_to(rcmd.body.orderResponse.orderId, "{}", orderId);
                 if (!execQ_sv.empty()) {
                     rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(execQ_sv) * info.magnifyNumber;
                 }
@@ -736,7 +736,7 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
                     return;
                 }
 
-                auto doc_value = doc.value_unsafe();
+                auto& doc_value = doc.value_unsafe();
 
                 int64_t code = 0;
                 int64_t orderId = 0;
@@ -778,7 +778,7 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
                 }
 
                 if (has_orderId) {
-                    fmt::format_to(rcmd.body.orderResponse.orderId, "{}", oid);
+                    fmt::format_to(rcmd.body.orderResponse.orderId, "{}", orderId);
                     if (!execQ_sv.empty()) {
                         rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(execQ_sv) * info.magnifyNumber;
                     }
@@ -842,7 +842,7 @@ void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
                     return;
                 }
 
-                auto doc_value = doc.value_unsafe();
+                auto& doc_value = doc.value_unsafe();
 
                 int64_t code = 0;
                 int64_t orderId = 0;
@@ -893,7 +893,7 @@ void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
                 }
 
                 if (has_orderId) {
-                    fmt::format_to(rcmd.body.orderResponse.orderId, "{}", oid);
+                    fmt::format_to(rcmd.body.orderResponse.orderId, "{}", orderId);
                 
                     if (!origQ_sv.empty()) {
                         rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(origQ_sv) * info.magnifyNumber;
