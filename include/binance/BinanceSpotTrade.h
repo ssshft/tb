@@ -39,21 +39,13 @@ private:
     // ---- 签名 / 构造 URL 助手 ----
     // 把 (kvs) 拼成 "k1=v1&k2=v2&..." 追加 signature, 返回 "path?...&signature=..."
     // Binance REST 契约: 按 caller 给的顺序拼 (顺序不必字母序, 只要 sign 的 query 跟 send 的 query 完全一致)。
-    std::string buildSignedPath(std::string_view basePath,
-                                const std::vector<std::pair<std::string, std::string>>& kvs) const;
+    std::string buildSignedPath(std::string_view basePath, const std::vector<std::pair<std::string, std::string>>& kvs) const;
 
     // WS ws-api userDataStream.subscribe.signature: kvs **必须字母序** 拼串再 HMAC。
     std::string buildWsSigPayload(std::vector<std::pair<std::string, std::string>> kvs) const;
 
     // 拼 JSON body {"id":"...","method":"...","params":{...}}, 手拼避免拉 rapidjson。
     std::string buildSubscribeJson(long ts_ms, const std::string& signature) const;
-
-    // ---- 解析助手 (simdjson ondemand) ----
-    // 走 outboundAccountPosition (余额 push) → PUSH_RCMD
-    void handleAccountPosition(simdjson::ondemand::object& ev);
-    // 走 executionReport (订单状态 push) → PUSH_RCMD
-    void handleExecutionReport (simdjson::ondemand::object& ev);
-
 
 private:
     // REST 相对路径
