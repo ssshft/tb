@@ -11,10 +11,20 @@ BinanceTradeClient::BinanceTradeClient(rapidjson::Value& accCfg, sm::SecurityMan
         
         if (acc.instTypeEnum == SPOT) {
             std::cout << "----------spot created-------" << acc.accountId << " " << acc.strategyId << std::endl;
-            spotTradeUnit = new BinanceSpotTradeUnit(acc, smc);
+            if (acc.apiMode == AM_REST) {
+                spotTradeUnit = new BinanceSpotTradeUnit(acc, smc);
+            }
+            else if (acc.apiMode == AM_WS) {
+                spotTradeUnit = new BinanceSpotWsTradeUnit(acc, smc);
+            }
         }
         else if (acc.instTypeEnum == USDT_SWAP) {
-            ufTradeUnit = new BinanceUFTradeUnit(acc, smc);
+            if (acc.apiMode == AM_REST) {
+                ufTradeUnit = new BinanceUFTradeUnit(acc, smc);
+            }
+            else if (acc.apiMode == AM_WS) {
+                ufTradeUnit = new BinanceUFWsTradeUnit(acc, smc);
+            }
         }
     #endif
     
@@ -72,7 +82,6 @@ void BinanceTradeClient::initial() {
 #endif
 
 }
-
 
 void BinanceTradeClient::query_account(const pubsub::TCommand& tcmd) {
 #ifdef USE_BINANCE_UNIFIED

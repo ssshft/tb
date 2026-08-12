@@ -161,9 +161,9 @@ void BinanceSpotWsTradeUnit::subWebsocekt() {
 
     net::WsConfig cfg;
     cfg.url = acc.wsUrl;   // wss://ws-api.binance.com/ws-api/v3
-    cfg.ping_mode = ::net::WsConfig::PingMode::ServerOnly;
+    cfg.ping_mode = net::WsConfig::PingMode::ServerOnly;
     cfg.auto_reconnect = true;
-    cfg.idle_timeout_sec   = 60;
+    cfg.idle_timeout_sec = 60;
     LOG_INFO("TB {} spot ws-api {} rest {}", acc.accountId, cfg.url, restHost);
     subWebsocketWithConfig(std::move(cfg));
 }
@@ -201,6 +201,10 @@ void BinanceSpotWsTradeUnit::onCloseMsg(int code, const std::string& reason) {
 // ============================================================================
 void BinanceSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /*isBinary*/, int64_t recv_ns) {
     try {
+        std::string msg(reinterpret_cast<const char*>(data), len);
+        std::cout << "onWebsocketMsg: " << msg << std::endl;
+        return;
+
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
         auto doc_res = g_parser.iterate(padded);
         if (doc_res.error()) {

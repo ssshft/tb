@@ -1,7 +1,9 @@
 #pragma once
 #include "base/BaseTrade.h"
 #include "binance/BinanceSpotTrade.h"
+#include "binance/BinanceSpotWsTrade.h"
 #include "binance/BinanceUFTrade.h"
+#include "binance/BinanceUFWsTrade.h
 // #include "binance/BinanceCFTradingClient.h"
 #include "binance/BinanceUnifiedTrade.h"
 
@@ -22,8 +24,7 @@ public:
     virtual void query_balance(const pubsub::TCommand& tcmd);
 
 protected:
-    BinanceSpotTradeUnit* spotTradeUnit = nullptr;
-    BinanceUFTradeUnit* ufTradeUnit = nullptr;
-    // BinanceCFTradingClient *binanceCFTradingClient = nullptr;
-    BinanceUnifiedTradeUnit* unifiedTradeUnit = nullptr;
+    BaseTradeUnit* spotTradeUnit = nullptr;
+    BaseTradeUnit* ufTradeUnit = nullptr;
+    BaseTradeUnit* unifiedTradeUnit = nullptr;
 };
