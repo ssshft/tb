@@ -257,25 +257,18 @@ void BinanceSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, boo
                 field.value().get(status);
             }
             else if (k == "result") {
-                has_result = field.value().get(result) == simdjson::SUCCESS;
+                has_result = field.value().get(result) == simdjson::SUCCESS);
+                break;
             }
             else if (k == "event") {
-                has_event = field.value().get(ev) == simdjson::SUCCESS;
+                has_event = field.value().get(ev) == simdjson::SUCCESS);
+                break;
             }
             else if (k == "error") {
                 has_error = field.value().get(error) == simdjson::SUCCESS;
+                break;
             }
         }
-
-        int64_t orderId = 0;
-        for (auto field : result) {
-            std::string_view k = field.unescaped_key().value_unsafe();
-            std::cout << "----" << std::string(k) << "====" << std::endl;
-            if (k == "orderId") {
-                field.value().get(orderId);
-            }
-        }
-
 
         if (has_id) {
             if (id == kSessionLogonId) {
@@ -305,7 +298,7 @@ void BinanceSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, boo
                 WsPending pending;
                 if (takePending(id, pending)) {
                     if (status == 200 && has_result) {
-                        // handleWsApiResponse(pending, result);
+                        handleWsApiResponse(pending, result);
 
                     }
                     else {
@@ -321,7 +314,7 @@ void BinanceSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, boo
         }
 
         if (has_event) {
-            //handleUserDataEvent(ev);
+            handleUserDataEvent(ev);
         }
     } catch (const std::exception& e) {
         LOG_ERROR("TB {} ws msg exc: {}", acc.accountId, e.what());
