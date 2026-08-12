@@ -402,7 +402,7 @@ void BinanceUFTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                 return;
             }
 
-            std::vector<pubsub::RCommand> pending;
+            std::vector<pubsub::RCommand> pendingBalances;
             pending.reserve(32);
 
             for (auto b_val : assets) {
@@ -445,10 +445,10 @@ void BinanceUFTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                 rcmd.body.balance.total = crypto::fast_atod(walletBalance_sv);
                 rcmd.body.balance.updateTime = crypto::getCurrentTime();
                 rcmd.body.balance.apiSourceEnum = AS_REST;
-                pending.emplace_back(rcmd);
+                pendingBalances.emplace_back(rcmd);
             }
 
-            if (pending.empty()) {
+            if (pendingBalances.empty()) {
                 pubsub::RCommand rcmd;
                 memset(&rcmd, 0, sizeof(pubsub::RCommand));
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
@@ -463,9 +463,9 @@ void BinanceUFTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                 PUSH_RCMD(rcmd);
                 return;
             }
-            for (size_t i = 0; i < pending.size(); ++i) {
-                pending[i].body.balance.isLast = (i + 1 == pending.size());
-                PUSH_RCMD(pending[i]);
+            for (size_t i = 0; i < pendingBalances.size(); ++i) {
+                pendingBalances[i].body.balance.isLast = (i + 1 == pendingBalances.size());
+                PUSH_RCMD(pendingBalances[i]);
             }
 
 
@@ -475,7 +475,7 @@ void BinanceUFTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                 return;
             }
 
-            std::vector<pubsub::RCommand> pending;
+            std::vector<pubsub::RCommand> pendingPositions;
             for (auto b_val : positions) {
                 auto b_res = b_val.get_object();
                 if (b_res.error()) {
@@ -559,10 +559,10 @@ void BinanceUFTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                 rcmd.body.position.adlQuantile = static_cast<int>(adl) + 1;
                 rcmd.body.position.updateTime = crypto::getCurrentTime();
                 rcmd.body.position.apiSourceEnum = AS_REST;
-                pending.emplace_back(rcmd);
+                pendingPositions.emplace_back(rcmd);
             }
 
-            if (pending.empty()) {
+            if (pendingPositions.empty()) {
                 pubsub::RCommand rcmd;
                 memset(&rcmd, 0, sizeof(pubsub::RCommand));
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
@@ -577,21 +577,10 @@ void BinanceUFTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                 PUSH_RCMD(rcmd);
                 return;
             }
-            for (size_t i = 0; i < pending.size(); ++i) {
-                pending[i].body.position.isLast = (i + 1 == pending.size());
-                PUSH_RCMD(pending[i]);
+            for (size_t i = 0; i < pendingPositions.size(); ++i) {
+                pendingPositions[i].body.position.isLast = (i + 1 == pendingPositions.size());
+                PUSH_RCMD(pendingPositions[i]);
             }
-
-
-
-
-
-
-
-
-
-
-
         }
         catch (const std::exception& e) {
             LOG_ERROR("TB {} UF query_balance cb exc: {}", acc.accountId, e.what());
