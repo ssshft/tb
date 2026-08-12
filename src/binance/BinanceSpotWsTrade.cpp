@@ -337,7 +337,7 @@ void BinanceSpotWsTradeUnit::handleWsApiResponse(WsPending& pending, simdjson::o
 
     if (pending.type == pubsub::CMD_NEW_ORDER) {
         int64_t orderId = 0;
-        for (auto field : ev) {
+        for (auto field : result) {
             std::string_view k = field.unescaped_key().value_unsafe();
             if (k == "orderId") {
                 field.value().get(orderId);
