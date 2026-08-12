@@ -27,7 +27,6 @@ RcmdInnerQueue rcmdInnerQueue;
     rcmd.body.orderResponse.orderStatus = OS_PENDING_NEW; \
     rcmd.body.orderResponse.updateTime = crypto::getCurrentTime(); \
     rcmd.body.orderResponse.apiSourceEnum = AS_ADD_NEW_ORDER; \
-    rcmdInnerQueue.push(rcmd);\
     
 
 om::OrderManager::OrderManager() {
@@ -60,9 +59,9 @@ bool om::OrderManager::processTcmd(pubsub::TCommand& tcmd) {
                 return true;
             }
             ADD_NEW_ORDER_2_ORDER_RESPONSE(tcmd)
+            rcmdInnerQueue.push(rcmd);
             strncpy(tcmd.body.newOrder.orderSysId, rcmd.body.orderResponse.orderSysId, ORDER_SIZE);
             orderSysId2OrderResponseMap[rcmd.body.orderResponse.orderSysId] = rcmd;
-            rcmdInnerQueue.push(rcmd);
             const std::string& clientOrderIdStra = fmt::format("{}{}", rcmd.body.orderResponse.strategyId, rcmd.body.orderResponse.clientOrderId);
             clientOrderId2OrderSysIdMap[clientOrderIdStra] = rcmd.body.orderResponse.orderSysId;
             return true;
