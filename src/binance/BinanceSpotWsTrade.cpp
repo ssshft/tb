@@ -734,7 +734,7 @@ void BinanceSpotWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
 
     std::cout << "isConnected.load(): " << isConnected.load() << std::endl;
     std::cout << "wsLoggedIn_.load(): " << wsLoggedIn_.load() << std::endl;
-    std::cout << "signer_.load(): " << signer_.load() << std::endl;
+    std::cout << "signer_.load(): " << signer_.valid() << std::endl;
 
     if (!pWsClient) {
         std::cout << "pWsClient is null" << std::endl;
