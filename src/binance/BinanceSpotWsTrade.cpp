@@ -230,20 +230,86 @@ void BinanceSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, boo
         std::cout << "onWebsocketMsg: " << msg << std::endl;
 
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
-        auto doc_res = g_parser.iterate(padded);
-        if (doc_res.error()) {
+        auto doc = g_parser.iterate(padded);
+        if (doc.error()) {
             return;
         }
-        auto& doc = doc_res.value_unsafe();
 
+        auto doc_value = doc.get_object().value_unsafe();
+    
         // ws-api 响应有 "id" 字段, userDataStream 推送外层是 {"event":{...}}
-        int64_t id_val = 0;
-        if (doc.find_field_unordered("id").get(id_val) == simdjson::SUCCESS) {
-            handleWsApiResponse(doc, recv_ns);
-            return;
-        }
+        int64_t id = 0;
+        int status = 0;
         simdjson::ondemand::object ev;
-        if (doc.find_field_unordered("event").get(ev) == simdjson::SUCCESS) {
+        simdjson::ondemand::object result;
+        simdjson::ondemand::object error;
+        bool has_id = false;
+        bool has_result = false;
+        bool has_event = false;
+        bool has_error = false;
+
+        for (auto field : doc_value) {
+            std::string_view k = field.unescaped_key().value_unsafe();
+            if (k == "id") {
+                has_id = field.value().get(id) == simdjson::SUCCESS;
+            }
+            else if (k == "status") {
+                field.value().get(status);
+            }
+            else if (k == "result") {
+                has_result = field.value().get(result) == simdjson::SUCCESS;
+            }
+            else if (k == "event") {
+                has_event = field.value().get(ev) == simdjson::SUCCESS;
+            }
+            else if (k == "error") {
+                has_error = field.value().get(error) == simdjson::SUCCESS;
+            }
+        }
+
+        if (has_id) {
+            if (id == kSessionLogonId) {
+                if (status == 200) {
+                    wsLoggedIn_.store(true);
+                    LOG_INFO("TB {} spot session.logon OK, will subscribe userDataStream", acc.accountId);
+                    if (pWsClient) {
+                        pWsClient->send_text(buildUserSubscribeJson());
+                    }
+                } else {
+                    wsLoggedIn_.store(false);
+                    if (has_error) {
+                        std::string_view msg_sv;
+                        error["msg"].get(msg_sv);
+                        LOG_ERROR("TB {} spot session.logon FAILED status={} msg={}", acc.accountId, status, msg_sv);
+                    }
+                }
+            }
+            else if (id == kUserStreamSubId) {
+                if (status == 200) {
+                    LOG_INFO("TB {} spot userDataStream.subscribe OK", acc.accountId);
+                } else {
+                    LOG_ERROR("TB {} spot userDataStream.subscribe FAILED status={}", acc.accountId, status);
+                }
+            }
+            else {
+                WsPending pending;
+                if (takePending(id, pending)) {
+                    if (status == 200 && has_result) {
+                        handleWsApiResponse(pending, result);
+                    }
+                    else {
+                        if (has_error) {
+                            handleWsApiError(pending, error);
+                        }
+                    }     
+                }
+                else {
+                    LOG_WARN("TB {} spot ws-api unknown response id={}", acc.accountId, id);
+                }
+            }
+        }
+
+        if (has_event) {
             handleUserDataEvent(ev);
         }
     } catch (const std::exception& e) {
@@ -255,120 +321,13 @@ void BinanceSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, boo
 // ============================================================================
 // ws-api 响应分派
 // ============================================================================
-void BinanceSpotWsTradeUnit::handleWsApiResponse(simdjson::ondemand::document& doc, int64_t recv_ns) {
-    int64_t id_val = 0;
-    doc.find_field_unordered("id").get(id_val);
-    const int id = static_cast<int>(id_val);
-
-    int64_t status_val = 0;
-    doc.find_field_unordered("status").get(status_val);
-    const int status = static_cast<int>(status_val);
-
-    if (id == kSessionLogonId) {
-        onLogonResponse(status, doc);
-        return;
-    }
-    if (id == kUserStreamSubId) {
-        if (status == 200) {
-            LOG_INFO("TB {} spot userDataStream.subscribe OK", acc.accountId);
-        } else {
-            LOG_ERROR("TB {} spot userDataStream.subscribe FAILED status={}", acc.accountId, status);
-        }
-        return;
-    }
-
-    WsPending pending;
-    if (!takePending(id, pending)) {
-        LOG_WARN("TB {} spot ws-api unknown response id={}", acc.accountId, id);
-        return;
-    }
-    if (pending.type == pubsub::CMD_NEW_ORDER) {
-        onOrderPlaceResponse(pending, status, doc, recv_ns);
-    } else {
-        onOrderCancelResponse(pending, status, doc, recv_ns);
-    }
-}
-
-void BinanceSpotWsTradeUnit::onLogonResponse(int status, simdjson::ondemand::document& doc) {
-    if (status == 200) {
-        wsLoggedIn_.store(true);
-        LOG_INFO("TB {} spot session.logon OK, will subscribe userDataStream", acc.accountId);
-        if (pWsClient) {
-            pWsClient->send_text(buildUserSubscribeJson());
-        }
-    } else {
-        wsLoggedIn_.store(false);
-        std::string_view msg_sv;
-        simdjson::ondemand::object err;
-        if (doc.find_field_unordered("error").get(err) == simdjson::SUCCESS) {
-            err.find_field_unordered("msg").get(msg_sv);
-        }
-        LOG_ERROR("TB {} spot session.logon FAILED status={} msg={}", acc.accountId, status, msg_sv);
-    }
-}
-
-void BinanceSpotWsTradeUnit::onOrderPlaceResponse(WsPending& pending, int status, simdjson::ondemand::document& doc, int64_t /*recv_ns*/) {
+void BinanceSpotWsTradeUnit::handleWsApiResponse(WsPending& pending, simdjson::ondemand::object& result) {
     pubsub::RCommand& rcmd = pending.rcmd;
- 
-    md::InstrumentInfo info;
-    if (!smc->get_instrument_info(rcmd.body.orderResponse.exchangeTypeEnum, rcmd.body.orderResponse.instTypeEnum, rcmd.body.orderResponse.instId, info)) {
-        LOG_ERROR("TB {} exec report smc miss: {}", acc.accountId, rcmd.body.orderResponse.instId);
-        return;
-    }
 
     // 测试单不上报
     if (rcmd.body.orderResponse.clientOrderId == TESTCLIENTORDERID) {
         return;
     }
-
-    if (status == 200) {
-        simdjson::ondemand::object result;
-        if (doc.find_field_unordered("result").get(result) == simdjson::SUCCESS) {
-            int64_t oid = 0;
-            if (result.find_field_unordered("orderId").get(oid) == simdjson::SUCCESS) {
-                fmt::format_to(rcmd.body.orderResponse.orderId, "{}", oid);
-            }
-            std::string_view exec_sv, cumQ_sv, status_sv;
-            result.find_field_unordered("executedQty").get(exec_sv);
-            result.find_field_unordered("cummulativeQuoteQty").get(cumQ_sv);
-            result.find_field_unordered("status").get(status_sv);
-
-            if (!exec_sv.empty()) {
-                rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(exec_sv) * info.magnifyNumber;
-            }
-            if (rcmd.body.orderResponse.volumeTraded > 0 && !cumQ_sv.empty()) {
-                rcmd.body.orderResponse.tradePrice = crypto::fast_atod(cumQ_sv) / rcmd.body.orderResponse.volumeTraded * info.reduceNumber;
-            }
-            if (!status_sv.empty()) {
-                std::string st(status_sv);
-                rcmd.body.orderResponse.orderStatus = crypto::get_binance_orderstatus(st);
-            } else {
-                // ACK 响应没有 status 字段, 默认 NEW
-                rcmd.body.orderResponse.orderStatus = OS_NEW;
-            }
-        } else {
-            rcmd.body.orderResponse.orderStatus = OS_NEW;
-        }
-    } else {
-        rcmd.body.orderResponse.orderStatus = OS_REJECTED;
-        simdjson::ondemand::object err;
-        if (doc.find_field_unordered("error").get(err) == simdjson::SUCCESS) {
-            int64_t code = 0;
-            err.find_field_unordered("code").get(code);
-            std::string_view msg_sv;
-            err.find_field_unordered("msg").get(msg_sv);
-            rcmd.body.orderResponse.errorId = crypto::get_binance_errorid(static_cast<int>(code));
-            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, msg_sv);
-        } else {
-            rcmd.body.orderResponse.errorId = UnknownError;
-        }
-    }
-    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-    PUSH_RCMD(rcmd)
-}
-
-void BinanceSpotWsTradeUnit::onOrderCancelResponse(WsPending& pending, int status, simdjson::ondemand::document& doc, int64_t /*recv_ns*/) {
-    pubsub::RCommand& rcmd = pending.rcmd;
  
     md::InstrumentInfo info;
     if (!smc->get_instrument_info(rcmd.body.orderResponse.exchangeTypeEnum, rcmd.body.orderResponse.instTypeEnum, rcmd.body.orderResponse.instId, info)) {
@@ -376,200 +335,307 @@ void BinanceSpotWsTradeUnit::onOrderCancelResponse(WsPending& pending, int statu
         return;
     }
 
-    if (status == 200) {
-        simdjson::ondemand::object result;
-        if (doc.find_field_unordered("result").get(result) == simdjson::SUCCESS) {
-            int64_t oid = 0;
-            if (result.find_field_unordered("orderId").get(oid) == simdjson::SUCCESS) {
-                fmt::format_to(rcmd.body.orderResponse.orderId, "{}", oid);
-            }
-            std::string_view exec_sv, cumQ_sv;
-            result.find_field_unordered("executedQty").get(exec_sv);
-            result.find_field_unordered("cummulativeQuoteQty").get(cumQ_sv);
-            if (!exec_sv.empty()) {
-                rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(exec_sv) * info.magnifyNumber;
-            }
-            if (rcmd.body.orderResponse.volumeTraded > 0 && !cumQ_sv.empty()) {
-                rcmd.body.orderResponse.tradePrice = crypto::fast_atod(cumQ_sv) / rcmd.body.orderResponse.volumeTraded * info.reduceNumber;
+    if (pending.type == pubsub::CMD_NEW_ORDER) {
+        int64_t orderId = 0;
+        for (auto field : ev) {
+            std::string_view k = field.unescaped_key().value_unsafe();
+            if (k == "orderId") {
+                field.value().get(orderId);
             }
         }
+
+        fmt::format_to(rcmd.body.orderResponse.orderId, "{}", orderId);
+        rcmd.body.orderResponse.orderStatus = OS_NEW;
+        rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+        PUSH_RCMD(rcmd)
+    } else if (pending.type == pubsub::CMD_CANCEL_ORDER) {
+        int64_t orderId = 0;
+        std::string_view execQ_sv;
+        std::string_view cumQ_sv;
+
+        for (auto field : ev) {
+            std::string_view k = field.unescaped_key().value_unsafe();
+            if (k == "orderId") {
+                field.value().get(orderId);
+            }
+            else if (k == "executedQty") {
+                field.value().get(execQ_sv);
+            }
+            else if (k == "cummulativeQuoteQty") {
+                field.value().get(cumQ_sv);
+            }
+        }
+
+        fmt::format_to(rcmd.body.orderResponse.orderId, "{}", orderId);
+        if (!execQ_sv.empty()) {
+            rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(execQ_sv) * info.magnifyNumber;
+        }
+        if (rcmd.body.orderResponse.volumeTraded > 0 && !cumQ_sv.empty()) {
+            double cumQ = crypto::fast_atod(cumQ_sv);
+            rcmd.body.orderResponse.tradePrice = cumQ / rcmd.body.orderResponse.volumeTraded * info.reduceNumber;
+        }
+
         rcmd.body.orderResponse.orderStatus = OS_CANCELED;
-    } else {
-        simdjson::ondemand::object err;
-        if (doc.find_field_unordered("error").get(err) == simdjson::SUCCESS) {
-            int64_t code = 0;
-            err.find_field_unordered("code").get(code);
-            std::string_view msg_sv;
-            err.find_field_unordered("msg").get(msg_sv);
-            rcmd.body.orderResponse.errorId = crypto::get_binance_errorid(static_cast<int>(code));
-            rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.errorId == OrderNotFoundError) ? OS_REJECTED : OS_FAILED;
-            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, msg_sv);
-        } else {
-            rcmd.body.orderResponse.orderStatus = OS_FAILED;
-            rcmd.body.orderResponse.errorId = UnknownError;
+        rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+        PUSH_RCMD(rcmd)
+    }
+}
+
+void BinanceSpotWsTradeUnit::handleWsApiError(WsPending& pending, simdjson::ondemand::object& error) {
+    pubsub::RCommand& rcmd = pending.rcmd;
+
+    // 测试单不上报
+    if (rcmd.body.orderResponse.clientOrderId == TESTCLIENTORDERID) {
+        return;
+    }
+ 
+    int code = 0;
+    std::string_view msg_sv;
+
+    for (auto field : error) {
+        std::string_view k = field.unescaped_key().value_unsafe();
+        if (k == "code") {
+            field.value().get(code);
+        }
+        else if (k == "msg") {
+            field.value().get(msg_sv);
         }
     }
+
+    rcmd.body.orderResponse.errorId = crypto::get_binance_errorid(static_cast<int>(code));
+
+    if (pending.type == pubsub::CMD_NEW_ORDER) {
+        rcmd.body.orderResponse.orderStatus = OS_REJECTED;    
+    } else if (pending.type == pubsub::CMD_CANCEL_ORDER) {
+        rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.errorId == OrderNotFoundError) ? OS_REJECTED : OS_FAILED;
+    }
+
+    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, msg_sv);
     rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
     PUSH_RCMD(rcmd)
 }
 
+void BinanceSpotWsTradeUnit::handleUserDataEvent(simdjson::ondemand::object& ev) {
+    std::string_view e_sv; // event
 
-// ============================================================================
-// userDataStream 事件推送 (跟 BinanceSpotTrade 一致)
-// ============================================================================
-void BinanceSpotWsTradeUnit::handleUserDataEvent(simdjson::ondemand::object& event) {
-    std::string_view e_sv;
-    if (event.find_field_unordered("e").get(e_sv) != simdjson::SUCCESS) {
-        return;
-    }
+    // execution report
+    std::string_view s_sv;
+    std::string_view c_sv;
+    std::string_view C_sv;
+    std::string_view S_sv;
+    std::string_view f_sv;
+    std::string_view o_sv;
+    std::string_view X_sv;
+    std::string_view l_sv;
+    std::string_view L_sv;
+    std::string_view z_sv;
+    std::string_view Z_sv;
+    std::string_view q_sv;
+    std::string_view p_sv;
+    int64_t i_val = 0;
+    std::string_view i_sv;
+    bool has_i = false;
+
+    // balances
+    simdjson::ondemand::array balances;
+
+    for (auto field : ev) {
+        std::string_view k = field.unescaped_key().value_unsafe();
+        switch (k[0]) {
+            case 'e':
+                field.value().get(e_sv);
+                break;
+            case 'B':
+                field.value().get(balances);
+                break;      
+            case 's':
+                field.value().get(s_sv);
+                break;
+            case 'c':
+                field.value().get(c_sv);
+                break;
+            case 'C':
+                field.value().get(C_sv);
+                break;
+            case 'S':
+                field.value().get(S_sv);
+                break;
+            case 'f':
+                field.value().get(f_sv);
+                break;
+            case 'o':
+                field.value().get(o_sv);
+                break;
+            case 'X':
+                field.value().get(X_sv);
+                break;
+            case 'i':
+                has_i = field.value().get(i_sv) == simdjson::SUCCESS;
+                if (!has_i) {
+                    field.value().get(i_sv);
+                }
+                break;
+            case 'l':
+                field.value().get(l_sv);
+                break;
+            case 'L':
+                field.value().get(L_sv);
+                break;
+            case 'z':
+                field.value().get(z_sv);
+                break;
+            case 'Z':
+                field.value().get(Z_sv);
+                break;
+            case 'q':
+                field.value().get(q_sv);
+                break;
+            case 'p':
+                field.value().get(p_sv);
+                break;
+            default:
+                break;
+        }
+    }  
 
     if (e_sv == "outboundAccountPosition") {
-        handleAccountPosition(event);
+        // 先收集再回填 isLast (Binance 数组无长度头, ondemand 无 size())
+        std::vector<pubsub::RCommand> pending;
+        
+        for (auto b_val : balances) {
+            auto b_res = b_val.get_object();
+            if (b_res.error()) {
+                continue;
+            }
+            auto& b = b_res.value_unsafe();
+
+            std::string_view a_sv;
+            std::string_view f_sv;
+            std::string_view l_sv;
+            for (auto field : b) {
+                std::string_view k = field.unescaped_key().value_unsafe();
+                switch (k[0]) {
+                    case 'a':
+                        field.value().get(a_sv);
+                        break;
+                    case 'f':
+                        field.value().get(f_sv);
+                        break;
+                    case 'l':
+                        field.value().get(l_sv);
+                        break;
+                    default:
+                        break;
+                }
+            }
+
+            pubsub::RCommand rcmd;
+            memset(&rcmd, 0, sizeof(pubsub::RCommand));
+            rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
+            rcmd.body.balance.exchangeTypeEnum = BINANCE;
+            rcmd.body.balance.instTypeEnum = SPOT;
+            crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
+            crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
+            crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(a_sv)));
+            rcmd.body.balance.available = crypto::fast_atod(f_sv);
+            rcmd.body.balance.frozen = crypto::fast_atod(l_sv);
+            rcmd.body.balance.total = rcmd.body.balance.available + rcmd.body.balance.frozen;
+            rcmd.body.balance.updateTime = crypto::getCurrentTime();
+            rcmd.body.balance.apiSourceEnum = AS_WEBSOCKET;
+            pending.emplace_back(rcmd);
+        }
     }
     else if (e_sv == "executionReport") {
-        handleExecutionReport(event);
-    }         
-}
-
-void BinanceSpotWsTradeUnit::handleAccountPosition(simdjson::ondemand::object& ev) {
-    simdjson::ondemand::array balances;
-    if (ev.find_field_unordered("B").get(balances) != simdjson::SUCCESS) {
-        return;
-    }
-
-    std::vector<pubsub::RCommand> pending;
-    pending.reserve(8);
-    for (auto b_val : balances) {
-        auto b = b_val.get_object();
-        if (b.error()) {
-            continue;
+        if (s_sv.empty()) {
+            return;
         }
-        std::string_view a_sv, f_sv, l_sv;
-        b["a"].get(a_sv);
-        b["f"].get(f_sv);
-        b["l"].get(l_sv);
+
+        md::InstrumentInfo info;
+        std::string originInstId(s_sv);
+        if (!smc->get_instrument_info(BINANCE, SPOT, originInstId.c_str(), info)) {
+            LOG_ERROR("TB {} exec report smc miss: {}", acc.accountId, originInstId);
+            return;
+        }
 
         pubsub::RCommand rcmd;
         memset(&rcmd, 0, sizeof(pubsub::RCommand));
-        rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
-        rcmd.body.balance.exchangeTypeEnum = BINANCE;
-        rcmd.body.balance.instTypeEnum = SPOT;
-        crypto::copy_sv_to_char_array(rcmd.body.balance.accountId,  acc.accountId);
-        crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
-        crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(a_sv)));
-        rcmd.body.balance.available = crypto::fast_atod(f_sv);
-        rcmd.body.balance.frozen = crypto::fast_atod(l_sv);
-        rcmd.body.balance.total = rcmd.body.balance.available + rcmd.body.balance.frozen;
-        rcmd.body.balance.updateTime = crypto::getCurrentTime();
-        rcmd.body.balance.apiSourceEnum = AS_WEBSOCKET;
-        pending.emplace_back(rcmd);
+        rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
+        rcmd.body.orderResponse.exchangeTypeEnum = BINANCE;
+        rcmd.body.orderResponse.instTypeEnum = SPOT;
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountId, acc.accountId);
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
+
+        if (has_i) {
+            fmt::format_to(rcmd.body.orderResponse.orderId, "{}", i_val);
+        }
+        else {
+            if (!i_sv.empty()) {
+                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, i_sv);
+            }
+        }
+
+        // orderSysId: 优先 C (origClientOrderId, 非空), 否则 c (clientOrderId)
+        if (!C_sv.empty()) {
+            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, C_sv);
+        }
+        if (!c_sv.empty()) {
+            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, c_sv);
+        }
+
+        rcmd.body.orderResponse.offsetFlag = OF_OPEN;
+        if (!S_sv.empty()) {
+            rcmd.body.orderResponse.direction = (S_sv[0] == 'B') ? DT_LONG : DT_SHORT;
+        }
+
+        std::string tif(f_sv), oty(o_sv);
+        rcmd.body.orderResponse.orderType = crypto::get_binance_ordertype(tif.c_str(), oty.c_str());
+
+        if (!X_sv.empty()) {
+            std::string X_str(X_sv);
+            rcmd.body.orderResponse.orderStatus = crypto::get_binance_orderstatus(X_str);
+        }
+        if (!l_sv.empty()) {
+            rcmd.body.orderResponse.tradeDiff = crypto::fast_atod(l_sv) * info.magnifyNumber;
+        }
+
+        if (!L_sv.empty()) {
+            rcmd.body.orderResponse.fillPrice = crypto::fast_atod(L_sv) * info.reduceNumber;
+        }
+
+        if (!z_sv.empty()) {
+            rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(z_sv) * info.magnifyNumber;
+        }
+
+        if (rcmd.body.orderResponse.volumeTraded > 0 && !Z_sv.empty()) {
+            rcmd.body.orderResponse.tradePrice = crypto::fast_atod(Z_sv) / rcmd.body.orderResponse.volumeTraded * info.reduceNumber;
+        }
+
+        if (!q_sv.empty()) {
+            rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(q_sv) * info.magnifyNumber;
+        }
+
+        if (!p_sv.empty()) {
+            rcmd.body.orderResponse.limitPrice  = crypto::fast_atod(p_sv) * info.reduceNumber;
+        }
+
+        rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+        rcmd.body.orderResponse.apiSourceEnum = AS_WEBSOCKET;
+        PUSH_RCMD(rcmd)
     }
 }
-
-void BinanceSpotWsTradeUnit::handleExecutionReport(simdjson::ondemand::object& ev) {
-    std::string_view s_sv;
-    if (ev.find_field_unordered("s").get(s_sv) != simdjson::SUCCESS) {
-        return;
-    }
-
-    md::InstrumentInfo info;
-    std::string originInstId(s_sv);
-    if (!smc->get_instrument_info(BINANCE, SPOT, originInstId.c_str(), info)) {
-        LOG_ERROR("TB {} exec report smc miss: {}", acc.accountId, originInstId);
-        return;
-    }
-
-    pubsub::RCommand rcmd;
-    memset(&rcmd, 0, sizeof(pubsub::RCommand));
-    rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
-    rcmd.body.orderResponse.exchangeTypeEnum = BINANCE;
-    rcmd.body.orderResponse.instTypeEnum = SPOT;
-    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountId,  acc.accountId);
-    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
-    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
-
-    int64_t i_val = 0;
-    if (ev.find_field_unordered("i").get(i_val) == simdjson::SUCCESS) {
-        fmt::format_to(rcmd.body.orderResponse.orderId, "{}", i_val);
-    }
-
-    std::string_view C_sv, c_sv;
-    bool used_C = false;
-    if (ev.find_field_unordered("C").get(C_sv) == simdjson::SUCCESS && !C_sv.empty()) {
-        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, C_sv);
-        used_C = true;
-    }
-    if (!used_C && ev.find_field_unordered("c").get(c_sv) == simdjson::SUCCESS) {
-        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, c_sv);
-    }
-
-    rcmd.body.orderResponse.offsetFlag = OF_OPEN;
-    std::string_view S_sv;
-    if (ev.find_field_unordered("S").get(S_sv) == simdjson::SUCCESS && !S_sv.empty()) {
-        rcmd.body.orderResponse.direction = (S_sv[0] == 'B') ? DT_LONG : DT_SHORT;
-    }
-
-    std::string_view f_sv, o_sv;
-    ev.find_field_unordered("f").get(f_sv);
-    ev.find_field_unordered("o").get(o_sv);
-    std::string tif(f_sv), oty(o_sv);
-    rcmd.body.orderResponse.orderType = crypto::get_binance_ordertype(tif.c_str(), oty.c_str());
-
-    std::string_view X_sv;
-    if (ev.find_field_unordered("X").get(X_sv) == simdjson::SUCCESS) {
-        std::string X_str(X_sv);
-        rcmd.body.orderResponse.orderStatus = crypto::get_binance_orderstatus(X_str);
-    }
-
-    std::string_view l_sv, L_sv, z_sv, Z_sv, q_sv, p_sv;
-    ev.find_field_unordered("l").get(l_sv);
-    ev.find_field_unordered("L").get(L_sv);
-    ev.find_field_unordered("z").get(z_sv);
-    ev.find_field_unordered("Z").get(Z_sv);
-    ev.find_field_unordered("q").get(q_sv);
-    ev.find_field_unordered("p").get(p_sv);
-
-    if (!l_sv.empty()) {
-        rcmd.body.orderResponse.tradeDiff = crypto::fast_atod(l_sv) * info.magnifyNumber;
-    }
-
-    if (!L_sv.empty()) {
-        rcmd.body.orderResponse.fillPrice = crypto::fast_atod(L_sv) * info.reduceNumber;
-    }
-
-    if (!z_sv.empty()) {
-        rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(z_sv) * info.magnifyNumber;
-    }
-
-    if (rcmd.body.orderResponse.volumeTraded > 0 && !Z_sv.empty()) {
-        rcmd.body.orderResponse.tradePrice = crypto::fast_atod(Z_sv) / rcmd.body.orderResponse.volumeTraded * info.reduceNumber;
-    }
-
-    if (!q_sv.empty()) {
-        rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(q_sv) * info.magnifyNumber;
-    }
-
-    if (!p_sv.empty()) {
-        rcmd.body.orderResponse.limitPrice = crypto::fast_atod(p_sv) * info.reduceNumber;
-    }
-
-    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-    rcmd.body.orderResponse.apiSourceEnum = AS_WEBSOCKET;
-    PUSH_RCMD(rcmd)
-}
-
 
 // ============================================================================
 // query_* : REST (Ed25519 签名)
 // ============================================================================
-void BinanceSpotWsTradeUnit::query_account(const pubsub::TCommand&)  {  // 走 query_balance
-
+void BinanceSpotWsTradeUnit::query_account(const pubsub::TCommand& tcmd) {  // 走 query_balance
+    query_balance(tcmd);
 }   
 void BinanceSpotWsTradeUnit::query_position(const pubsub::TCommand&) {  // Spot 无
 
 }  
 
-void BinanceSpotWsTradeUnit::query_balance(const pubsub::TCommand&) {
+void BinanceSpotWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
     std::vector<std::pair<std::string, std::string>> kvs = {
         {"recvWindow", "5000"},
         {"timestamp",  std::to_string(crypto::getCurrentTimeMilli())},
@@ -672,7 +738,7 @@ void BinanceSpotWsTradeUnit::query_balance(const pubsub::TCommand&) {
 
 void BinanceSpotWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     QUERY_ORDER_TCMD_2_RCMD(tcmd);
-    if (!pRestClient || !signer_.valid()) return;
+
     md::InstrumentInfo info;
     if (!smc->get_instrument_info(tcmd.body.queryOrder.exchangeTypeEnum, tcmd.body.queryOrder.instTypeEnum, tcmd.body.queryOrder.instId, info)) {
         LOG_INFO("TB {} query_order smc miss: {}", acc.accountId, tcmd.body.queryOrder.instId);
@@ -681,8 +747,8 @@ void BinanceSpotWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     std::vector<std::pair<std::string, std::string>> kvs;
     kvs.reserve(5);
     kvs.emplace_back("recvWindow", "5000");
-    kvs.emplace_back("symbol",     info.originInstId);
-    kvs.emplace_back("timestamp",  std::to_string(crypto::getCurrentTimeMilli()));
+    kvs.emplace_back("symbol", info.originInstId);
+    kvs.emplace_back("timestamp", std::to_string(crypto::getCurrentTimeMilli()));
     if (!crypto::str_cmp(tcmd.body.queryOrder.orderId, "")) {
         kvs.emplace_back("orderId", tcmd.body.queryOrder.orderId);
     } else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
@@ -693,58 +759,98 @@ void BinanceSpotWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     std::string path = buildRestSignedPath(queryOrderUrl, kvs);
     asyncRequest(boost::beast::http::verb::get, std::move(path), "", "",
         [this, rcmd, info](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
-            if (ec) return;
+            if (ec) {
+                LOG_ERROR("TB {} query_order ec: {}", acc.accountId, ec.message());
+                return;
+            }
             try {
+                std::cout << "query order: " << resp.body << std::endl;
                 simdjson::padded_string padded(resp.body);
                 auto doc = g_parser.iterate(padded);
-                if (doc.error()) return;
+                if (doc.error()) {
+                    LOG_ERROR("TB {} query_order parse err: {}", acc.accountId, resp.body);
+                    return;
+                }
+
+                auto doc_value = doc.get_object().value_unsafe();
 
                 int64_t code = 0;
-                if (doc.find_field_unordered("code").get(code) == simdjson::SUCCESS) {
+                int64_t orderId = 0;
+                std::string_view origQ_sv;
+                std::string_view price_sv;
+                std::string_view execQ_sv;
+                std::string_view cumQ_sv;
+                std::string_view status_sv;
+
+                bool has_code = false;
+                bool has_orderId = false;
+
+                for (auto field : doc_value) {
+                    std::string_view k = field.unescaped_key().value_unsafe();
+                    if (k == "code") {
+                        has_code = field.value().get(code) == simdjson::SUCCESS;
+                    }
+                    else if (k == "orderId") {
+                        has_orderId = field.value().get(orderId) == simdjson::SUCCESS;
+                    }
+                    else if (k == "origQty") {
+                        field.value().get(origQ_sv);
+                    }
+                    else if (k == "price") {
+                        field.value().get(price_sv);
+                    }
+                    else if (k == "executedQty") {
+                        field.value().get(execQ_sv);
+                    }
+                    else if (k == "cummulativeQuoteQty") {
+                        field.value().get(cumQ_sv);
+                    }
+                    else if (k == "status") {
+                        field.value().get(status_sv);
+                    }
+
+                }
+
+                if (has_code) {
                     long now = crypto::getCurrentTime();
-                    if (rcmd.body.orderResponse.clientOrderId > 0 &&
-                        now - rcmd.body.orderResponse.clientOrderId > ORDER_REJECTED_TIME_OUT) {
+                    if (rcmd.body.orderResponse.clientOrderId > 0 && now - rcmd.body.orderResponse.clientOrderId > ORDER_REJECTED_TIME_OUT) {
                         rcmd.body.orderResponse.orderStatus = OS_REJECTED;
                         rcmd.body.orderResponse.errorId = crypto::get_binance_errorid(static_cast<int>(code));
                         rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
                         PUSH_RCMD(rcmd);
                     }
-                    return;
-                }
-                int64_t oid = 0;
-                if (doc.find_field_unordered("orderId").get(oid) == simdjson::SUCCESS) {
-                    fmt::format_to(rcmd.body.orderResponse.orderId, "{}", oid);
-                }
-                std::string_view origQ_sv, price_sv, execQ_sv, cumQ_sv, status_sv;
-                doc.find_field_unordered("origQty").get(origQ_sv);
-                doc.find_field_unordered("price").get(price_sv);
-                doc.find_field_unordered("executedQty").get(execQ_sv);
-                doc.find_field_unordered("cummulativeQuoteQty").get(cumQ_sv);
-                doc.find_field_unordered("status").get(status_sv);
-
-                if (!origQ_sv.empty()) {
-                    rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(origQ_sv) * info.magnifyNumber;
+                    return;   
                 }
 
-                if (!price_sv.empty()) {
-                    rcmd.body.orderResponse.limitPrice = crypto::fast_atod(price_sv) * info.reduceNumber;
-                }
+                if (has_orderId) {
+                    fmt::format_to(rcmd.body.orderResponse.orderId, "{}", orderId);
+                
+                    if (!origQ_sv.empty()) {
+                        rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(origQ_sv) * info.magnifyNumber;
+                    }
 
-                if (!execQ_sv.empty()) {
-                    rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(execQ_sv) * info.magnifyNumber;
-                }
+                    if (!price_sv.empty()) {
+                        rcmd.body.orderResponse.limitPrice = crypto::fast_atod(price_sv) * info.reduceNumber;
+                    }
 
-                if (rcmd.body.orderResponse.volumeTraded > 0 && !cumQ_sv.empty()) {
-                    rcmd.body.orderResponse.tradePrice = crypto::fast_atod(cumQ_sv) / rcmd.body.orderResponse.volumeTraded * info.reduceNumber;
+                    if (!execQ_sv.empty()) {
+                        rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(execQ_sv) * info.magnifyNumber;
+                    }
+
+                    if (rcmd.body.orderResponse.volumeTraded > 0 && !cumQ_sv.empty()) {
+                        double cumQ = crypto::fast_atod(cumQ_sv);
+                        rcmd.body.orderResponse.tradePrice = cumQ / rcmd.body.orderResponse.volumeTraded * info.reduceNumber;
+                    }
+                    if (!status_sv.empty()) {
+                        std::string st(status_sv);
+                        rcmd.body.orderResponse.orderStatus = crypto::get_binance_orderstatus(st);
+                    }
+                    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+                    PUSH_RCMD(rcmd);
                 }
-                if (!status_sv.empty()) {
-                    std::string st(status_sv);
-                    rcmd.body.orderResponse.orderStatus = crypto::get_binance_orderstatus(st);
-                }
-                rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                PUSH_RCMD(rcmd);
-            } catch (const std::exception& e) {
-                LOG_ERROR("TB {} query_order cb exc: {}", acc.accountId, e.what());
+            }
+            catch (const std::exception& e) {
+                LOG_ERROR("TB {} query_order cb exception: {}", acc.accountId, e.what());
             }
         });
 }
@@ -756,15 +862,7 @@ void BinanceSpotWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
 void BinanceSpotWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     ADD_NEW_ORDER_TCMD_2_RCMD(tcmd)
 
-    std::cout << "isConnected.load(): " << isConnected.load() << std::endl;
-    std::cout << "wsLoggedIn_.load(): " << wsLoggedIn_.load() << std::endl;
-    std::cout << "signer_.load(): " << signer_.valid() << std::endl;
-
-    if (!pWsClient) {
-        std::cout << "pWsClient is null" << std::endl;
-    }
-
-    if (!isConnected.load() || !wsLoggedIn_.load() || !signer_.valid() || !pWsClient) {
+    if (!isConnected.load() || !wsLoggedIn_.load()) {
         rcmd.body.orderResponse.orderStatus = OS_REJECTED;
         rcmd.body.orderResponse.errorId     = TBDisconnectError;
         rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
@@ -863,10 +961,10 @@ void BinanceSpotWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
 void BinanceSpotWsTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     CANCEL_ORDER_TCMD_2_RCMD(tcmd)
 
-    if (!isConnected.load() || !wsLoggedIn_.load() || !pWsClient) {
+    if (!isConnected.load() || !wsLoggedIn_.load()) {
         rcmd.body.orderResponse.orderStatus = OS_FAILED;
-        rcmd.body.orderResponse.errorId     = TBDisconnectError;
-        rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
+        rcmd.body.orderResponse.errorId = TBDisconnectError;
+        rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
         PUSH_RCMD(rcmd)
         return;
     }

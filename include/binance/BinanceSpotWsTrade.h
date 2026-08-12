@@ -90,15 +90,9 @@ private:
     void clearPending();
 
     // ---- msg 分派 ----
-    void handleWsApiResponse(simdjson::ondemand::document& doc, int64_t recv_ns);
-    void handleUserDataEvent(simdjson::ondemand::object& event);
-    void handleAccountPosition(simdjson::ondemand::object& event);
-    void handleExecutionReport(simdjson::ondemand::object& event);
-
-    // ---- ws-api 响应处理 ----
-    void onLogonResponse(int status, simdjson::ondemand::document& doc);
-    void onOrderPlaceResponse(WsPending& pending, int status, simdjson::ondemand::document& doc, int64_t recv_ns);
-    void onOrderCancelResponse (WsPending& pending, int status, simdjson::ondemand::document& doc, int64_t recv_ns);
+    void handleWsApiResponse(WsPending& pending, simdjson::ondemand::object& result);
+    void handleWsApiError(WsPending& pending, simdjson::ondemand::object& err);
+    void handleUserDataEvent(simdjson::ondemand::object& ev);
 
 private:
     crypto::Ed25519Signer signer_;
