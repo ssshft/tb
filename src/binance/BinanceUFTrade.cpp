@@ -1,34 +1,26 @@
 #include "binance/BinanceUFTrade.h"
-
 #include <cmath>
 #include <future>
-
 #include <fmt/format.h>
 #include <simdjson.h>
 
 
-namespace {
-    thread_local simdjson::ondemand::parser g_parser;
-
-    constexpr int kListenKeyRenewSec = 30 * 60;  // 30min
-}
-
-
 BinanceUFTradeUnit::BinanceUFTradeUnit(AccountCfg& a, sm::SecurityManager* s) : BaseTradeUnit(a, s) {
+
 }
 
 BinanceUFTradeUnit::~BinanceUFTradeUnit() {
     renewStop_.store(true);
     renewCv_.notify_all();
-    if (renewThread_.joinable()) renewThread_.join();
+    if (renewThread_.joinable()) {
+        renewThread_.join();
+    }
 }
-
 
 // ============================================================================
 // 签名 / URL
 // ============================================================================
-std::string BinanceUFTradeUnit::buildSignedPath(std::string_view basePath,
-                                                const std::vector<std::pair<std::string, std::string>>& kvs) const {
+std::string BinanceUFTradeUnit::buildSignedPath(std::string_view basePath, const std::vector<std::pair<std::string, std::string>>& kvs) const {
     std::string qs;
     qs.reserve(256);
     for (size_t i = 0; i < kvs.size(); ++i) {
@@ -61,7 +53,9 @@ bool BinanceUFTradeUnit::generateListenKeySync() {
 
     asyncRequest(boost::beast::http::verb::post, listenKeyUrl, /*body=*/"", /*ct=*/"",
         [this, &prom, &responded](boost::system::error_code ec, ::net::HttpResponse resp) {
-            if (responded) return;   // 双回调保护
+            if (responded) {
+                return;   // 双回调保护
+            }
             responded = true;
             if (ec) {
                 LOG_ERROR("TB {} listenKey req ec: {}", acc.accountId, ec.message());
@@ -71,7 +65,10 @@ bool BinanceUFTradeUnit::generateListenKeySync() {
             try {
                 simdjson::padded_string padded(resp.body);
                 auto doc = g_parser.iterate(padded);
-                if (doc.error()) { prom.set_value(""); return; }
+                if (doc.error()) {
+                    prom.set_value(""); 
+                    return; 
+                }
                 std::string_view lk;
                 if (doc["listenKey"].get(lk) == simdjson::SUCCESS) {
                     prom.set_value(std::string(lk));
@@ -91,13 +88,18 @@ bool BinanceUFTradeUnit::generateListenKeySync() {
         return false;
     }
     listenKey_ = fut.get();
-    if (listenKey_.empty()) return false;
+    if (listenKey_.empty()) {
+        return false;
+    }
     LOG_INFO("TB {} listenKey={}", acc.accountId, listenKey_);
     return true;
 }
 
 void BinanceUFTradeUnit::renewListenKeyAsync() {
-    if (listenKey_.empty() || !pRestClient) return;
+    if (listenKey_.empty()) {
+        return;
+    }
+
     // PUT /fapi/v1/listenKey (仅需 X-MBX-APIKEY header)
     asyncRequest(boost::beast::http::verb::put, listenKeyUrl, /*body=*/"", /*ct=*/"",
         [this](boost::system::error_code ec, ::net::HttpResponse resp) {
@@ -106,8 +108,7 @@ void BinanceUFTradeUnit::renewListenKeyAsync() {
                 return;
             }
             if (resp.status_code != 200) {
-                LOG_ERROR("TB {} listenKey renew status={} body={}",
-                          acc.accountId, resp.status_code, resp.body);
+                LOG_ERROR("TB {} listenKey renew status={} body={}", acc.accountId, resp.status_code, resp.body);
                 return;
             }
             LOG_DEBUG("TB {} listenKey renewed", acc.accountId);
@@ -117,8 +118,9 @@ void BinanceUFTradeUnit::renewListenKeyAsync() {
 void BinanceUFTradeUnit::listenKeyRenewLoop() {
     while (!renewStop_.load()) {
         std::unique_lock<std::mutex> lk(renewMtx_);
-        if (renewCv_.wait_for(lk, std::chrono::seconds(kListenKeyRenewSec),
-                              [this]{ return renewStop_.load(); })) {
+        if (renewCv_.wait_for(lk, std::chrono::seconds(kListenKeyRenewSec), [this]{ 
+            return renewStop_.load(); 
+        })) {
             return;
         }
         renewListenKeyAsync();
@@ -132,9 +134,7 @@ void BinanceUFTradeUnit::listenKeyRenewLoop() {
 void BinanceUFTradeUnit::subWebsocekt() {
     // 1. REST
     std::string restHost = host_of(acc.restUrl);
-    initRestClient(restHost,
-                   /*default_headers=*/{{"X-MBX-APIKEY", acc.apiKey}},
-                   /*max_connections=*/4);
+    initRestClient(restHost, {{"X-MBX-APIKEY", acc.apiKey}}, 4);
 
     // 2. listenKey (启动路径, 允许短暂 block ≤15s)
     if (!generateListenKeySync()) {
@@ -143,16 +143,18 @@ void BinanceUFTradeUnit::subWebsocekt() {
     }
 
     // 3. WS
-    ::net::WsConfig cfg;
+    net::WsConfig cfg;
     cfg.url = acc.wsUrl + wsSubPath + listenKey_;
-    cfg.ping_mode        = ::net::WsConfig::PingMode::ServerOnly;
-    cfg.auto_reconnect   = true;
+    cfg.ping_mode = net::WsConfig::PingMode::ServerOnly;
+    cfg.auto_reconnect = true;
     cfg.idle_timeout_sec = 60;
     LOG_INFO("TB {} UF ws {} rest {}", acc.accountId, cfg.url, restHost);
     subWebsocketWithConfig(std::move(cfg));
 
     // 4. 起 renew 后台线程 (每 30min PUT 一次)
-    renewThread_ = std::thread([this]{ listenKeyRenewLoop(); });
+    renewThread_ = std::thread([this] { 
+        listenKeyRenewLoop(); 
+    });
 }
 
 
@@ -160,11 +162,15 @@ void BinanceUFTradeUnit::subWebsocekt() {
 // WS msg
 // ============================================================================
 void BinanceUFTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, int64_t) {
-    if (len == 0) return;
     try {
+        std::string msg(reinterpret_cast<const char*>(data), len);
+        std::cout << "onWebsocketMsg: " << msg << std::endl;
+
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
         auto doc = g_parser.iterate(padded);
-        if (doc.error()) return;
+        if (doc.error()) {
+            return;
+        }
 
         simdjson::ondemand::object root;
         if (doc.get_object().get(root) != simdjson::SUCCESS) return;
@@ -375,7 +381,6 @@ void BinanceUFTradeUnit::query_account(const pubsub::TCommand&) {
 
 // ---- GET /fapi/v3/account?recvWindow=5000&timestamp=... ----
 void BinanceUFTradeUnit::query_balance(const pubsub::TCommand&) {
-    if (!pRestClient) { LOG_ERROR("TB {} query_balance: rest not ready", acc.accountId); return; }
     std::vector<std::pair<std::string, std::string>> kvs = {
         {"recvWindow", "5000"},
         {"timestamp",  std::to_string(crypto::getCurrentTimeMilli())},
@@ -384,11 +389,17 @@ void BinanceUFTradeUnit::query_balance(const pubsub::TCommand&) {
 
     asyncRequest(boost::beast::http::verb::get, std::move(path), /*body=*/"", /*ct=*/"",
         [this](boost::system::error_code ec, ::net::HttpResponse resp) {
-            if (ec) { LOG_ERROR("TB {} UF query_balance ec: {}", acc.accountId, ec.message()); return; }
+            if (ec) { 
+                LOG_ERROR("TB {} UF query_balance ec: {}", acc.accountId, ec.message()); 
+                return; 
+            }
             try {
+                std::cout << "query balance: " << resp.body << std::endl;
                 simdjson::padded_string padded(resp.body);
                 auto doc = g_parser.iterate(padded);
-                if (doc.error()) return;
+                if (doc.error()) {
+                    return;
+                }
 
                 simdjson::ondemand::array arr;
                 if (doc["assets"].get(arr) != simdjson::SUCCESS) {
@@ -449,7 +460,6 @@ void BinanceUFTradeUnit::query_balance(const pubsub::TCommand&) {
 
 // ---- GET /fapi/v3/positionRisk?... ----
 void BinanceUFTradeUnit::query_position(const pubsub::TCommand&) {
-    if (!pRestClient) { LOG_ERROR("TB {} query_position: rest not ready", acc.accountId); return; }
     std::vector<std::pair<std::string, std::string>> kvs = {
         {"recvWindow", "5000"},
         {"timestamp",  std::to_string(crypto::getCurrentTimeMilli())},
@@ -458,8 +468,12 @@ void BinanceUFTradeUnit::query_position(const pubsub::TCommand&) {
 
     asyncRequest(boost::beast::http::verb::get, std::move(path), /*body=*/"", /*ct=*/"",
         [this](boost::system::error_code ec, ::net::HttpResponse resp) {
-            if (ec) { LOG_ERROR("TB {} UF query_position ec: {}", acc.accountId, ec.message()); return; }
+            if (ec) { 
+                LOG_ERROR("TB {} UF query_position ec: {}", acc.accountId, ec.message()); 
+                return; 
+            }
             try {
+                std::cout << "query position: " << resp.body << std::endl;
                 simdjson::padded_string padded(resp.body);
                 auto doc = g_parser.iterate(padded);
                 if (doc.error()) return;

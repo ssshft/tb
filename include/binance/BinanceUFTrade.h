@@ -82,4 +82,6 @@ private:
     std::atomic<bool> renewStop_{false};
     std::mutex renewMtx_;
     std::condition_variable renewCv_;
+
+    int kListenKeyRenewSec = 30 * 60;  // 30min
 };

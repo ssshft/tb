@@ -23,6 +23,7 @@
 #include "log_engine.h"
 #include <simdjson.h>
 #include "utils/net_helper.h"
+#include "utils/json_parser.h
 
 
 class BaseTradeUnit {
@@ -72,9 +73,6 @@ protected:
     std::string accountUrl{""};
     std::string balanceUrl{""};
     std::string positionUrl{""};
-
-    // inline static thread_local simdjson::ondemand::parser g_parser;
-    simdjson::ondemand::parser g_parser;
 };
 
 
