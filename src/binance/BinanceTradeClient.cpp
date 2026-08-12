@@ -106,8 +106,7 @@ void BinanceTradeClient::query_account(const pubsub::TCommand& tcmd) {
     }
     else if (tcmd.body.queryAccount.instTypeEnum == USDT_SWAP || tcmd.body.queryAccount.instTypeEnum == USDT_FUTURES || tcmd.body.queryAccount.instTypeEnum == USDC_SWAP) {
         if (ufTradeUnit) {
-            ufTradeUnit->query_balance(tcmd);
-            ufTradeUnit->query_position(tcmd);
+            ufTradeUnit->query_account(tcmd);
         }
     }
     // else if(tcmd.queryAccount.instTypeEnum == C_SWAP || tcmd.queryAccount.instTypeEnum == C_FUTURES){
