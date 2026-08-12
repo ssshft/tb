@@ -213,10 +213,7 @@ void BinanceSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
             }
         }  
 
-        if (e_sv == "outboundAccountPosition") {
-            // 先收集再回填 isLast (Binance 数组无长度头, ondemand 无 size())
-            std::vector<pubsub::RCommand> pending;
-            
+        if (e_sv == "outboundAccountPosition") {            
             for (auto b_val : balances) {
                 auto b_res = b_val.get_object();
                 if (b_res.error()) {
@@ -257,7 +254,7 @@ void BinanceSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
                 rcmd.body.balance.total = rcmd.body.balance.available + rcmd.body.balance.frozen;
                 rcmd.body.balance.updateTime = crypto::getCurrentTime();
                 rcmd.body.balance.apiSourceEnum = AS_WEBSOCKET;
-                pending.emplace_back(rcmd);
+                PUSH_RCMD(rcmd)
             }
         }
         else if (e_sv == "executionReport") {
