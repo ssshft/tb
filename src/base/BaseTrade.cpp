@@ -44,6 +44,7 @@ void BaseTradeUnit::initRestClient(const std::string& host, std::vector<std::pai
     cfg.parallel_establish_threads = std::min<size_t>(4, max_connections);
     cfg.request_queue_capacity = 256;
     cfg.request_timeout_ms = 30000;
+    cfg.idle_close_after_ms = 25000;
 
     try {
         pRestClient = std::make_shared<net::RestClient>(cfg);
