@@ -439,6 +439,7 @@ void BinanceSpotWsTradeUnit::handleUserDataEvent(simdjson::ondemand::object& ev)
     int64_t i_val = 0;
     std::string_view i_sv;
     bool has_i = false;
+    bool has_balances = false;
 
     // balances
     simdjson::ondemand::array balances;
@@ -450,7 +451,7 @@ void BinanceSpotWsTradeUnit::handleUserDataEvent(simdjson::ondemand::object& ev)
                 field.value().get(e_sv);
                 break;
             case 'B':
-                field.value().get(balances);
+                has_balances = field.value().get(balances) == simdjson::SUCCESS;
                 break;      
             case 's':
                 field.value().get(s_sv);
@@ -499,6 +500,10 @@ void BinanceSpotWsTradeUnit::handleUserDataEvent(simdjson::ondemand::object& ev)
                 break;
             default:
                 break;
+        }
+
+        if (has_balances) {
+            break;
         }
     }  
 

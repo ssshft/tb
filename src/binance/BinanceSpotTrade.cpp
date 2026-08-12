@@ -150,6 +150,7 @@ void BinanceSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
         int64_t i_val = 0;
         std::string_view i_sv;
         bool has_i = false;
+        bool has_balances = false;
 
         // balances
         simdjson::ondemand::array balances;
@@ -161,7 +162,7 @@ void BinanceSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
                     field.value().get(e_sv);
                     break;
                 case 'B':
-                    field.value().get(balances);
+                    has_balances = field.value().get(balances) == simdjson::SUCCESS;
                     break;      
                 case 's':
                     field.value().get(s_sv);
@@ -210,6 +211,10 @@ void BinanceSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
                     break;
                 default:
                     break;
+            }
+
+            if (has_balances) {
+                break;
             }
         }  
 
