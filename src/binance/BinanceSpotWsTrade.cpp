@@ -107,19 +107,25 @@ std::string BinanceSpotWsTradeUnit::buildOrderPlaceJson(
     return j;
 }
 
-std::string BinanceSpotWsTradeUnit::buildOrderCancelJson(
-    int wsId, const pubsub::TCommand& tcmd, const md::InstrumentInfo& info) const
-{
+std::string BinanceSpotWsTradeUnit::buildOrderCancelJson(int wsId, const pubsub::TCommand& tcmd, const md::InstrumentInfo& info) const {
     std::string j;
     j.reserve(200);
     j.append(R"({"id":)");
     j.append(std::to_string(wsId));
     j.append(R"(,"method":"order.cancel","params":{)");
-    j.append(R"("symbol":")");     j.append(info.originInstId);                                    j.push_back('"');
+    j.append(R"("symbol":")");     
+    j.append(info.originInstId);                                    
+    j.push_back('"');
+    j.append(R"(,"timestamp":")");      
+    j.append(std::to_string(crypto::getCurrentTimeMilli()));                                                 
+    j.push_back('"');
     if (!crypto::str_cmp(tcmd.body.cancelOrder.orderId, "")) {
-        j.append(R"(,"orderId":)");          j.append(tcmd.body.cancelOrder.orderId);
+        j.append(R"(,"orderId":)");          
+        j.append(tcmd.body.cancelOrder.orderId);
     } else {
-        j.append(R"(,"origClientOrderId":")");   j.append(escape_json(tcmd.body.cancelOrder.orderSysId));  j.push_back('"');
+        j.append(R"(,"origClientOrderId":")");   
+        j.append(escape_json(tcmd.body.cancelOrder.orderSysId));  
+        j.push_back('"');
     }
     j.append("}}");
     return j;
