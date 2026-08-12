@@ -3,7 +3,7 @@
 #include "binance/BinanceSpotTrade.h"
 #include "binance/BinanceSpotWsTrade.h"
 #include "binance/BinanceUFTrade.h"
-#include "binance/BinanceUFWsTrade.h
+#include "binance/BinanceUFWsTrade.h"
 // #include "binance/BinanceCFTradingClient.h"
 #include "binance/BinanceUnifiedTrade.h"
 
