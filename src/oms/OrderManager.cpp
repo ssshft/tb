@@ -294,10 +294,11 @@ bool om::OrderManager::onOrderUpdate(pubsub::RCommand& rcmd) {
             memcpy(&rcmd, &op, sizeof(pubsub::RCommand));
             rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
             rcmd.body.orderResponse.orderStatus = OS_FAILED;
+            rcmd.body.orderResponse.apiSourceEnum = AS_CANCEL_ORDER;
             return true;
         }
 
-        bool isQueryOrder = rcmd.cmdTypeEnum == pubsub::CMD_QUERY_ORDER;
+        bool isQueryOrder = rcmd.cmdTypeEnum == pubsub::CMD_RPT_QUERY_ORDER;
 
         if (!statusAdvanced && !volumeIncreased && !isQueryOrder) {
             return false;
