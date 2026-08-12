@@ -62,6 +62,7 @@ bool om::OrderManager::processTcmd(pubsub::TCommand& tcmd) {
             ADD_NEW_ORDER_2_ORDER_RESPONSE(tcmd)
             strncpy(tcmd.body.newOrder.orderSysId, rcmd.body.orderResponse.orderSysId, ORDER_SIZE);
             orderSysId2OrderResponseMap[rcmd.body.orderResponse.orderSysId] = rcmd;
+            rcmdInnerQueue.push(rcmd);
             const std::string& clientOrderIdStra = fmt::format("{}{}", rcmd.body.orderResponse.strategyId, rcmd.body.orderResponse.clientOrderId);
             clientOrderId2OrderSysIdMap[clientOrderIdStra] = rcmd.body.orderResponse.orderSysId;
             return true;
@@ -245,11 +246,27 @@ bool om::OrderManager::onOrderUpdate(pubsub::RCommand& rcmd) {
             LOG_ERROR("Overfilled order! orderSysId: {} volumeTraded: {} volumeTotal: {}", op.body.orderResponse.orderSysId, rcmd.body.orderResponse.volumeTraded, op.body.orderResponse.volumeTotal);
         }
 
+        // binance得rest有成交得回报不推送(返回字段中去掉了成交均价)
+        if (rcmd.body.orderResponse.orderStatus == OS_PARTFILLED || rcmd.body.orderResponse.orderStatus == OS_FILLED) { 
+            if (rcmd.body.orderResponse.apiSourceEnum == AS_ADD_NEW_ORDER && rcmd.body.orderResponse.exchangeTypeEnum == BINANCE) {
+                return false;
+            }
+        }
+
+        if (rcmd.body.orderResponse.orderStatus == OS_CANCELED) {
+            if (rcmd.body.orderResponse.apiSourceEnum == AS_CANCEL_ORDER && rcmd.body.orderResponse.exchangeTypeEnum == BINANCE) {
+                if (op.body.orderResponse.volumeTraded < rcmd.body.orderResponse.volumeTraded) {
+                    return false;
+                }
+            }    
+        }
+
         if (rcmd.body.orderResponse.volumeTraded > op.body.orderResponse.volumeTraded) {
             op.body.orderResponse.tradeDiff = rcmd.body.orderResponse.volumeTraded - op.body.orderResponse.volumeTraded;
             op.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTraded;
             op.body.orderResponse.tradePrice = rcmd.body.orderResponse.tradePrice;
             op.body.orderResponse.fillPrice = rcmd.body.orderResponse.fillPrice;
+            op.body.orderResponse.updateTime = crypto::getCurrentTime();
 
             volumeIncreased = true;
         }
@@ -259,6 +276,7 @@ bool om::OrderManager::onOrderUpdate(pubsub::RCommand& rcmd) {
             int newP = crypto::getOrderStatusPriority(rcmd.body.orderResponse.orderStatus);
             if (newP > oldP) {
                 op.body.orderResponse.orderStatus = rcmd.body.orderResponse.orderStatus;
+                op.body.orderResponse.updateTime = crypto::getCurrentTime();
                 statusAdvanced = true;
             }
         }
@@ -273,11 +291,20 @@ bool om::OrderManager::onOrderUpdate(pubsub::RCommand& rcmd) {
             strncpy(op.body.orderResponse.originMsg, rcmd.body.orderResponse.originMsg, ORIGINMSG_SIZE); 
         }
 
-        if (!statusAdvanced && !volumeIncreased) {
-            return false;
+        if (rcmd.body.orderResponse.orderStatus == OS_FAILED) { // 撤单失败的状态要推送给策略
+            memcpy(&rcmd, &op, sizeof(pubsub::RCommand));
+            rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
+            rcmd.body.orderResponse.orderStatus = OS_FAILED;
+            return true;
         }
 
-        op.body.orderResponse.updateTime = crypto::getCurrentTime();
+        bool isQueryOrder = rcmd.cmdTypeEnum == pubsub::CMD_QUERY_ORDER;
+
+        if (!statusAdvanced && !volumeIncreased && !isQueryOrder) {
+            return false;
+        }
+        
+        op.body.orderResponse.apiSourceEnum = rcmd.body.orderResponse.apiSourceEnum;
         op.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
         memcpy(&rcmd, &op, sizeof(pubsub::RCommand));
         return true;

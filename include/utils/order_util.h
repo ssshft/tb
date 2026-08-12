@@ -323,11 +323,12 @@ namespace crypto {
     inline int getOrderStatusPriority(OrderStatus s) {
         switch (s) {
             case OS_PENDING_NEW: return 1;
-            case OS_NEW: return 2;
-            case OS_PARTFILLED: return 3;
-            case OS_FILLED: return 4;
-            case OS_CANCELED: return 5;
-            case OS_REJECTED: return 6;
+            case OS_UNKNOWN: return 2;
+            case OS_NEW: return 3;
+            case OS_PARTFILLED: return 4;
+            case OS_FILLED: return 5;
+            case OS_CANCELED: return 6;
+            case OS_REJECTED: return 7;
             default: return 0;
         }
     }
