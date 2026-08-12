@@ -295,7 +295,67 @@ void BinanceSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, boo
                 WsPending pending;
                 if (takePending(id, pending)) {
                     if (status == 200 && has_result) {
-                        handleWsApiResponse(pending, result);
+                        // handleWsApiResponse(pending, result);
+
+
+    pubsub::RCommand& rcmd = pending.rcmd;
+
+    // 测试单不上报
+    if (rcmd.body.orderResponse.clientOrderId == TESTCLIENTORDERID) {
+        return;
+    }
+ 
+    md::InstrumentInfo info;
+    if (!smc->get_instrument_info(rcmd.body.orderResponse.exchangeTypeEnum, rcmd.body.orderResponse.instTypeEnum, rcmd.body.orderResponse.instId, info)) {
+        LOG_ERROR("TB {} exec report smc miss: {}", acc.accountId, rcmd.body.orderResponse.instId);
+        return;
+    }
+
+    if (pending.type == pubsub::CMD_NEW_ORDER) {
+        int64_t orderId = 0;
+        for (auto field : result) {
+            std::string_view k = field.unescaped_key().value_unsafe();
+            if (k == "orderId") {
+                field.value().get(orderId);
+            }
+        }
+
+        fmt::format_to(rcmd.body.orderResponse.orderId, "{}", orderId);
+        rcmd.body.orderResponse.orderStatus = OS_NEW;
+        rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+        PUSH_RCMD(rcmd)
+    } else if (pending.type == pubsub::CMD_CANCEL_ORDER) {
+        int64_t orderId = 0;
+        std::string_view execQ_sv;
+        std::string_view cumQ_sv;
+
+        for (auto field : result) {
+            std::string_view k = field.unescaped_key().value_unsafe();
+            if (k == "orderId") {
+                field.value().get(orderId);
+            }
+            else if (k == "executedQty") {
+                field.value().get(execQ_sv);
+            }
+            else if (k == "cummulativeQuoteQty") {
+                field.value().get(cumQ_sv);
+            }
+        }
+
+        fmt::format_to(rcmd.body.orderResponse.orderId, "{}", orderId);
+        if (!execQ_sv.empty()) {
+            rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(execQ_sv) * info.magnifyNumber;
+        }
+        if (rcmd.body.orderResponse.volumeTraded > 0 && !cumQ_sv.empty()) {
+            double cumQ = crypto::fast_atod(cumQ_sv);
+            rcmd.body.orderResponse.tradePrice = cumQ / rcmd.body.orderResponse.volumeTraded * info.reduceNumber;
+        }
+
+        rcmd.body.orderResponse.orderStatus = OS_CANCELED;
+        rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+        PUSH_RCMD(rcmd)
+    }
+
                     }
                     else {
                         if (has_error) {
