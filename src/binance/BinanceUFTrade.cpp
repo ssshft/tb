@@ -403,7 +403,7 @@ void BinanceUFTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
             }
 
             std::vector<pubsub::RCommand> pendingBalances;
-            pending.reserve(32);
+            pendingBalances.reserve(8);
 
             for (auto b_val : assets) {
                 auto b_res = b_val.get_object();
@@ -476,6 +476,8 @@ void BinanceUFTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
             }
 
             std::vector<pubsub::RCommand> pendingPositions;
+            pendingPositions.reserve(8);
+            
             for (auto b_val : positions) {
                 auto b_res = b_val.get_object();
                 if (b_res.error()) {
