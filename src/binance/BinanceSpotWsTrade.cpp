@@ -257,11 +257,11 @@ void BinanceSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, boo
                 field.value().get(status);
             }
             else if (k == "result") {
-                has_result = field.value().get(result) == simdjson::SUCCESS);
+                has_result = field.value().get(result) == simdjson::SUCCESS;
                 break;
             }
             else if (k == "event") {
-                has_event = field.value().get(ev) == simdjson::SUCCESS);
+                has_event = field.value().get(ev) == simdjson::SUCCESS;
                 break;
             }
             else if (k == "error") {
