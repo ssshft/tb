@@ -474,7 +474,7 @@ void BinanceSpotWsTradeUnit::handleUserDataEvent(simdjson::ondemand::object& ev)
                 field.value().get(X_sv);
                 break;
             case 'i':
-                has_i = field.value().get(i_sv) == simdjson::SUCCESS;
+                has_i = field.value().get(i_val) == simdjson::SUCCESS;
                 if (!has_i) {
                     field.value().get(i_sv);
                 }
