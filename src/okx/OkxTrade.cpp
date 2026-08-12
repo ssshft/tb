@@ -14,7 +14,6 @@
 
 
 namespace {
-    thread_local simdjson::ondemand::parser g_parser;
 
     inline std::string hmac_sha256_base64(const std::string& secret, const std::string& data) {
         unsigned char digest[EVP_MAX_MD_SIZE];

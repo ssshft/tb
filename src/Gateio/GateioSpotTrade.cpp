@@ -7,9 +7,6 @@
 
 
 namespace {
-    thread_local simdjson::ondemand::parser g_parser;
-
-
     // 同 string_view
     inline std::string escape_json_sv(std::string_view sv) {
         return escape_json(std::string(sv));

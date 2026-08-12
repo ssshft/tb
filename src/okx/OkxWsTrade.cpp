@@ -15,8 +15,6 @@
 
 
 namespace {
-    thread_local simdjson::ondemand::parser g_parser;
-
     constexpr int64_t kPendingTtlMs   = 30 * 1000;
     constexpr size_t  kPendingHardMax = 10000;
     constexpr int64_t kGcIntervalMs   = 5000;

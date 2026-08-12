@@ -6,11 +6,6 @@
 #include <simdjson.h>
 
 
-namespace {
-    thread_local simdjson::ondemand::parser g_parser;
-
-}
-
 
 BybitTradeUnit::BybitTradeUnit(AccountCfg& a, sm::SecurityManager* s) : BaseTradeUnit(a, s) {}
 BybitTradeUnit::~BybitTradeUnit() {}

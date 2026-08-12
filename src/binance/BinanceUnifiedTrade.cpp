@@ -8,8 +8,6 @@
 
 
 namespace {
-    thread_local simdjson::ondemand::parser g_parser;
-
     constexpr int kListenKeyRenewSec = 30 * 60;
 
     // um / cm 判定

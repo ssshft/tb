@@ -7,8 +7,6 @@
 
 
 namespace {
-    thread_local simdjson::ondemand::parser g_parser;
-
     // 构造 Gate 每次都要变的 3 个 header
     inline std::vector<std::pair<std::string, std::string>>
     gate_auth_headers(const std::string& key, const std::string& time, const std::string& sign) {
