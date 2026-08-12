@@ -258,17 +258,6 @@ void BinanceSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, boo
             }
             else if (k == "result") {
                 has_result = field.value().get(result) == simdjson::SUCCESS;
-                int64_t orderId = 0;
-                for (auto field : result) {
-                    std::string_view k = field.unescaped_key().value_unsafe();
-                    std::cout << "----" << std::string(k) << "====" << std::endl;
-                    if (k == "orderId") {
-                        field.value().get(orderId);
-                    }
-                }
-
-
-
             }
             else if (k == "event") {
                 has_event = field.value().get(ev) == simdjson::SUCCESS;
@@ -277,6 +266,16 @@ void BinanceSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, boo
                 has_error = field.value().get(error) == simdjson::SUCCESS;
             }
         }
+
+        int64_t orderId = 0;
+        for (auto field : result) {
+            std::string_view k = field.unescaped_key().value_unsafe();
+            std::cout << "----" << std::string(k) << "====" << std::endl;
+            if (k == "orderId") {
+                field.value().get(orderId);
+            }
+        }
+
 
         if (has_id) {
             if (id == kSessionLogonId) {
