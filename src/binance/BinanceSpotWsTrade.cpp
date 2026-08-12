@@ -353,7 +353,7 @@ void BinanceSpotWsTradeUnit::handleWsApiResponse(WsPending& pending, simdjson::o
         std::string_view execQ_sv;
         std::string_view cumQ_sv;
 
-        for (auto field : ev) {
+        for (auto field : result) {
             std::string_view k = field.unescaped_key().value_unsafe();
             if (k == "orderId") {
                 field.value().get(orderId);
