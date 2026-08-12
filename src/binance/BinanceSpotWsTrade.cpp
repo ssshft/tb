@@ -72,18 +72,37 @@ std::string BinanceSpotWsTradeUnit::buildOrderPlaceJson(
     j.append(R"({"id":)");
     j.append(std::to_string(wsId));
     j.append(R"(,"method":"order.place","params":{)");
-    j.append(R"("symbol":")");     j.append(info.originInstId);                                    j.push_back('"');
-    j.append(R"(,"side":")");      j.append(side);                                                 j.push_back('"');
-    j.append(R"(,"type":")");      j.append(type);                                                 j.push_back('"');
+    j.append(R"("symbol":")");
+    j.append(info.originInstId);                                    
+    j.push_back('"');
+    j.append(R"(,"side":")");      
+    j.append(side);                                                 
+    j.push_back('"');
+    j.append(R"(,"timestamp":")");      
+    j.append(std::to_string(crypto::getCurrentTimeMilli()));                                                 
+    j.push_back('"');
+    j.append(R"(,"type":")");      
+    j.append(type);                                                 
+    j.push_back('"');
     if (tif) {
-        j.append(R"(,"timeInForce":")");   j.append(tif);                                          j.push_back('"');
+        j.append(R"(,"timeInForce":")");   
+        j.append(tif);                                          
+        j.push_back('"');
     }
     if (type[0] != 'M') {   // MARKET 无价
-        j.append(R"(,"price":")");         j.append(price);                                        j.push_back('"');
+        j.append(R"(,"price":")");         
+        j.append(price);                                        
+        j.push_back('"');
     }
-    j.append(R"(,"quantity":")");                  j.append(amount);                               j.push_back('"');
-    j.append(R"(,"newClientOrderId":")");          j.append(escape_json(tcmd.body.newOrder.orderSysId));  j.push_back('"');
-    j.append(R"(,"newOrderRespType":")");          j.append(respType);                             j.push_back('"');
+    j.append(R"(,"quantity":")");                  
+    j.append(amount);                               
+    j.push_back('"');
+    j.append(R"(,"newClientOrderId":")");          
+    j.append(escape_json(tcmd.body.newOrder.orderSysId));  
+    j.push_back('"');
+    j.append(R"(,"newOrderRespType":")");          
+    j.append(respType);                             
+    j.push_back('"');
     j.append("}}");
     return j;
 }
