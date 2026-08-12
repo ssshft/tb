@@ -23,7 +23,7 @@
 #include "log_engine.h"
 #include <simdjson.h>
 #include "utils/net_helper.h"
-#include "utils/json_parser.h
+#include "utils/json_parser.h"
 
 
 class BaseTradeUnit {
