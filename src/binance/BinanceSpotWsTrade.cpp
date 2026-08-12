@@ -551,51 +551,99 @@ void BinanceSpotWsTradeUnit::query_balance(const pubsub::TCommand&) {
         {"timestamp",  std::to_string(crypto::getCurrentTimeMilli())},
     };
     std::string path = buildRestSignedPath(balanceUrl, kvs);
-    asyncRequest(boost::beast::http::verb::get, std::move(path), "", "",
-        [this](boost::system::error_code ec, net::HttpResponse resp) {
-            if (ec) { LOG_ERROR("TB {} query_balance ec: {}", acc.accountId, ec.message()); return; }
-            try {
-                simdjson::padded_string padded(resp.body);
-                auto doc = g_parser.iterate(padded);
-                if (doc.error()) return;
-                simdjson::ondemand::array balances;
-                if (doc.find_field_unordered("balances").get(balances) != simdjson::SUCCESS) {
-                    LOG_ERROR("TB {} query_balance no 'balances': {}", acc.accountId, resp.body);
-                    return;
-                }
-                std::vector<pubsub::RCommand> pending;
-                pending.reserve(32);
-                for (auto b_val : balances) {
-                    auto b = b_val.get_object();
-                    if (b.error()) continue;
-                    std::string_view asset_sv, free_sv, locked_sv;
-                    b["asset"].get(asset_sv);
-                    b["free"].get(free_sv);
-                    b["locked"].get(locked_sv);
-
-                    pubsub::RCommand rcmd;
-                    memset(&rcmd, 0, sizeof(pubsub::RCommand));
-                    rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
-                    rcmd.body.balance.exchangeTypeEnum = BINANCE;
-                    rcmd.body.balance.instTypeEnum     = SPOT;
-                    crypto::copy_sv_to_char_array(rcmd.body.balance.accountId,  acc.accountId);
-                    crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
-                    crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(asset_sv)));
-                    rcmd.body.balance.available  = crypto::fast_atod(free_sv);
-                    rcmd.body.balance.frozen = crypto::fast_atod(locked_sv);
-                    rcmd.body.balance.total = rcmd.body.balance.available + rcmd.body.balance.frozen;
-                    rcmd.body.balance.updateTime = crypto::getCurrentTime();
-                    rcmd.body.balance.apiSourceEnum = AS_REST;
-                    pending.emplace_back(rcmd);
-                }
-                for (size_t i = 0; i < pending.size(); ++i) {
-                    pending[i].body.balance.isLast = (i + 1 == pending.size());
-                    PUSH_RCMD(pending[i]);
-                }
-            } catch (const std::exception& e) {
-                LOG_ERROR("TB {} query_balance cb exc: {}", acc.accountId, e.what());
+    asyncRequest(boost::beast::http::verb::get, std::move(path), "", "", [this](boost::system::error_code ec, net::HttpResponse resp) {
+        if (ec) {
+            LOG_ERROR("TB {} query_balance ec: {}", acc.accountId, ec.message());
+            return;
+        }
+        try {
+            std::cout << "query balance: " << resp.body << std::endl;
+            simdjson::padded_string padded(resp.body);
+            auto doc = g_parser.iterate(padded);
+            if (doc.error()) {
+                LOG_ERROR("TB {} query_balance parse err: {}", acc.accountId, simdjson::error_message(doc.error()));
+                return;
             }
-        });
+
+            simdjson::ondemand::array balances;
+            if (doc["balances"].get(balances) != simdjson::SUCCESS) {
+                LOG_ERROR("TB {} query_balance no 'balances': {}", acc.accountId, resp.body);
+                return;
+            }
+
+            std::vector<pubsub::RCommand> pending;
+            pending.reserve(32);
+
+            for (auto b_val : balances) {
+                auto b_res = b_val.get_object();
+                if (b_res.error()) {
+                    continue;
+                }
+                auto& b = b_res.value_unsafe();
+
+                std::string_view a_sv;
+                std::string_view f_sv;
+                std::string_view l_sv;
+                for (auto field : b) {
+                    std::string_view k = field.unescaped_key().value_unsafe();
+
+                    switch (k[0]) {
+                        case 'a':
+                            field.value().get(a_sv);
+                            break;
+                        case 'f':
+                            field.value().get(f_sv);
+                            break;
+                        case 'l':
+                            field.value().get(l_sv);
+                            break;
+                        default:
+                            break;
+                    }
+                }
+
+                pubsub::RCommand rcmd;
+                memset(&rcmd, 0, sizeof(pubsub::RCommand));
+                rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
+                rcmd.body.balance.exchangeTypeEnum = BINANCE;
+                rcmd.body.balance.instTypeEnum = SPOT;
+                crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
+                crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
+                crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(a_sv)));
+                rcmd.body.balance.available = crypto::fast_atod(f_sv);
+                rcmd.body.balance.frozen = crypto::fast_atod(l_sv);
+                rcmd.body.balance.total = rcmd.body.balance.available + rcmd.body.balance.frozen;
+                rcmd.body.balance.updateTime = crypto::getCurrentTime();
+                rcmd.body.balance.apiSourceEnum = AS_REST;
+                pending.emplace_back(rcmd);
+            }
+
+            if (pending.empty()) {
+                LOG_INFO("TB {} no balance, push USDT=0", acc.accountId);
+                pubsub::RCommand rcmd;
+                memset(&rcmd, 0, sizeof(pubsub::RCommand));
+                rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
+                rcmd.body.balance.exchangeTypeEnum = BINANCE;
+                rcmd.body.balance.instTypeEnum = SPOT;
+                crypto::copy_sv_to_char_array(rcmd.body.balance.accountId,  acc.accountId);
+                crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
+                crypto::copy_sv_to_char_array(rcmd.body.balance.currency,   std::string("USDT"));
+                rcmd.body.balance.updateTime = crypto::getCurrentTime();
+                rcmd.body.balance.apiSourceEnum = AS_REST;
+                rcmd.body.balance.isLast = true;
+                PUSH_RCMD(rcmd);
+                return;
+            }
+
+            for (size_t i = 0; i < pending.size(); ++i) {
+                pending[i].body.balance.isLast = (i + 1 == pending.size());
+                PUSH_RCMD(pending[i]);
+            }
+        }
+        catch (const std::exception& e) {
+            LOG_ERROR("TB {} query_balance exception: {}", acc.accountId, e.what());
+        }
+    });
 }
 
 void BinanceSpotWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
@@ -683,6 +731,14 @@ void BinanceSpotWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
 // ============================================================================
 void BinanceSpotWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     ADD_NEW_ORDER_TCMD_2_RCMD(tcmd)
+
+    std::cout << "isConnected.load(): " << isConnected.load() << std::endl;
+    std::cout << "wsLoggedIn_.load(): " << wsLoggedIn_.load() << std::endl;
+    std::cout << "signer_.load(): " << signer_.load() << std::endl;
+
+    if (!pWsClient) {
+        std::cout << "pWsClient is null" << std::endl;
+    }
 
     if (!isConnected.load() || !wsLoggedIn_.load() || !signer_.valid() || !pWsClient) {
         rcmd.body.orderResponse.orderStatus = OS_REJECTED;
