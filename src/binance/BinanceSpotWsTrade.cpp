@@ -441,6 +441,7 @@ void BinanceSpotWsTradeUnit::handleUserDataEvent(simdjson::ondemand::object& ev)
 
     for (auto field : ev) {
         std::string_view k = field.unescaped_key().value_unsafe();
+        std::cout << "data --- " << std::string(k) << std::endl;
         switch (k[0]) {
             case 'e':
                 field.value().get(e_sv);
@@ -469,7 +470,7 @@ void BinanceSpotWsTradeUnit::handleUserDataEvent(simdjson::ondemand::object& ev)
             case 'X':
                 field.value().get(X_sv);
                 break;
-            case 'i':
+            case 'I':
                 has_i = field.value().get(i_sv) == simdjson::SUCCESS;
                 if (!has_i) {
                     field.value().get(i_sv);
