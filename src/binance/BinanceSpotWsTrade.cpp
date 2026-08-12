@@ -297,6 +297,8 @@ void BinanceSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, boo
                     if (status == 200 && has_result) {
                         // handleWsApiResponse(pending, result);
 
+                        auto& b_res = result.value_unsafe();
+
 
     pubsub::RCommand& rcmd = pending.rcmd;
 
@@ -313,8 +315,9 @@ void BinanceSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, boo
 
     if (pending.type == pubsub::CMD_NEW_ORDER) {
         int64_t orderId = 0;
-        for (auto field : result) {
+        for (auto field : b_res) {
             std::string_view k = field.unescaped_key().value_unsafe();
+            std::cout << "----" << std::string(k) << "====" << std::endl;
             if (k == "orderId") {
                 field.value().get(orderId);
             }
@@ -370,7 +373,7 @@ void BinanceSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, boo
         }
 
         if (has_event) {
-            handleUserDataEvent(ev);
+            //handleUserDataEvent(ev);
         }
     } catch (const std::exception& e) {
         LOG_ERROR("TB {} ws msg exc: {}", acc.accountId, e.what());
