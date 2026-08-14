@@ -438,7 +438,7 @@ void BinanceUFTradeUnit::handleOrderUpdate(simdjson::ondemand::object& o) {
     }
 
     std::string tif(f_sv);
-    std::string ot(ot_sv);
+    std::string ot(o_sv);
     rcmd.body.orderResponse.orderType = crypto::get_binance_ordertype(tif.c_str(), ot.c_str());
     rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(q_sv) * info.magnifyNumber;
     rcmd.body.orderResponse.limitPrice = crypto::fast_atod(p_sv) * info.reduceNumber;
