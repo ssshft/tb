@@ -689,137 +689,136 @@ void BinanceUFTradeUnit::query_position(const pubsub::TCommand&) {
     };
     std::string path = buildSignedPath(positionUrl, kvs);
 
-    asyncRequest(boost::beast::http::verb::get, std::move(path), /*body=*/"", /*ct=*/"",
-        [this](boost::system::error_code ec, ::net::HttpResponse resp) {
-            if (ec) { 
-                LOG_ERROR("TB {} UF query_position ec: {}", acc.accountId, ec.message()); 
+    asyncRequest(boost::beast::http::verb::get, std::move(path), "", "", [this](boost::system::error_code ec, ::net::HttpResponse resp) {
+        if (ec) { 
+            LOG_ERROR("TB {} UF query_position ec: {}", acc.accountId, ec.message()); 
+            return; 
+        }
+        try {
+            std::cout << "query position: " << resp.body << std::endl;
+            simdjson::padded_string padded(resp.body);
+            auto doc = g_parser.iterate(padded);
+            if (doc.error()) {
                 return; 
             }
-            try {
-                std::cout << "query position: " << resp.body << std::endl;
-                simdjson::padded_string padded(resp.body);
-                auto doc = g_parser.iterate(padded);
-                if (doc.error()) {
-                    return; 
-                }
 
-                simdjson::ondemand::array positions;
-                if (doc.get_array().get(positions) != simdjson::SUCCESS) {
-                    LOG_ERROR("TB {} UF query_position not array: {}", acc.accountId, resp.body);
-                    return;
-                }
-
-                std::vector<pubsub::RCommand> pending;
-                for (auto b_val : positions) {
-                    auto b_res = b_val.get_object();
-                    if (b_res.error()) {
-                        continue;
-                    }
-                    auto& b = b_res.value_unsafe();
-
-                    std::string_view symbol_sv;
-                    std::string_view positionSide_sv;
-                    std::string_view positionAmt_sv;
-                    std::string_view entryPrice_sv;
-                    std::string_view markPrice_sv;
-                    std::string_view unRealizedProfit_sv;
-                    std::string_view liquidationPrice_sv;
-                    std::string_view maintMargin_sv;
-                    int64_t adl = 0;
-                    for (auto field : b) {
-                        std::string_view k = field.unescaped_key().value_unsafe();
-                        if (k == "symbol") {
-                            field.value().get(symbol_sv);
-                        }
-                        else if (k == "positionSide") {
-                            field.value().get(positionSide_sv);
-                        }
-                        else if (k == "positionAmt") {
-                            field.value().get(positionAmt_sv);
-                        }
-                        else if (k == "entryPrice") {
-                            field.value().get(entryPrice_sv);
-                        }
-                        else if (k == "markPrice") {
-                            field.value().get(markPrice_sv);
-                        }
-                        else if (k == "unRealizedProfit") {
-                            field.value().get(unRealizedProfit_sv);
-                        }
-                        else if (k == "liquidationPrice") {
-                            field.value().get(liquidationPrice_sv);
-                        }
-                        else if (k == "maintMargin") {
-                            field.value().get(maintMargin_sv);
-                        }
-                        else if (k == "adl") {
-                            field.value().get(adl);
-                        }
-                    }
-
-                    if (positionSide_sv.empty() || positionSide_sv[0] != 'B') {
-                        continue;
-                    }
-
-                    std::string originInstId(symbol_sv);
-                    md::InstrumentInfo info;
-                    InstType inst = USDT_SWAP;
-                    if (smc->get_instrument_info(BINANCE, USDT_SWAP, originInstId.c_str(), info)) {
-                        inst = USDT_SWAP;
-                    }
-                    else if (smc->get_instrument_info(BINANCE, USDT_FUTURES, originInstId.c_str(), info)) {
-                        inst = USDT_FUTURES;
-                    } 
-                    else {
-                        continue;
-                    }
-
-                    double positionAmt = crypto::fast_atod(positionAmt_sv);
-                    pubsub::RCommand rcmd;
-                    memset(&rcmd, 0, sizeof(pubsub::RCommand));
-                    rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
-                    rcmd.body.position.exchangeTypeEnum = BINANCE;
-                    rcmd.body.position.instTypeEnum = inst;
-                    crypto::copy_sv_to_char_array(rcmd.body.position.accountId, acc.accountId);
-                    crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
-                    crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
-                    rcmd.body.position.direction = positionAmt >= 0 ? DT_LONG : DT_SHORT;
-                    rcmd.body.position.volume = std::abs(positionAmt) * info.magnifyNumber;
-                    rcmd.body.position.maintMargin = crypto::fast_atod(maintMargin_sv);
-                    rcmd.body.position.avgPrice = crypto::fast_atod(entryPrice_sv) * info.reduceNumber;
-                    rcmd.body.position.unrealizedPnl = crypto::fast_atod(unRealizedProfit_sv);
-                    rcmd.body.position.markPrice = crypto::fast_atod(markPrice_sv) * info.reduceNumber;
-                    rcmd.body.position.liquidPrice = crypto::fast_atod(liquidationPrice_sv) * info.reduceNumber;
-                    rcmd.body.position.adlQuantile = static_cast<int>(adl) + 1;
-                    rcmd.body.position.updateTime = crypto::getCurrentTime();
-                    rcmd.body.position.apiSourceEnum = AS_REST;
-                    pending.emplace_back(rcmd);
-                }
-
-                if (pending.empty()) {
-                    pubsub::RCommand rcmd;
-                    memset(&rcmd, 0, sizeof(pubsub::RCommand));
-                    rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
-                    rcmd.body.position.exchangeTypeEnum = BINANCE;
-                    rcmd.body.position.instTypeEnum = USDT_SWAP;
-                    crypto::copy_sv_to_char_array(rcmd.body.position.accountId, acc.accountId);
-                    crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
-                    crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view("BTC-USDT"));
-                    rcmd.body.position.updateTime = crypto::getCurrentTime();
-                    rcmd.body.position.apiSourceEnum = AS_REST;
-                    rcmd.body.position.isLast = true;
-                    PUSH_RCMD(rcmd);
-                    return;
-                }
-                for (size_t i = 0; i < pending.size(); ++i) {
-                    pending[i].body.position.isLast = (i + 1 == pending.size());
-                    PUSH_RCMD(pending[i]);
-                }
+            simdjson::ondemand::array positions;
+            if (doc.get_array().get(positions) != simdjson::SUCCESS) {
+                LOG_ERROR("TB {} UF query_position not array: {}", acc.accountId, resp.body);
+                return;
             }
-            catch (const std::exception& e) {
-                LOG_ERROR("TB {} UF query_position cb exc: {}", acc.accountId, e.what());
+
+            std::vector<pubsub::RCommand> pending;
+            for (auto b_val : positions) {
+                auto b_res = b_val.get_object();
+                if (b_res.error()) {
+                    continue;
+                }
+                auto& b = b_res.value_unsafe();
+
+                std::string_view symbol_sv;
+                std::string_view positionSide_sv;
+                std::string_view positionAmt_sv;
+                std::string_view entryPrice_sv;
+                std::string_view markPrice_sv;
+                std::string_view unRealizedProfit_sv;
+                std::string_view liquidationPrice_sv;
+                std::string_view maintMargin_sv;
+                int64_t adl = 0;
+                for (auto field : b) {
+                    std::string_view k = field.unescaped_key().value_unsafe();
+                    if (k == "symbol") {
+                        field.value().get(symbol_sv);
+                    }
+                    else if (k == "positionSide") {
+                        field.value().get(positionSide_sv);
+                    }
+                    else if (k == "positionAmt") {
+                        field.value().get(positionAmt_sv);
+                    }
+                    else if (k == "entryPrice") {
+                        field.value().get(entryPrice_sv);
+                    }
+                    else if (k == "markPrice") {
+                        field.value().get(markPrice_sv);
+                    }
+                    else if (k == "unRealizedProfit") {
+                        field.value().get(unRealizedProfit_sv);
+                    }
+                    else if (k == "liquidationPrice") {
+                        field.value().get(liquidationPrice_sv);
+                    }
+                    else if (k == "maintMargin") {
+                        field.value().get(maintMargin_sv);
+                    }
+                    else if (k == "adl") {
+                        field.value().get(adl);
+                    }
+                }
+
+                if (positionSide_sv.empty() || positionSide_sv[0] != 'B') {
+                    continue;
+                }
+
+                std::string originInstId(symbol_sv);
+                md::InstrumentInfo info;
+                InstType inst = USDT_SWAP;
+                if (smc->get_instrument_info(BINANCE, USDT_SWAP, originInstId.c_str(), info)) {
+                    inst = USDT_SWAP;
+                }
+                else if (smc->get_instrument_info(BINANCE, USDT_FUTURES, originInstId.c_str(), info)) {
+                    inst = USDT_FUTURES;
+                } 
+                else {
+                    continue;
+                }
+
+                double positionAmt = crypto::fast_atod(positionAmt_sv);
+                pubsub::RCommand rcmd;
+                memset(&rcmd, 0, sizeof(pubsub::RCommand));
+                rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
+                rcmd.body.position.exchangeTypeEnum = BINANCE;
+                rcmd.body.position.instTypeEnum = inst;
+                crypto::copy_sv_to_char_array(rcmd.body.position.accountId, acc.accountId);
+                crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
+                crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
+                rcmd.body.position.direction = positionAmt >= 0 ? DT_LONG : DT_SHORT;
+                rcmd.body.position.volume = std::abs(positionAmt) * info.magnifyNumber;
+                rcmd.body.position.maintMargin = crypto::fast_atod(maintMargin_sv);
+                rcmd.body.position.avgPrice = crypto::fast_atod(entryPrice_sv) * info.reduceNumber;
+                rcmd.body.position.unrealizedPnl = crypto::fast_atod(unRealizedProfit_sv);
+                rcmd.body.position.markPrice = crypto::fast_atod(markPrice_sv) * info.reduceNumber;
+                rcmd.body.position.liquidPrice = crypto::fast_atod(liquidationPrice_sv) * info.reduceNumber;
+                rcmd.body.position.adlQuantile = static_cast<int>(adl) + 1;
+                rcmd.body.position.updateTime = crypto::getCurrentTime();
+                rcmd.body.position.apiSourceEnum = AS_REST;
+                pending.emplace_back(rcmd);
             }
-        });
+
+            if (pending.empty()) {
+                pubsub::RCommand rcmd;
+                memset(&rcmd, 0, sizeof(pubsub::RCommand));
+                rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
+                rcmd.body.position.exchangeTypeEnum = BINANCE;
+                rcmd.body.position.instTypeEnum = USDT_SWAP;
+                crypto::copy_sv_to_char_array(rcmd.body.position.accountId, acc.accountId);
+                crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
+                crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view("BTC-USDT"));
+                rcmd.body.position.updateTime = crypto::getCurrentTime();
+                rcmd.body.position.apiSourceEnum = AS_REST;
+                rcmd.body.position.isLast = true;
+                PUSH_RCMD(rcmd);
+                return;
+            }
+            for (size_t i = 0; i < pending.size(); ++i) {
+                pending[i].body.position.isLast = (i + 1 == pending.size());
+                PUSH_RCMD(pending[i]);
+            }
+        }
+        catch (const std::exception& e) {
+            LOG_ERROR("TB {} UF query_position cb exc: {}", acc.accountId, e.what());
+        }
+    });
 }
 
 // ---- POST /fapi/v1/order?... ----

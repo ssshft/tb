@@ -44,20 +44,19 @@ public:
     virtual void onOpen() override;
     virtual void onCloseMsg(int code, const std::string& reason) override;
 
-    virtual void query_account (const pubsub::TCommand& tcmd) override;
-    virtual void query_balance (const pubsub::TCommand& tcmd) override;
+    virtual void query_account(const pubsub::TCommand& tcmd) override;
+    virtual void query_balance(const pubsub::TCommand& tcmd) override;
     virtual void query_position(const pubsub::TCommand& tcmd) override;
-    virtual void add_new_order (const pubsub::TCommand& tcmd) override;
-    virtual void cancel_order  (const pubsub::TCommand& tcmd) override;
-    virtual void query_order   (const pubsub::TCommand& tcmd) override;
+    virtual void add_new_order(const pubsub::TCommand& tcmd) override;
+    virtual void cancel_order(const pubsub::TCommand& tcmd) override;
+    virtual void query_order(const pubsub::TCommand& tcmd) override;
 
 private:
-    enum class WsReqType : uint8_t { NEW_ORDER, CANCEL_ORDER };
+    // ---- 请求类型 (pending map 里记类型分派响应) ----
     struct WsPending {
-        pubsub::RCommand   rcmd;
-        WsReqType          type;
-        int64_t            ts_ms;
-        md::InstrumentInfo info;
+        pubsub::CommandType type;
+        pubsub::RCommand rcmd;
+        int64_t ts_ms;
     };
 
     static constexpr int kSessionLogonId  = 1;
@@ -65,45 +64,36 @@ private:
 
     // ---- REST (Ed25519 签名 + URL-encode) ----
     std::string signPayloadForRest(const std::string& qs) const;
-    std::string buildRestSignedPath(std::string_view basePath,
-                                    const std::vector<std::pair<std::string, std::string>>& kvs) const;
+    std::string buildRestSignedPath(std::string_view basePath, const std::vector<std::pair<std::string, std::string>>& kvs) const;
 
     // ---- WS JSON builders ----
     std::string buildLogonJson();
     std::string buildUserSubscribeJson() const;
     std::string buildOrderPlaceJson(int wsId,
-                                     const pubsub::TCommand& tcmd,
-                                     const md::InstrumentInfo& info,
-                                     const std::string& price, const std::string& amount,
-                                     const char* side, const char* type,
-                                     const char* tif, const char* respType) const;
+                    const pubsub::TCommand& tcmd,
+                    const md::InstrumentInfo& info,
+                    const std::string& price, const std::string& amount,
+                    const char* side, const char* type,
+                    const char* tif, const char* respType) const;
     std::string buildOrderCancelJson(int wsId,
-                                      const pubsub::TCommand& tcmd,
-                                      const md::InstrumentInfo& info) const;
+                    const pubsub::TCommand& tcmd,
+                    const md::InstrumentInfo& info) const;
 
     // ---- pending map ----
-    void recordPending(int id, WsReqType type,
-                       const pubsub::RCommand& rcmd,
-                       const md::InstrumentInfo& info);
+    void recordPending(int id, pubsub::CommandType type, const pubsub::RCommand& rcmd);
     bool takePending(int id, WsPending& out);
     void clearPending();
-    void gcPendingLocked(int64_t now_ms);
 
     // ---- msg 分派 ----
-    void handleWsApiResponse (simdjson::ondemand::document& doc, int64_t recv_ns);
-    void handleUserDataEvent (simdjson::ondemand::object& event);
-    void handleAccountUpdate (simdjson::ondemand::object& event);
-    void handleOrderUpdate   (simdjson::ondemand::object& event);
+    void handleWsApiResponse(WsPending& pending, simdjson::ondemand::object& result);
+    void handleWsApiError(WsPending& pending, simdjson::ondemand::object& err);
+    void handleUserDataEvent(simdjson::ondemand::object& ev);
 
-    // ---- ws-api 响应处理 ----
-    void onLogonResponse       (int status, simdjson::ondemand::document& doc);
-    void onOrderPlaceResponse  (WsPending& pending, int status,
-                                 simdjson::ondemand::document& doc, int64_t recv_ns);
-    void onOrderCancelResponse (WsPending& pending, int status,
-                                 simdjson::ondemand::document& doc, int64_t recv_ns);
-
-    // ---- helpers ----
-    bool lookupInstrument(const std::string& originInstId, md::InstrumentInfo& info, InstType& out) const;
+    // ---- WS msg 分派 ----
+    // "e":"ACCOUNT_UPDATE" → 余额 + 持仓 push
+    void handleAccountUpdate(simdjson::ondemand::object& o);
+    // "e":"ORDER_TRADE_UPDATE" → 订单回报
+    void handleOrderUpdate(simdjson::ondemand::object& a);
 
 private:
     crypto::Ed25519Signer signer_;
@@ -111,12 +101,15 @@ private:
     std::atomic<bool> wsLoggedIn_{false};
     std::atomic<int>  nextWsId_{100};
 
-    std::mutex                                   pendingMtx_;
-    std::unordered_map<int, WsPending>           pendingMap_;
-    std::atomic<int64_t>                         pendingLastGcMs_{0};
+    std::unordered_map<int, WsPending> pendingMap_;
+    std::atomic<int64_t> pendingLastGcMs_{0};
 
     // REST 端点
-    std::string balanceUrl    = "/fapi/v3/account";
-    std::string positionUrl   = "/fapi/v3/positionRisk";
+    std::string balanceUrl = "/fapi/v3/account";
+    std::string positionUrl = "/fapi/v3/positionRisk";
     std::string queryOrderUrl = "/fapi/v1/order";
+
+    int64_t kPendingTtlMs = 30 * 1000;
+    size_t kPendingHardMax = 10000;
+    int64_t kGcIntervalMs = 5000;
 };

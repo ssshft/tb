@@ -871,8 +871,8 @@ void BinanceSpotWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
 
     if (!isConnected.load() || !wsLoggedIn_.load()) {
         rcmd.body.orderResponse.orderStatus = OS_REJECTED;
-        rcmd.body.orderResponse.errorId     = TBDisconnectError;
-        rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
+        rcmd.body.orderResponse.errorId = TBDisconnectError;
+        rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
         PUSH_RCMD(rcmd)
         return;
     }
