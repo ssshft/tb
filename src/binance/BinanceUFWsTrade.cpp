@@ -1065,7 +1065,7 @@ void BinanceUFWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
         return;
     }
 
-    std::string path = buildSignedPath(queryOrderUrl, kvs);
+    std::string path = buildRestSignedPath(queryOrderUrl, kvs);
     LOG_INFO("TB {} UF query_order: {}", acc.accountId, path);
 
     asyncRequest(boost::beast::http::verb::get, std::move(path), "", "", [this, rcmd, info](boost::system::error_code ec, net::HttpResponse resp) mutable {
@@ -1256,7 +1256,7 @@ void BinanceUFWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     const int wsId = nextWsId_.fetch_add(1, std::memory_order_relaxed);
     std::string msg = buildOrderPlaceJson(wsId, tcmd, info, price_str, amount_str, side, type, tif, respTyp);
 
-    recordPending(wsId, pubsub::CMD_NEW_ORDER, rcmd, info);
+    recordPending(wsId, pubsub::CMD_NEW_ORDER, rcmd);
     LOG_INFO("TB {} UF ws order.place id={} msg={}", acc.accountId, wsId, msg);
     pWsClient->send_text(std::move(msg));
 }
@@ -1293,7 +1293,7 @@ void BinanceUFWsTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     const int wsId = nextWsId_.fetch_add(1, std::memory_order_relaxed);
     std::string msg = buildOrderCancelJson(wsId, tcmd, info);
 
-    recordPending(wsId, pubsub::CMD_CANCEL_ORDER, rcmd, info);
+    recordPending(wsId, pubsub::CMD_CANCEL_ORDER, rcmd);
     LOG_INFO("TB {} UF ws order.cancel id={} msg={}", acc.accountId, wsId, msg);
     pWsClient->send_text(std::move(msg));
 }
