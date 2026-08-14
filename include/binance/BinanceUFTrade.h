@@ -60,9 +60,9 @@ private:
 
     // ---- WS msg 分派 ----
     // "e":"ACCOUNT_UPDATE" → 余额 + 持仓 push
-    void handleAccountUpdate(simdjson::ondemand::object& root);
+    void handleAccountUpdate(simdjson::ondemand::object& o);
     // "e":"ORDER_TRADE_UPDATE" → 订单回报
-    void handleOrderUpdate(simdjson::ondemand::object& root);
+    void handleOrderUpdate(simdjson::ondemand::object& a);
 
 
 private:
