@@ -362,7 +362,7 @@ void BinanceUFTradeUnit::handleOrderUpdate(simdjson::ondemand::object& o) {
     std::string_view p_sv;
     std::string_view ap_sv;
     std::string_view X_sv;
-    std::string_view i_sv;
+    int64_t i_val = 0;
     std::string_view l_sv;
     std::string_view z_sv;
     std::string_view L_sv;
@@ -396,7 +396,7 @@ void BinanceUFTradeUnit::handleOrderUpdate(simdjson::ondemand::object& o) {
             field.value().get(X_sv);
         }
         else if (k == "i") {
-            field.value().get(i_sv);
+            field.value().get(i_val);
         }
         else if (k == "l") {
             field.value().get(l_sv);
@@ -429,7 +429,7 @@ void BinanceUFTradeUnit::handleOrderUpdate(simdjson::ondemand::object& o) {
     crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountId, acc.accountId);
     crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
     crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
-    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, i_sv);
+    fmt::format_to(rcmd.body.orderResponse.orderId, "{}", i_val);
     crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, c_sv);
 
     rcmd.body.orderResponse.offsetFlag = OF_OPEN;
@@ -445,7 +445,7 @@ void BinanceUFTradeUnit::handleOrderUpdate(simdjson::ondemand::object& o) {
     rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(z_sv) * info.magnifyNumber;
     rcmd.body.orderResponse.tradePrice = crypto::fast_atod(ap_sv) * info.reduceNumber;
     rcmd.body.orderResponse.tradeDiff = crypto::fast_atod(l_sv) * info.magnifyNumber;
-    rcmd.body.orderResponse.fillPrice = crypto::fast_atod(L_sv)  * info.reduceNumber;
+    rcmd.body.orderResponse.fillPrice = crypto::fast_atod(L_sv) * info.reduceNumber;
 
     std::string X_str(X_sv);
     rcmd.body.orderResponse.orderStatus = crypto::get_binance_orderstatus(X_str);
