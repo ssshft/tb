@@ -875,7 +875,7 @@ void BinanceUFTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     kvs.emplace_back("recvWindow", "5000");
     kvs.emplace_back("newClientOrderId", tcmd.body.newOrder.orderSysId);
     kvs.emplace_back("symbol", info.originInstId);
-    // kvs.emplace_back("timestamp", std::to_string(crypto::getCurrentTimeMilli()));s
+    kvs.emplace_back("timestamp", std::to_string(crypto::getCurrentTimeMilli()));
     kvs.emplace_back("side", side);
 
     switch (tcmd.body.newOrder.orderType) {
