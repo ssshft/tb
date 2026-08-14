@@ -369,7 +369,7 @@ void BinanceUFWsTradeUnit::handleWsApiResponse(WsPending& pending, simdjson::ond
             rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(execQ_sv) * info.magnifyNumber;
         }
         if (!avgP_sv.empty()) {
-            rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avgP_svcumQ_sv) * info.reduceNumber;
+            rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avgP_sv) * info.reduceNumber;
         }
 
         rcmd.body.orderResponse.orderStatus = OS_CANCELED;
@@ -693,7 +693,7 @@ void BinanceUFWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
         {"recvWindow", "5000"},
         {"timestamp",  std::to_string(crypto::getCurrentTimeMilli())},
     };
-    std::string path = buildSignedPath(balanceUrl, kvs);
+    std::string path = buildRestSignedPath(balanceUrl, kvs);
 
     asyncRequest(boost::beast::http::verb::get, std::move(path), "", "", [this](boost::system::error_code ec, ::net::HttpResponse resp) {
         if (ec) { 
@@ -908,7 +908,7 @@ void BinanceUFWsTradeUnit::query_position(const pubsub::TCommand&) {
         {"recvWindow", "5000"},
         {"timestamp",  std::to_string(crypto::getCurrentTimeMilli())},
     };
-    std::string path = buildSignedPath(positionUrl, kvs);
+    std::string path = buildRestSignedPath(positionUrl, kvs);
 
     asyncRequest(boost::beast::http::verb::get, std::move(path), "", "", [this](boost::system::error_code ec, ::net::HttpResponse resp) {
         if (ec) { 
@@ -1256,7 +1256,7 @@ void BinanceUFWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     const int wsId = nextWsId_.fetch_add(1, std::memory_order_relaxed);
     std::string msg = buildOrderPlaceJson(wsId, tcmd, info, price_str, amount_str, side, type, tif, respTyp);
 
-    recordPending(wsId, WsReqType::NEW_ORDER, rcmd, info);
+    recordPending(wsId, pubsub::CMD_NEW_ORDER, rcmd, info);
     LOG_INFO("TB {} UF ws order.place id={} msg={}", acc.accountId, wsId, msg);
     pWsClient->send_text(std::move(msg));
 }
@@ -1293,7 +1293,7 @@ void BinanceUFWsTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     const int wsId = nextWsId_.fetch_add(1, std::memory_order_relaxed);
     std::string msg = buildOrderCancelJson(wsId, tcmd, info);
 
-    recordPending(wsId, WsReqType::CANCEL_ORDER, rcmd, info);
+    recordPending(wsId, pubsub::CMD_CANCEL_ORDER, rcmd, info);
     LOG_INFO("TB {} UF ws order.cancel id={} msg={}", acc.accountId, wsId, msg);
     pWsClient->send_text(std::move(msg));
 }

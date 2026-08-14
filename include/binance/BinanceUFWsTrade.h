@@ -31,6 +31,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <tbb/concurrent_hash_map.h>
 
 
 class BinanceUFWsTradeUnit : public BaseTradeUnit {
@@ -101,7 +102,7 @@ private:
     std::atomic<bool> wsLoggedIn_{false};
     std::atomic<int>  nextWsId_{100};
 
-    std::unordered_map<int, WsPending> pendingMap_;
+    tbb::concurrent_hash_map<int, WsPending> pendingMap_;
     std::atomic<int64_t> pendingLastGcMs_{0};
 
     // REST 端点
