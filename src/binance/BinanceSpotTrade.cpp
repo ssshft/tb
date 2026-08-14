@@ -569,7 +569,7 @@ void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     const std::string& path = buildSignedPath(newOrderUrl, kvs);
     LOG_INFO("TB {} add_new_order: {}", acc.accountId, path);
 
-    asyncRequest(boost::beast::http::verb::post, std::move(path), /*body=*/"", /*ct=*/"", [this, rcmd, info](boost::system::error_code ec, net::HttpResponse resp) mutable {
+    asyncRequest(boost::beast::http::verb::post, std::move(path), "", "", [this, rcmd, info](boost::system::error_code ec, net::HttpResponse resp) mutable {
         if (ec) {
             LOG_ERROR("TB {} add_new_order ec: {}", acc.accountId, ec.message());
 
@@ -733,86 +733,85 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     const std::string& path = buildSignedPath(cancelOrderUrl, kvs);
     LOG_INFO("TB {} cancel_order: {}", acc.accountId, path);
 
-    asyncRequest(boost::beast::http::verb::delete_, std::move(path), /*body=*/"", /*ct=*/"",
-        [this, rcmd, info](boost::system::error_code ec, net::HttpResponse resp) mutable {
-            if (ec) {
-                LOG_ERROR("TB {} cancel_order ec: {}", acc.accountId, ec.message());
-                rcmd.body.orderResponse.orderStatus = OS_FAILED;
-                rcmd.body.orderResponse.errorId = NetworkError;
-                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, ec.message());
-                rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                PUSH_RCMD(rcmd)
+    asyncRequest(boost::beast::http::verb::delete_, std::move(path), "", "", [this, rcmd, info](boost::system::error_code ec, net::HttpResponse resp) mutable {
+        if (ec) {
+            LOG_ERROR("TB {} cancel_order ec: {}", acc.accountId, ec.message());
+            rcmd.body.orderResponse.orderStatus = OS_FAILED;
+            rcmd.body.orderResponse.errorId = NetworkError;
+            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, ec.message());
+            rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+            PUSH_RCMD(rcmd)
+            return;
+        }
+        try {
+            std::cout << "cancel order: " << resp.body << std::endl;
+            simdjson::padded_string padded(resp.body);
+            auto doc = g_parser.iterate(padded);
+            if (doc.error()) {
+                LOG_ERROR("TB {} cancel_order parse err: {}", acc.accountId, resp.body);
                 return;
             }
-            try {
-                std::cout << "cancel order: " << resp.body << std::endl;
-                simdjson::padded_string padded(resp.body);
-                auto doc = g_parser.iterate(padded);
-                if (doc.error()) {
-                    LOG_ERROR("TB {} cancel_order parse err: {}", acc.accountId, resp.body);
-                    return;
+
+            auto doc_value = doc.get_object().value_unsafe();
+
+            int64_t code = 0;
+            int64_t orderId = 0;
+            std::string_view msg_sv;
+            std::string_view execQ_sv;
+            std::string_view cumQ_sv;
+
+            bool has_code = false;
+            bool has_orderId = false;
+
+            for (auto field : doc_value) {
+                std::string_view k = field.unescaped_key().value_unsafe();
+                if (k == "code") {
+                    has_code = field.value().get(code) == simdjson::SUCCESS;
                 }
-
-                auto doc_value = doc.get_object().value_unsafe();
-
-                int64_t code = 0;
-                int64_t orderId = 0;
-                std::string_view msg_sv;
-                std::string_view execQ_sv;
-                std::string_view cumQ_sv;
-
-                bool has_code = false;
-                bool has_orderId = false;
-
-                for (auto field : doc_value) {
-                    std::string_view k = field.unescaped_key().value_unsafe();
-                    if (k == "code") {
-                        has_code = field.value().get(code) == simdjson::SUCCESS;
-                    }
-                    else if (k == "msg") {
-                        field.value().get(msg_sv);
-                    }
-                    else if (k == "orderId") {
-                        has_orderId = field.value().get(orderId) == simdjson::SUCCESS;
-                    }
-                    else if (k == "executedQty") {
-                        field.value().get(execQ_sv);
-                    }
-                    else if (k == "cummulativeQuoteQty") {
-                        field.value().get(cumQ_sv);
-                    }
+                else if (k == "msg") {
+                    field.value().get(msg_sv);
                 }
-
-                if (has_code) {
-                    rcmd.body.orderResponse.errorId = crypto::get_binance_errorid(static_cast<int>(code));
-                    rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.errorId == OrderNotFoundError) ? OS_REJECTED : OS_FAILED;
-                    if (!msg_sv.empty()) {
-                        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, msg_sv);
-                    }
-                    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                    PUSH_RCMD(rcmd)
-                    return;     
+                else if (k == "orderId") {
+                    has_orderId = field.value().get(orderId) == simdjson::SUCCESS;
                 }
-
-                if (has_orderId) {
-                    fmt::format_to(rcmd.body.orderResponse.orderId, "{}", orderId);
-                    if (!execQ_sv.empty()) {
-                        rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(execQ_sv) * info.magnifyNumber;
-                    }
-                    if (rcmd.body.orderResponse.volumeTraded > 0 && !cumQ_sv.empty()) {
-                        double cumQ = crypto::fast_atod(cumQ_sv);
-                        rcmd.body.orderResponse.tradePrice = cumQ / rcmd.body.orderResponse.volumeTraded * info.reduceNumber;
-                    }
-
-                    rcmd.body.orderResponse.orderStatus = OS_CANCELED;
-                    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                    PUSH_RCMD(rcmd)
+                else if (k == "executedQty") {
+                    field.value().get(execQ_sv);
+                }
+                else if (k == "cummulativeQuoteQty") {
+                    field.value().get(cumQ_sv);
                 }
             }
-            catch (const std::exception& e) {
-                LOG_ERROR("TB {} cancel_order cb exception: {}", acc.accountId, e.what());
+
+            if (has_code) {
+                rcmd.body.orderResponse.errorId = crypto::get_binance_errorid(static_cast<int>(code));
+                rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.errorId == OrderNotFoundError) ? OS_REJECTED : OS_FAILED;
+                if (!msg_sv.empty()) {
+                    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, msg_sv);
+                }
+                rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+                PUSH_RCMD(rcmd)
+                return;     
             }
-        });
+
+            if (has_orderId) {
+                fmt::format_to(rcmd.body.orderResponse.orderId, "{}", orderId);
+                if (!execQ_sv.empty()) {
+                    rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(execQ_sv) * info.magnifyNumber;
+                }
+                if (rcmd.body.orderResponse.volumeTraded > 0 && !cumQ_sv.empty()) {
+                    double cumQ = crypto::fast_atod(cumQ_sv);
+                    rcmd.body.orderResponse.tradePrice = cumQ / rcmd.body.orderResponse.volumeTraded * info.reduceNumber;
+                }
+
+                rcmd.body.orderResponse.orderStatus = OS_CANCELED;
+                rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+                PUSH_RCMD(rcmd)
+            }
+        }
+        catch (const std::exception& e) {
+            LOG_ERROR("TB {} cancel_order cb exception: {}", acc.accountId, e.what());
+        }
+    });
 }
 
 
@@ -844,100 +843,99 @@ void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     const std::string& path = buildSignedPath(queryOrderUrl, kvs);
     LOG_INFO("TB {} query_order: {}", acc.accountId, path);
 
-    asyncRequest(boost::beast::http::verb::get, std::move(path), /*body=*/"", /*ct=*/"",
-        [this, rcmd, info](boost::system::error_code ec, net::HttpResponse resp) mutable {
-            if (ec) {
-                LOG_ERROR("TB {} query_order ec: {}", acc.accountId, ec.message());
+    asyncRequest(boost::beast::http::verb::get, std::move(path), "", "", [this, rcmd, info](boost::system::error_code ec, net::HttpResponse resp) mutable {
+        if (ec) {
+            LOG_ERROR("TB {} query_order ec: {}", acc.accountId, ec.message());
+            return;
+        }
+        try {
+            std::cout << "query order: " << resp.body << std::endl;
+            simdjson::padded_string padded(resp.body);
+            auto doc = g_parser.iterate(padded);
+            if (doc.error()) {
+                LOG_ERROR("TB {} query_order parse err: {}", acc.accountId, resp.body);
                 return;
             }
-            try {
-                std::cout << "query order: " << resp.body << std::endl;
-                simdjson::padded_string padded(resp.body);
-                auto doc = g_parser.iterate(padded);
-                if (doc.error()) {
-                    LOG_ERROR("TB {} query_order parse err: {}", acc.accountId, resp.body);
-                    return;
+
+            auto doc_value = doc.get_object().value_unsafe();
+
+            int64_t code = 0;
+            int64_t orderId = 0;
+            std::string_view origQ_sv;
+            std::string_view price_sv;
+            std::string_view execQ_sv;
+            std::string_view cumQ_sv;
+            std::string_view status_sv;
+
+            bool has_code = false;
+            bool has_orderId = false;
+
+            for (auto field : doc_value) {
+                std::string_view k = field.unescaped_key().value_unsafe();
+                if (k == "code") {
+                    has_code = field.value().get(code) == simdjson::SUCCESS;
+                }
+                else if (k == "orderId") {
+                    has_orderId = field.value().get(orderId) == simdjson::SUCCESS;
+                }
+                else if (k == "origQty") {
+                    field.value().get(origQ_sv);
+                }
+                else if (k == "price") {
+                    field.value().get(price_sv);
+                }
+                else if (k == "executedQty") {
+                    field.value().get(execQ_sv);
+                }
+                else if (k == "cummulativeQuoteQty") {
+                    field.value().get(cumQ_sv);
+                }
+                else if (k == "status") {
+                    field.value().get(status_sv);
                 }
 
-                auto doc_value = doc.get_object().value_unsafe();
+            }
 
-                int64_t code = 0;
-                int64_t orderId = 0;
-                std::string_view origQ_sv;
-                std::string_view price_sv;
-                std::string_view execQ_sv;
-                std::string_view cumQ_sv;
-                std::string_view status_sv;
-
-                bool has_code = false;
-                bool has_orderId = false;
-
-                for (auto field : doc_value) {
-                    std::string_view k = field.unescaped_key().value_unsafe();
-                    if (k == "code") {
-                        has_code = field.value().get(code) == simdjson::SUCCESS;
-                    }
-                    else if (k == "orderId") {
-                        has_orderId = field.value().get(orderId) == simdjson::SUCCESS;
-                    }
-                    else if (k == "origQty") {
-                        field.value().get(origQ_sv);
-                    }
-                    else if (k == "price") {
-                        field.value().get(price_sv);
-                    }
-                    else if (k == "executedQty") {
-                        field.value().get(execQ_sv);
-                    }
-                    else if (k == "cummulativeQuoteQty") {
-                        field.value().get(cumQ_sv);
-                    }
-                    else if (k == "status") {
-                        field.value().get(status_sv);
-                    }
-
-                }
-
-                if (has_code) {
-                    long now = crypto::getCurrentTime();
-                    if (rcmd.body.orderResponse.clientOrderId > 0 && now - rcmd.body.orderResponse.clientOrderId > ORDER_REJECTED_TIME_OUT) {
-                        rcmd.body.orderResponse.orderStatus = OS_REJECTED;
-                        rcmd.body.orderResponse.errorId = crypto::get_binance_errorid(static_cast<int>(code));
-                        rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                        PUSH_RCMD(rcmd);
-                    }
-                    return;   
-                }
-
-                if (has_orderId) {
-                    fmt::format_to(rcmd.body.orderResponse.orderId, "{}", orderId);
-                
-                    if (!origQ_sv.empty()) {
-                        rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(origQ_sv) * info.magnifyNumber;
-                    }
-
-                    if (!price_sv.empty()) {
-                        rcmd.body.orderResponse.limitPrice = crypto::fast_atod(price_sv) * info.reduceNumber;
-                    }
-
-                    if (!execQ_sv.empty()) {
-                        rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(execQ_sv) * info.magnifyNumber;
-                    }
-
-                    if (rcmd.body.orderResponse.volumeTraded > 0 && !cumQ_sv.empty()) {
-                        double cumQ = crypto::fast_atod(cumQ_sv);
-                        rcmd.body.orderResponse.tradePrice = cumQ / rcmd.body.orderResponse.volumeTraded * info.reduceNumber;
-                    }
-                    if (!status_sv.empty()) {
-                        std::string st(status_sv);
-                        rcmd.body.orderResponse.orderStatus = crypto::get_binance_orderstatus(st);
-                    }
+            if (has_code) {
+                long now = crypto::getCurrentTime();
+                if (rcmd.body.orderResponse.clientOrderId > 0 && now - rcmd.body.orderResponse.clientOrderId > ORDER_REJECTED_TIME_OUT) {
+                    rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+                    rcmd.body.orderResponse.errorId = crypto::get_binance_errorid(static_cast<int>(code));
                     rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
                     PUSH_RCMD(rcmd);
                 }
+                return;   
             }
-            catch (const std::exception& e) {
-                LOG_ERROR("TB {} query_order cb exception: {}", acc.accountId, e.what());
+
+            if (has_orderId) {
+                fmt::format_to(rcmd.body.orderResponse.orderId, "{}", orderId);
+            
+                if (!origQ_sv.empty()) {
+                    rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(origQ_sv) * info.magnifyNumber;
+                }
+
+                if (!price_sv.empty()) {
+                    rcmd.body.orderResponse.limitPrice = crypto::fast_atod(price_sv) * info.reduceNumber;
+                }
+
+                if (!execQ_sv.empty()) {
+                    rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(execQ_sv) * info.magnifyNumber;
+                }
+
+                if (rcmd.body.orderResponse.volumeTraded > 0 && !cumQ_sv.empty()) {
+                    double cumQ = crypto::fast_atod(cumQ_sv);
+                    rcmd.body.orderResponse.tradePrice = cumQ / rcmd.body.orderResponse.volumeTraded * info.reduceNumber;
+                }
+                if (!status_sv.empty()) {
+                    std::string st(status_sv);
+                    rcmd.body.orderResponse.orderStatus = crypto::get_binance_orderstatus(st);
+                }
+                rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+                PUSH_RCMD(rcmd);
             }
-        });
+        }
+        catch (const std::exception& e) {
+            LOG_ERROR("TB {} query_order cb exception: {}", acc.accountId, e.what());
+        }
+    });
 }
