@@ -1387,7 +1387,7 @@ void BinanceUFWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
 
     recordPending(wsId, pubsub::CMD_NEW_ORDER, rcmd);
     LOG_INFO("TB {} UF ws order.place id={} msg={}", acc.accountId, wsId, msg);
-    pWsClient->send_text(std::move(msg));
+    pWsTradeClient->send_text(std::move(msg));
 }
 
 // ============================================================================
@@ -1424,5 +1424,5 @@ void BinanceUFWsTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
 
     recordPending(wsId, pubsub::CMD_CANCEL_ORDER, rcmd);
     LOG_INFO("TB {} UF ws order.cancel id={} msg={}", acc.accountId, wsId, msg);
-    pWsClient->send_text(std::move(msg));
+    pWsTradeClient->send_text(std::move(msg));
 }
