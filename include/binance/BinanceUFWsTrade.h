@@ -61,7 +61,6 @@ private:
     };
 
     static constexpr int kSessionLogonId  = 1;
-    static constexpr int kUserStreamSubId = 2;
 
     // ---- REST (Ed25519 签名 + URL-encode) ----
     std::string signPayloadForRest(const std::string& qs) const;
@@ -69,7 +68,6 @@ private:
 
     // ---- WS JSON builders ----
     std::string buildLogonJson();
-    std::string buildUserSubscribeJson() const;
     std::string buildOrderPlaceJson(int wsId,
                     const pubsub::TCommand& tcmd,
                     const md::InstrumentInfo& info,
@@ -88,7 +86,12 @@ private:
     // ---- msg 分派 ----
     void handleWsApiResponse(WsPending& pending, simdjson::ondemand::object& result);
     void handleWsApiError(WsPending& pending, simdjson::ondemand::object& err);
-    void handleUserDataEvent(simdjson::ondemand::object& ev);
+    
+    bool generateListenKeySync();
+    void renewListenKeyAsync();
+    void listenKeyRenewLoop();
+
+    void onWsTradeMsg(const uint8_t* data, size_t len, bool isBinary, int64_t recv_ns);
 
     // ---- WS msg 分派 ----
     // "e":"ACCOUNT_UPDATE" → 余额 + 持仓 push
@@ -100,7 +103,7 @@ private:
     crypto::Ed25519Signer signer_;
 
     std::atomic<bool> wsLoggedIn_{false};
-    std::atomic<int>  nextWsId_{100};
+    std::atomic<int> nextWsId_{100};
 
     tbb::concurrent_hash_map<int, WsPending> pendingMap_;
     std::atomic<int64_t> pendingLastGcMs_{0};
@@ -109,6 +112,18 @@ private:
     std::string balanceUrl = "/fapi/v3/account";
     std::string positionUrl = "/fapi/v3/positionRisk";
     std::string queryOrderUrl = "/fapi/v1/order";
+    std::string listenKeyUrl = "/fapi/v1/listenKey";
+
+    std::string listenKey_;
+    std::shared_ptr<net::WsClient> pWsTradeClient;
+    std::atomic<bool> isTradeConnected{false};
+
+    // ---- listenKey 续期后台线程 ----
+    std::thread renewThread_;
+    std::atomic<bool> renewStop_{false};
+    std::mutex renewMtx_;
+    std::condition_variable renewCv_;
+    int kListenKeyRenewSec = 30 * 60;  // 30min
 
     int64_t kPendingTtlMs = 30 * 1000;
     size_t kPendingHardMax = 10000;

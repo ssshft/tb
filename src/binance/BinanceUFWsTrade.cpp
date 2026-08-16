@@ -12,7 +12,13 @@ BinanceUFWsTradeUnit::BinanceUFWsTradeUnit(AccountCfg& a, sm::SecurityManager* s
     }
 }
 
-BinanceUFWsTradeUnit::~BinanceUFWsTradeUnit() = default;
+BinanceUFWsTradeUnit::~BinanceUFWsTradeUnit() {
+    renewStop_.store(true);
+    renewCv_.notify_all();
+    if (renewThread_.joinable()) {
+        renewThread_.join();
+    }
+}
 
 
 // ============================================================================
@@ -52,10 +58,6 @@ std::string BinanceUFWsTradeUnit::buildLogonJson() {
     std::string payload = fmt::format("apiKey={}&timestamp={}", acc.apiKey, ts);
     std::string sig = signer_.sign_base64(payload);
     return fmt::format(R"({{"id":{},"method":"session.logon","params":{{"apiKey":"{}","timestamp":{},"signature":"{}"}}}})", kSessionLogonId, escape_json(acc.apiKey), ts, sig);
-}
-
-std::string BinanceUFWsTradeUnit::buildUserSubscribeJson() const {
-    return fmt::format(R"({{"id":{},"method":"userDataStream.subscribe"}})", kUserStreamSubId);
 }
 
 std::string BinanceUFWsTradeUnit::buildOrderPlaceJson(
@@ -179,19 +181,164 @@ void BinanceUFWsTradeUnit::clearPending() {
 }
 
 // ============================================================================
+// listenKey
+// ============================================================================
+bool BinanceUFWsTradeUnit::generateListenKeySync() {
+    // POST /fapi/v1/listenKey (需要 X-MBX-APIKEY header, 不需要 signature)
+    std::promise<std::string> prom;
+    auto fut = prom.get_future();
+    bool responded = false;
+
+    asyncRequest(boost::beast::http::verb::post, listenKeyUrl, /*body=*/"", /*ct=*/"",
+        [this, &prom, &responded](boost::system::error_code ec, ::net::HttpResponse resp) {
+            if (responded) {
+                return;   // 双回调保护
+            }
+            responded = true;
+            if (ec) {
+                LOG_ERROR("TB {} listenKey req ec: {}", acc.accountId, ec.message());
+                prom.set_value("");
+                return;
+            }
+            try {
+                simdjson::padded_string padded(resp.body);
+                auto doc = g_parser.iterate(padded);
+                if (doc.error()) {
+                    prom.set_value(""); 
+                    return; 
+                }
+                std::string_view lk;
+                if (doc["listenKey"].get(lk) == simdjson::SUCCESS) {
+                    prom.set_value(std::string(lk));
+                } else {
+                    LOG_ERROR("TB {} listenKey resp missing: {}", acc.accountId, resp.body);
+                    prom.set_value("");
+                }
+            }
+            catch (const std::exception& e) {
+                LOG_ERROR("TB {} listenKey parse exc: {}", acc.accountId, e.what());
+                prom.set_value("");
+            }
+        });
+
+    if (fut.wait_for(std::chrono::seconds(15)) != std::future_status::ready) {
+        LOG_ERROR("TB {} listenKey req timeout", acc.accountId);
+        return false;
+    }
+    listenKey_ = fut.get();
+    if (listenKey_.empty()) {
+        return false;
+    }
+    LOG_INFO("TB {} listenKey={}", acc.accountId, listenKey_);
+    return true;
+}
+
+void BinanceUFWsTradeUnit::renewListenKeyAsync() {
+    if (listenKey_.empty()) {
+        return;
+    }
+
+    // PUT /fapi/v1/listenKey (仅需 X-MBX-APIKEY header)
+    asyncRequest(boost::beast::http::verb::put, listenKeyUrl, /*body=*/"", /*ct=*/"",
+        [this](boost::system::error_code ec, ::net::HttpResponse resp) {
+            if (ec) {
+                LOG_ERROR("TB {} listenKey renew ec: {}", acc.accountId, ec.message());
+                return;
+            }
+            if (resp.status_code != 200) {
+                LOG_ERROR("TB {} listenKey renew status={} body={}", acc.accountId, resp.status_code, resp.body);
+                return;
+            }
+            LOG_DEBUG("TB {} listenKey renewed", acc.accountId);
+        });
+}
+
+void BinanceUFWsTradeUnit::listenKeyRenewLoop() {
+    if (!generateListenKeySync()) {
+        LOG_ERROR("TB {} UF bootstrap listenKey failed, no user data stream", acc.accountId);
+        return;
+    }
+
+    startUserDataStream();
+
+
+    while (!renewStop_.load()) {
+        std::unique_lock<std::mutex> lk(renewMtx_);
+        if (renewCv_.wait_for(lk, std::chrono::seconds(kListenKeyRenewSec), [this]{ 
+            return renewStop_.load(); 
+        })) {
+            return;
+        }
+        renewListenKeyAsync();
+    }
+}
+
+// ============================================================================
 // subWebsocekt
 // ============================================================================
 void BinanceUFWsTradeUnit::subWebsocekt() {
     std::string restHost = host_of(acc.restUrl);
     initRestClient(restHost, {{"X-MBX-APIKEY", acc.apiKey}}, 4);
 
+    // 2. listenKey (启动路径, 允许短暂 block ≤15s)
+    if (!generateListenKeySync()) {
+        LOG_ERROR("TB {} listenKey gen failed, ws NOT started", acc.accountId);
+        return;
+    }
+    
+    // ws userdata connect
     net::WsConfig cfg;
-    cfg.url = acc.wsUrl;   // wss://ws-fapi.binance.com/ws-fapi/v1
+    cfg.url = acc.wsUrl + wsSubPath + listenKey_;
     cfg.ping_mode = net::WsConfig::PingMode::ServerOnly;
     cfg.auto_reconnect = true;
     cfg.idle_timeout_sec = 60;
-    LOG_INFO("TB {} UF ws-fapi {} rest {}", acc.accountId, cfg.url, restHost);
+    LOG_INFO("TB {} UF ws userdata {} rest {}", acc.accountId, cfg.url, restHost);
     subWebsocketWithConfig(std::move(cfg));
+
+    // ws trade connect
+    net::WsConfig cfg;
+    cfg.url = acc.wsTradeUrl;   // wss://ws-fapi.binance.com/ws-fapi/v1
+    cfg.ping_mode = net::WsConfig::PingMode::ServerOnly;
+    cfg.auto_reconnect = true;
+    cfg.idle_timeout_sec = 60;
+    LOG_INFO("TB {} UF user data stream {}", acc.accountId, cfg.url);
+
+    pWsTradeClient = net::WsClient::create(std::move(cfg));
+
+    pWsTradeClient->on_open([this]() {
+        LOG_INFO("TB {} UF ws trade connected", acc.accountId);
+        isTradeConnected.store(true);
+        wsLoggedIn_.store(false);
+        if (!signer_.valid() || !pWsTradeClient) {
+            LOG_ERROR("TB {} UF onOpen: signer invalid or pWsTradeClient null", acc.accountId);
+            return;
+        }
+        LOG_INFO("TB {} UF ws send session.logon", acc.accountId);
+        pWsTradeClient->send_text(buildLogonJson());
+    });
+
+    pWsTradeClient->on_message([this](const uint8_t* d, size_t n, bool b, int64_t t) {
+        this->onWsTradeMsg(d, n, b, t);
+    });
+
+    pWsTradeClient->on_close([this](int c, const::std::string& r) {
+        LOG_WARN("TB {} UF user data stream closed code={} reason={} (auto connect)", acc.accountId, code, reason);
+        isTradeConnected.store(false);
+        wsLoggedIn_.store(false);
+        clearPending();
+    });
+
+    pWsTradeClient->on_error([this](const std::string& m) {
+        LOG_ERROR("TB {} UF user data stream error: {}", acc.accountId, m);
+        isTradeConnected.store(false);
+        
+    });
+
+    pUserStreamWsClient_->start();
+
+    renewThread_ = std::thread([this] {
+        listenKeyRenewLoop();
+    });
 }
 
 
@@ -200,29 +347,85 @@ void BinanceUFWsTradeUnit::subWebsocekt() {
 // ============================================================================
 void BinanceUFWsTradeUnit::onOpen() {
     BaseTradeUnit::onOpen();
-    wsLoggedIn_.store(false);
-    if (!signer_.valid() || !pWsClient) {
-        LOG_ERROR("TB {} UF onOpen: signer invalid or pWsClient null", acc.accountId);
-        return;
-    }
-    LOG_INFO("TB {} UF ws send session.logon", acc.accountId);
-    pWsClient->send_text(buildLogonJson());
+
 }
 
 void BinanceUFWsTradeUnit::onCloseMsg(int code, const std::string& reason) {
     BaseTradeUnit::onCloseMsg(code, reason);
-    wsLoggedIn_.store(false);
-    clearPending();
+
+}
+
+// ============================================================================
+void BinanceUFWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, int64_t) {
+    try {
+        std::string msg(reinterpret_cast<const char*>(data), len);
+        std::cout << "onWebsocketMsg: " << msg << std::endl;
+
+        simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
+        auto doc = g_parser.iterate(padded);
+        if (doc.error()) {
+            return;
+        }
+
+        auto doc_value = doc.get_object().value_unsafe();
+
+        std::string_view e_sv;
+        simdjson::ondemand::object o_obj;
+        simdjson::ondemand::object a_obj;
+        bool has_order_trade_update = false;
+        bool has_account_update = false;
+
+        for (auto field : doc_value) {
+            std::string_view k = field.unescaped_key().value_unsafe();
+            if (k == "e") {
+                field.value().get(e_sv) == simdjson::SUCCESS;
+                if (e_sv == "ORDER_TRADE_UPDATE") {
+                   has_order_trade_update = true; 
+                }
+                else if (e_sv == "ACCOUNT_UPDATE") {
+                    has_account_update = true;
+                }
+                if (e_sv == "listenKeyExpired") {
+                    LOG_WARN("TB {} listenKey expired, will regen", acc.accountId);
+                    std::thread([this]{
+                        if (generateListenKeySync()) {
+                            LOG_INFO("TB {} listenKey regenerated, will reconnect", acc.accountId);
+                            net::WsConfig cfg;
+                            cfg.url = acc.wsUrl + wsSubPath + listenKey_;
+                            cfg.ping_mode = net::WsConfig::PingMode::ServerOnly;
+                            cfg.auto_reconnect = true;
+                            cfg.idle_timeout_sec = 60;
+                            LOG_INFO("TB {} UF ws userdata reconnect", acc.accountId, cfg.url);
+                            subWebsocketWithConfig(std::move(cfg));
+                        }
+                    }).detach();
+                }
+            }
+            else if (k == "o") {
+                if (has_order_trade_update && field.value().get(o_obj) == simdjson::SUCCESS) {
+                    handleOrderUpdate(o_obj);
+                }
+            }
+            else if (k == "a") {
+                if (has_account_update && field.value().get(a_obj) == simdjson::SUCCESS) {
+                    handleAccountUpdate(a_obj);
+                }
+            }
+        }
+    }
+    catch (const std::exception& e) {
+        LOG_ERROR("TB {} UF ws msg exc: {}", acc.accountId, e.what());
+    }
 }
 
 
 // ============================================================================
 // onWebsocketMsg
 // ============================================================================
-void BinanceUFWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /*isBinary*/, int64_t recv_ns) {
+void BinanceUFWsTradeUnit::onWsTradeMsg(const uint8_t* data, size_t len, bool /*isBinary*/, int64_t recv_ns) {
     try {
         std::string msg(reinterpret_cast<const char*>(data), len);
-        std::cout << "onWebsocketMsg: " << msg << std::endl;
+        std::cout << "onWsTradeMsg: " << msg << std::endl;
 
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
         auto doc = g_parser.iterate(padded);
@@ -235,12 +438,10 @@ void BinanceUFWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
         // ws-api 响应有 "id" 字段, userDataStream 推送外层是 {"event":{...}}
         int64_t id = 0;
         int status = 0;
-        simdjson::ondemand::object ev;
         simdjson::ondemand::object result;
         simdjson::ondemand::object error;
         bool has_id = false;
         bool has_result = false;
-        bool has_event = false;
         bool has_error = false;
 
         for (auto field : doc_value) {
@@ -255,10 +456,6 @@ void BinanceUFWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
                 has_result = field.value().get(result) == simdjson::SUCCESS;
                 break;
             }
-            else if (k == "e") {
-                has_event = field.value().get(ev) == simdjson::SUCCESS;
-                break;
-            }
             else if (k == "error") {
                 has_error = field.value().get(error) == simdjson::SUCCESS;
                 break;
@@ -269,10 +466,7 @@ void BinanceUFWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
             if (id == kSessionLogonId) {
                 if (status == 200) {
                     wsLoggedIn_.store(true);
-                    LOG_INFO("TB {} spot session.logon OK, will subscribe userDataStream", acc.accountId);
-                    if (pWsClient) {
-                        pWsClient->send_text(buildUserSubscribeJson());
-                    }
+                    LOG_INFO("TB {} spot session.logon OK", acc.accountId);
                 } else {
                     wsLoggedIn_.store(false);
                     if (has_error) {
@@ -306,10 +500,6 @@ void BinanceUFWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
                     LOG_WARN("TB {} spot ws-api unknown response id={}", acc.accountId, id);
                 }
             }
-        }
-
-        if (has_event) {
-            handleUserDataEvent(ev);
         }
     } catch (const std::exception& e) {
         LOG_ERROR("TB {} ws msg exc: {}", acc.accountId, e.what());
@@ -410,37 +600,6 @@ void BinanceUFWsTradeUnit::handleWsApiError(WsPending& pending, simdjson::ondema
     crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, msg_sv);
     rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
     PUSH_RCMD(rcmd)
-}
-
-void BinanceUFWsTradeUnit::handleUserDataEvent(simdjson::ondemand::object& ev) {
-    std::string_view e_sv;
-    simdjson::ondemand::object o_obj;
-    simdjson::ondemand::object a_obj;
-    bool has_order_trade_update = false;
-    bool has_account_update = false;
-
-    for (auto field : ev) {
-        std::string_view k = field.unescaped_key().value_unsafe();
-        if (k == "e") {
-            field.value().get(e_sv) == simdjson::SUCCESS;
-            if (e_sv == "ORDER_TRADE_UPDATE") {
-                has_order_trade_update = true; 
-            }
-            else if (e_sv == "ACCOUNT_UPDATE") {
-                has_account_update = true;
-            }
-        }
-        else if (k == "o") {
-            if (has_order_trade_update && field.value().get(o_obj) == simdjson::SUCCESS) {
-                handleOrderUpdate(o_obj);
-            }
-        }
-        else if (k == "a") {
-            if (has_account_update && field.value().get(a_obj) == simdjson::SUCCESS) {
-                handleAccountUpdate(a_obj);
-            }
-        }
-    }
 }
 
 // ---- ACCOUNT_UPDATE ----
@@ -1170,7 +1329,7 @@ void BinanceUFWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
 void BinanceUFWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     ADD_NEW_ORDER_TCMD_2_RCMD(tcmd)
 
-    if (!isConnected.load() || !wsLoggedIn_.load()) {
+    if (!isTradeConnected.load() || !wsLoggedIn_.load()) {
         rcmd.body.orderResponse.orderStatus = OS_REJECTED;
         rcmd.body.orderResponse.errorId = TBDisconnectError;
         rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
@@ -1267,7 +1426,7 @@ void BinanceUFWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
 void BinanceUFWsTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     CANCEL_ORDER_TCMD_2_RCMD(tcmd)
 
-    if (!isConnected.load() || !wsLoggedIn_.load()) {
+    if (!isTradeConnected.load() || !wsLoggedIn_.load()) {
         rcmd.body.orderResponse.orderStatus = OS_FAILED;
         rcmd.body.orderResponse.errorId = TBDisconnectError;
         rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();

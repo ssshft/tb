@@ -130,6 +130,9 @@ BaseTradeClient::BaseTradeClient(rapidjson::Value& accCfg, sm::SecurityManager* 
         acc.isSimulated = account["isSimulated"].GetBool();
         acc.restUrl = account["restUrl"].GetString();
         acc.wsUrl = account["wsUrl"].GetString();
+        if (account.HasMember("wsTradeUrl")) {
+            acc.wsTradeUrl = account["wsTradeUrl"].GetString();
+        }
         acc.apiMode = ApiModeStr2EnumMap[account["apiMode"].GetString()];
         vAccount.push_back(acc);
     }

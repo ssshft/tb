@@ -193,11 +193,16 @@ void BinanceUFTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, i
                 if (e_sv == "listenKeyExpired") {
                     LOG_WARN("TB {} listenKey expired, will regen", acc.accountId);
                     std::thread([this]{
-                        if (generateListenKeySync() && pWsClient) {
+                        if (generateListenKeySync()) {
                             LOG_INFO("TB {} listenKey regenerated, will reconnect", acc.accountId);
-                            // note: WsClient 无接口切换 url; 只能停掉 + 重开, 复杂度较高。
-                            // 简化处理: 由外部重启 unit 解决。 生产上可用 exchange 提供的
-                            // /keepAlive 保活避免掉这条路径。
+            
+                            net::WsConfig cfg;
+                            cfg.url = acc.wsUrl + wsSubPath + listenKey_;
+                            cfg.ping_mode = net::WsConfig::PingMode::ServerOnly;
+                            cfg.auto_reconnect = true;
+                            cfg.idle_timeout_sec = 60;
+                            LOG_INFO("TB {} UF ws {} rest {}", acc.accountId, cfg.url, restHost);
+                            subWebsocketWithConfig(std::move(cfg));
                         }
                     }).detach();
                 }

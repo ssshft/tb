@@ -185,7 +185,7 @@ void BinanceSpotWsTradeUnit::subWebsocekt() {
     initRestClient(restHost, {{"X-MBX-APIKEY", acc.apiKey}}, 4);
 
     net::WsConfig cfg;
-    cfg.url = acc.wsUrl;   // wss://ws-api.binance.com/ws-api/v3
+    cfg.url = acc.wsUrl;   // wss://ws-api.binance.com/ws-api/v3 账户数据流和订单回报使用的是同一个地址，wsUrl/wsTradeUrl都可以
     cfg.ping_mode = net::WsConfig::PingMode::ServerOnly;
     cfg.auto_reconnect = true;
     cfg.idle_timeout_sec = 60;
