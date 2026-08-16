@@ -1043,7 +1043,7 @@ void BinanceUnifiedTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             kvs.emplace_back("newOrderRespType", "RESULT");
             break;
         case OT_POST_ONLY:
-            if (tcmd.body.newOrder.instTypeEnum == SPOT || tcmd.body.newOrder.instTypeEnum == MARGIN)
+            if (tcmd.body.newOrder.instTypeEnum == SPOT || tcmd.body.newOrder.instTypeEnum == MARGIN) {
                 kvs.emplace_back("type", "LIMIT_MAKER");
             } else {
                 kvs.emplace_back("type", "LIMIT");
