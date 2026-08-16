@@ -13,9 +13,7 @@
 //   5) WS 事件通过 "fs" 字段区分 UM / CM (仅 pos/order update 场景)
 //
 #include "base/BaseTrade.h"
-
 #include <simdjson.h>
-
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -32,16 +30,15 @@ public:
     virtual void subWebsocekt() override;
     virtual void onWebsocketMsg(const uint8_t* data, size_t len, bool isBinary, int64_t recv_ns) override;
 
-    virtual void query_account (const pubsub::TCommand& tcmd) override;
-    virtual void query_balance (const pubsub::TCommand& tcmd) override;
+    virtual void query_account(const pubsub::TCommand& tcmd) override;
+    virtual void query_balance(const pubsub::TCommand& tcmd) override;
     virtual void query_position(const pubsub::TCommand& tcmd) override;
-    virtual void add_new_order (const pubsub::TCommand& tcmd) override;
-    virtual void cancel_order  (const pubsub::TCommand& tcmd) override;
-    virtual void query_order   (const pubsub::TCommand& tcmd) override;
+    virtual void add_new_order(const pubsub::TCommand& tcmd) override;
+    virtual void cancel_order(const pubsub::TCommand& tcmd) override;
+    virtual void query_order(const pubsub::TCommand& tcmd) override;
 
 private:
-    std::string buildSignedPath(std::string_view basePath,
-                                const std::vector<std::pair<std::string, std::string>>& kvs) const;
+    std::string buildSignedPath(std::string_view basePath, const std::vector<std::pair<std::string, std::string>>& kvs) const;
 
     // ---- listenKey (与 UF 相同的模式) ----
     bool generateListenKeySync();
@@ -68,16 +65,17 @@ private:
 
 private:
     // 固定端点
-    std::string accountUrl     = "/papi/v1/account";
-    std::string balanceUrl     = "/papi/v1/balance";
-    std::string listenKeyUrl   = "/papi/v1/listenKey";
-    std::string wsSubPath      = "/ws/";
-    // adl: um / cm 分开
-    // std::string adlUrl 由 positionPathFor 相关的辅助拼出
+    std::string accountUrl = "/papi/v1/account";
+    std::string balanceUrl = "/papi/v1/balance";
+    std::string listenKeyUrl = "/papi/v1/listenKey";
+    std::string wsSubPath = "/ws/";
+    int kListenKeyRenewSec = 30 * 60;
 
     std::string listenKey_;
     std::thread renewThread_;
     std::atomic<bool> renewStop_{false};
     std::mutex renewMtx_;
     std::condition_variable renewCv_;
+
+    
 };
