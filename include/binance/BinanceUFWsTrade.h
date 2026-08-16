@@ -113,6 +113,7 @@ private:
     std::string positionUrl = "/fapi/v3/positionRisk";
     std::string queryOrderUrl = "/fapi/v1/order";
     std::string listenKeyUrl = "/fapi/v1/listenKey";
+    std::string wsSubPath = "/ws/";
 
     std::string listenKey_;
     std::shared_ptr<net::WsClient> pWsTradeClient;

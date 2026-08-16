@@ -322,7 +322,7 @@ void BinanceUFWsTradeUnit::subWebsocekt() {
     });
 
     pWsTradeClient->on_close([this](int c, const::std::string& r) {
-        LOG_WARN("TB {} UF user data stream closed code={} reason={} (auto connect)", acc.accountId, code, reason);
+        LOG_WARN("TB {} UF user data stream closed code={} reason={} (auto connect)", acc.accountId, c, r);
         isTradeConnected.store(false);
         wsLoggedIn_.store(false);
         clearPending();
@@ -334,25 +334,11 @@ void BinanceUFWsTradeUnit::subWebsocekt() {
         
     });
 
-    pUserStreamWsClient_->start();
+    pWsTradeClient->start();
 
     renewThread_ = std::thread([this] {
         listenKeyRenewLoop();
     });
-}
-
-
-// ============================================================================
-// onOpen / onCloseMsg
-// ============================================================================
-void BinanceUFWsTradeUnit::onOpen() {
-    BaseTradeUnit::onOpen();
-
-}
-
-void BinanceUFWsTradeUnit::onCloseMsg(int code, const std::string& reason) {
-    BaseTradeUnit::onCloseMsg(code, reason);
-
 }
 
 // ============================================================================
@@ -476,19 +462,11 @@ void BinanceUFWsTradeUnit::onWsTradeMsg(const uint8_t* data, size_t len, bool /*
                     }
                 }
             }
-            else if (id == kUserStreamSubId) {
-                if (status == 200) {
-                    LOG_INFO("TB {} spot userDataStream.subscribe OK", acc.accountId);
-                } else {
-                    LOG_ERROR("TB {} spot userDataStream.subscribe FAILED status={}", acc.accountId, status);
-                }
-            }
             else {
                 WsPending pending;
                 if (takePending(id, pending)) {
                     if (status == 200 && has_result) {
                         handleWsApiResponse(pending, result);
-
                     }
                     else {
                         if (has_error) {
