@@ -254,14 +254,6 @@ void BinanceUFWsTradeUnit::renewListenKeyAsync() {
 }
 
 void BinanceUFWsTradeUnit::listenKeyRenewLoop() {
-    if (!generateListenKeySync()) {
-        LOG_ERROR("TB {} UF bootstrap listenKey failed, no user data stream", acc.accountId);
-        return;
-    }
-
-    startUserDataStream();
-
-
     while (!renewStop_.load()) {
         std::unique_lock<std::mutex> lk(renewMtx_);
         if (renewCv_.wait_for(lk, std::chrono::seconds(kListenKeyRenewSec), [this]{ 
@@ -296,14 +288,14 @@ void BinanceUFWsTradeUnit::subWebsocekt() {
     subWebsocketWithConfig(std::move(cfg));
 
     // ws trade connect
-    net::WsConfig cfg;
-    cfg.url = acc.wsTradeUrl;   // wss://ws-fapi.binance.com/ws-fapi/v1
-    cfg.ping_mode = net::WsConfig::PingMode::ServerOnly;
-    cfg.auto_reconnect = true;
-    cfg.idle_timeout_sec = 60;
-    LOG_INFO("TB {} UF user data stream {}", acc.accountId, cfg.url);
+    net::WsConfig tradeCfg;
+    tradeCfg.url = acc.wsTradeUrl;   // wss://ws-fapi.binance.com/ws-fapi/v1
+    tradeCfg.ping_mode = net::WsConfig::PingMode::ServerOnly;
+    tradeCfg.auto_reconnect = true;
+    tradeCfg.idle_timeout_sec = 60;
+    LOG_INFO("TB {} UF user data stream {}", acc.accountId, tradeCfg.url);
 
-    pWsTradeClient = net::WsClient::create(std::move(cfg));
+    pWsTradeClient = net::WsClient::create(std::move(tradeCfg));
 
     pWsTradeClient->on_open([this]() {
         LOG_INFO("TB {} UF ws trade connected", acc.accountId);
