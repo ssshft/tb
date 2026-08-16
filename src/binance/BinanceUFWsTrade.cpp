@@ -356,7 +356,7 @@ void BinanceUFWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool,
         for (auto field : doc_value) {
             std::string_view k = field.unescaped_key().value_unsafe();
             if (k == "e") {
-                field.value().get(e_sv) == simdjson::SUCCESS;
+                field.value().get(e_sv);
                 if (e_sv == "ORDER_TRADE_UPDATE") {
                    has_order_trade_update = true; 
                 }

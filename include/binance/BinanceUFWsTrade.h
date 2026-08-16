@@ -42,8 +42,6 @@ public:
 
     virtual void subWebsocekt() override;
     virtual void onWebsocketMsg(const uint8_t* data, size_t len, bool isBinary, int64_t recv_ns) override;
-    virtual void onOpen() override;
-    virtual void onCloseMsg(int code, const std::string& reason) override;
 
     virtual void query_account(const pubsub::TCommand& tcmd) override;
     virtual void query_balance(const pubsub::TCommand& tcmd) override;
