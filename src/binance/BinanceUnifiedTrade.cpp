@@ -563,7 +563,7 @@ void BinanceUnifiedTradeUnit::handleOrderUpdate(simdjson::ondemand::object& o) {
     else if (smc->get_instrument_info(BINANCE, USDT_FUTURES, originInstId.c_str(), info)) {
         inst = USDT_FUTURES;
     } 
-    else if (smc->get_instrument_info(BINANCE, UC_SWAP, originInstId.c_str(), info)) {
+    else if (smc->get_instrument_info(BINANCE, C_SWAP, originInstId.c_str(), info)) {
         inst = C_SWAP;
     }  
     else if (smc->get_instrument_info(BINANCE, C_FUTURES, originInstId.c_str(), info)) {
@@ -775,21 +775,16 @@ void BinanceUnifiedTradeUnit::query_balance(const pubsub::TCommand&) {
     });
 }
 
-
 // ---- query_position ----
 // 先跑 adl (um / cm 分别端点), 拿到 map 后再发 positionRisk 请求
 void BinanceUnifiedTradeUnit::query_position(const pubsub::TCommand& tcmd) {
-    queryPositionWithAdl(tcmd.body.queryPosition.instTypeEnum);
-}
-
-void BinanceUnifiedTradeUnit::queryPositionWithAdl(InstType instType) {
     std::string posPath = "";
     std::string adlPath = ""
-    if (instType == USDT_SWAP || instType == USDT_FUTURES || instType == USDC_SWAP) {
+    if (tcmd.body.queryPosition.instTypeEnum == USDT_SWAP || tcmd.body.queryPosition.instTypeEnum == USDT_FUTURES || tcmd.body.queryPosition.instTypeEnum == USDC_SWAP) {
         posPath = "/papi/v1/um/positionRisk";
         adlPath = "/papi/v1/um/adlQuantile";
     }
-    else if (instType == C_SWAP || instType == C_FUTURES) {
+    else if (tcmd.body.queryPosition.instTypeEnum == C_SWAP || tcmd.body.queryPosition.instTypeEnum == C_FUTURES) {
         posPath = "/papi/v1/cm/positionRisk";
         adlPath = "/papi/v1/cm/adlQuantile";
     }
@@ -927,7 +922,6 @@ void BinanceUnifiedTradeUnit::queryPositionWithAdl(InstType instType) {
                     crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
                     rcmd.body.position.direction = positionAmt >= 0 ? DT_LONG : DT_SHORT;
                     rcmd.body.position.volume = std::abs(positionAmt) * info.magnifyNumber;
-                    rcmd.body.position.maintMargin = crypto::fast_atod(maintMargin_sv);
                     rcmd.body.position.avgPrice = crypto::fast_atod(entryPrice_sv) * info.reduceNumber;
                     rcmd.body.position.unrealizedPnl = crypto::fast_atod(unRealizedProfit_sv);
                     rcmd.body.position.markPrice = crypto::fast_atod(markPrice_sv) * info.reduceNumber;
@@ -1258,7 +1252,7 @@ void BinanceUnifiedTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
 
     asyncRequest(boost::beast::http::verb::delete_, std::move(path), "", "", [this, rcmd, info](boost::system::error_code ec, net::HttpResponse resp) mutable {
         if (ec) {
-            LOG_ERROR("TB {} cancel_order ec: {}", acc.accountId, ec.message())
+            LOG_ERROR("TB {} cancel_order ec: {}", acc.accountId, ec.message());
             rcmd.body.orderResponse.orderStatus = OS_FAILED;
             rcmd.body.orderResponse.errorId = NetworkError;
             crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, ec.message());
