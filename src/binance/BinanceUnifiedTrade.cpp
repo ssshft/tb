@@ -263,53 +263,49 @@ void BinanceUnifiedTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bo
                 }
             }
 
-            else if (k == 's') {
+            else if (k == "s") {
                 field.value().get(s_sv);
             }
-            else if (k == 'c') {
+            else if (k == "c") {
                 field.value().get(c_sv);
             }
-            else if (k == 'C') {
+            else if (k == "C") {
                 field.value().get(C_sv);
             }
-            else if (k == 'S') {
+            else if (k == "S") {
                 field.value().get(S_sv);
             }
-
-            else if (k == 'S') {
-                field.value().get(S_sv);
-            }
-            else if (k == 'f') {
+            else if (k == "f") {
                 field.value().get(f_sv);
             }
-            else if (k == 'o') {
+            else if (k == "o") {
                 field.value().get(o_sv);
             }
-            else if (k == 'X') {
+            else if (k == "X") {
                 field.value().get(X_sv);
             }
-            else if (k == 'i') {
+            else if (k == "i") {
                 has_i = field.value().get(i_val) == simdjson::SUCCESS;
                 if (!has_i) {
                     field.value().get(i_sv);
                 }
             }
-            else if (k == 'l') {
+            else if (k == "l") {
                 field.value().get(l_sv);
             }
-            else if (k == 'L') {
+            else if (k == "L") {
                 field.value().get(L_sv);
             }
-            else if (k == 'z') {
+            else if (k == "z") {
                 field.value().get(z_sv);
             }
-            else if (k == 'Z') {
+            else if (k == "Z") {
                 field.value().get(Z_sv);
             }
-            else if (k == 'q') {
+            else if (k == "q") {
                 field.value().get(q_sv);
             }
-            else if (k == 'p') {
+            else if (k == "p") {
                 field.value().get(p_sv);
             }
         }
