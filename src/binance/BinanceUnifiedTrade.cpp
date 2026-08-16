@@ -779,7 +779,7 @@ void BinanceUnifiedTradeUnit::query_balance(const pubsub::TCommand&) {
 // 先跑 adl (um / cm 分别端点), 拿到 map 后再发 positionRisk 请求
 void BinanceUnifiedTradeUnit::query_position(const pubsub::TCommand& tcmd) {
     std::string posPath = "";
-    std::string adlPath = ""
+    std::string adlPath = "";
     if (tcmd.body.queryPosition.instTypeEnum == USDT_SWAP || tcmd.body.queryPosition.instTypeEnum == USDT_FUTURES || tcmd.body.queryPosition.instTypeEnum == USDC_SWAP) {
         posPath = "/papi/v1/um/positionRisk";
         adlPath = "/papi/v1/um/adlQuantile";
@@ -798,7 +798,7 @@ void BinanceUnifiedTradeUnit::query_position(const pubsub::TCommand& tcmd) {
     // 拷贝所需字段进 shared_ptr, 让两次 async 都能捕获
     auto adlMap = std::make_shared<std::unordered_map<std::string, double>>();
 
-    asyncRequest(boost::beast::http::verb::get, std::move(signedAdl), "", "", [this, adlMap, posPath, instType](boost::system::error_code ec, ::net::HttpResponse resp) {
+    asyncRequest(boost::beast::http::verb::get, std::move(signedAdl), "", "", [this, adlMap, posPath](boost::system::error_code ec, ::net::HttpResponse resp) {
         if (!ec && resp.status_code == 200) {
             try {
                 simdjson::padded_string padded(resp.body);
@@ -835,7 +835,7 @@ void BinanceUnifiedTradeUnit::query_position(const pubsub::TCommand& tcmd) {
         };
         std::string posSigned = buildSignedPath(posPath, kvs2);
 
-        asyncRequest(boost::beast::http::verb::get, std::move(posSigned), "", "", [this, adlMap, instType](boost::system::error_code ec2, ::net::HttpResponse resp2) {
+        asyncRequest(boost::beast::http::verb::get, std::move(posSigned), "", "", [this, adlMap](boost::system::error_code ec2, ::net::HttpResponse resp2) {
             if (ec2) {
                 return;
             }
