@@ -74,7 +74,7 @@ bool TbOperation::preStart(Config* config) {
                mTradeClient[exchIdAccountKey] = trade;
             }
             else if(crypto::str_cmp(exchId.c_str(), "GATEIO") == true){
-                BaseTradeClient *client = new GateioTradingClient(accountConfig , smc);
+                BaseTradeClient *client = new GateioTradeClient(accountConfig , smc);
                 mTradeClient[exchIdAccountKey] = client;
             }
             // else if(crypto::str_cmp(exchId.c_str(), "OKX") == true){
