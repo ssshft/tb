@@ -236,10 +236,10 @@ void GateioUsWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len,
 
         std::string_view req_id_sv;
         if (doc.find_field_unordered("request_id").get(req_id_sv) == simdjson::SUCCESS) {
-            handleRpcResponse(doc);
+            //handleRpcResponse(doc);
             return;
         }
-        handleSubUpdate(doc);
+        //handleSubUpdate(doc);
     } catch (const std::exception& e) {
         LOG_ERROR("TB {} Gate US ws msg exc: {}", acc.accountId, e.what());
     }
