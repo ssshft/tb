@@ -729,7 +729,7 @@ void GateioSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
                 
                 crypto::replace_string(resp.body, ":", "");
                 crypto::replace_string(resp.body, "\"", "");
-                strncpy((rcmd.body.orderResponse.originMsg, resp.body.c_str(), ORIGINMSG_SIZE);
+                strncpy(rcmd.body.orderResponse.originMsg, resp.body.c_str(), ORIGINMSG_SIZE);
                 rcmd.body.orderResponse.orderStatus = OS_REJECTED;
                 LOG_WARN("{}",resp.body.c_str());
                 PUSH_RCMD(rcmd)
