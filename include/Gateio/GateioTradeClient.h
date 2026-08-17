@@ -1,7 +1,7 @@
 #pragma once
 #include "base/BaseTrade.h"
-#include "gateio/GateioSpotTrade.h"
-#include "gateio/GateioUSTrade.h"
+#include "Gateio/GateioSpotTrade.h"
+#include "Gateio/GateioUSTrade.h"
 
 
 
