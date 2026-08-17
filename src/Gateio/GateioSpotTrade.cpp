@@ -697,8 +697,8 @@ void GateioSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
 
             if (has_status) {
                 crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
-                rcmd.body.orderResponse.errorId = ERROR_NoError;
-                nano_strcpy(rcmd.body.orderResponse.orderSysId, text_sv);
+                rcmd.body.orderResponse.errorId = NoError;
+                crypto::copy_sv_to_char_array((rcmd.body.orderResponse.orderSysId, text_sv);
                 if (!avg_sv.empty()) {
                     rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
                 }
@@ -729,17 +729,17 @@ void GateioSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
                 
                 crypto::replace_string(resp.body, ":", "");
                 crypto::replace_string(resp.body, "\"", "");
-                nano_strcpy(rcmd.body.orderResponse.originMsg, originMsg.c_str(), ORIGINMSG_SIZE);
+                crypto::copy_sv_to_char_array((rcmd.body.orderResponse.originMsg, resp.body.c_str(), ORIGINMSG_SIZE);
                 rcmd.body.orderResponse.orderStatus = OS_REJECTED;
                 LOG_WARN("{}",resp.body.c_str());
                 PUSH_RCMD(rcmd)
             }
             else {
-                rcmd.body.orderResponse.orderStatus = OrderStatus_UNKNOWN;
-                rcmd.body.orderResponse.errorId = ERROR_UnknownError; 
+                rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
+                rcmd.body.orderResponse.errorId = NetworkUnknownError; 
                 crypto::replace_string(resp.body, ":", "");
                 crypto::replace_string(resp.body, "\"", "");
-                nano_strcpy(rcmd.body.orderResponse.originMsg, originMsg.c_str(), ORIGINMSG_SIZE);
+                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, resp.body.c_str(), ORIGINMSG_SIZE);
                 PUSH_RCMD(rcmd)  
             }
         }
@@ -872,7 +872,7 @@ void GateioSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
                 rcmd.body.newOrder.ErrorID = ERROR_UnknownError; 
                 crypto::replace_string(resp.body, ":", "");
                 crypto::replace_string(resp.body, "\"", "");
-                nano_strcpy(rcmd.body.newOrder.originMsg, originMsg.c_str(), ORIGINMSG_SIZE);
+                nano_strcpy(rcmd.body.newOrder.originMsg, resp.body.c_str(), ORIGINMSG_SIZE);
                 PUSH_RCMD(rcmd)  
             }
         }
