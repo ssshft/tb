@@ -1,4 +1,4 @@
-#include "gateio/GateioUSTrade.h"
+#include "Gateio/GateioUSTrade.h"
 
 #include <cmath>
 
