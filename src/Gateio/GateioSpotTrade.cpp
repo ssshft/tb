@@ -698,7 +698,7 @@ void GateioSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             if (has_status) {
                 crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
                 rcmd.body.orderResponse.errorId = NoError;
-                crypto::copy_sv_to_char_array((rcmd.body.orderResponse.orderSysId, text_sv);
+                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, text_sv);
                 if (!avg_sv.empty()) {
                     rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
                 }
