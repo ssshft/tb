@@ -1,4 +1,4 @@
-#include "gateio/GateioTradeClient.h"
+#include "Gateio/GateioTradeClient.h"
 
 
 GateioTradeClient::GateioTradeClient(rapidjson::Value& accCfg, sm::SecurityManager* s) : BaseTradeClient(accCfg, s) {
