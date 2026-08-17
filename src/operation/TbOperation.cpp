@@ -74,22 +74,17 @@ bool TbOperation::preStart(Config* config) {
                mTradeClient[exchIdAccountKey] = trade;
             }
             else if(crypto::str_cmp(exchId.c_str(), "GATEIO") == true){
-                TradingClientBase *client = new GateioTradingClient(accountConfig , smc);
-                tradeClientMap[exchIdAccountKey] = client;
+                BaseTradeClient *client = new GateioTradingClient(accountConfig , smc);
+                mTradeClient[exchIdAccountKey] = client;
             }
             // else if(crypto::str_cmp(exchId.c_str(), "OKX") == true){
-            //     TradingClientBase *client = new OKXTradingClient(accountConfig , smc);
-            //     tradeClientMap[exchIdAccountKey] = client;
+            //     BaseTradeClient *client = new OKXTradingClient(accountConfig , smc);
+            //     mTradeClient[exchIdAccountKey] = client;
             // }
             // else if(crypto::str_cmp(exchId.c_str(), "BYBIT") == true){
-            //     TradingClientBase *client = new BybitTradingClient(accountConfig , smc);
-            //     tradeClientMap[exchIdAccountKey] = client;
-            // }
-            // else if(crypto::str_cmp(exchId.c_str(), "XT") == true){
-            //     XTTradingClient *client = new XTTradingClient(accountConfig , smc);
-            //     tradeClientMap[exchIdAccountKey] = (TradingClientBase *)client;
-            // }
-    
+            //     BaseTradeClient *client = new BybitTradingClient(accountConfig , smc);
+            //     mTradeClient[exchIdAccountKey] = client;
+            // }    
             //else {
             //    LOG_ERROR("not implemented exchId: {}", exchId);
             //}
