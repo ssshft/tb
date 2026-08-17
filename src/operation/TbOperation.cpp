@@ -1,6 +1,6 @@
 #include "operation/TbOperation.h"
 #include "binance/BinanceTradeClient.h"
-#include "gateio/GateioTradeClient.h"
+#include "Gateio/GateioTradeClient.h"
 
 
 #define PUBLISH_RCMD(rcmd) \
