@@ -109,14 +109,14 @@ void GateioSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, 
                 }
             }
             else if (k == "event") {
-                if (field.value().get(event_sv) == simdjson::SUCCE) {
+                if (field.value().get(event_sv) == simdjson::SUCCESS) {
                     if (event_sv == "update") {
                        has_event = true; 
                     }
                 }
             }
             else if (k == "result") {
-                if (field.value().get(result_obj) == simdjson::SUCCES) {
+                if (field.value().get(result_obj) == simdjson::SUCCESS) {
                     if (has_event && has_balances) {
                         handleBalancesUpdate(result_obj);
                     }
@@ -134,7 +134,7 @@ void GateioSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, 
 
 // ---- spot.balances / spot.cross_balances update ----
 void GateioSpotTradeUnit::handleBalancesUpdate(simdjson::ondemand::array& arr) {
-    for (auto b_res : arr) {
+    for (auto b_val : arr) {
         auto b_res = b_val.get_object();
         if (b_res.error()) {
             continue;
@@ -169,14 +169,13 @@ void GateioSpotTradeUnit::handleBalancesUpdate(simdjson::ondemand::array& arr) {
         rcmd.body.balance.total = crypto::fast_atod(total_sv);
         rcmd.body.balance.updateTime = crypto::getCurrentTime();
         rcmd.body.balance.apiSourceEnum = AS_WEBSOCKET;
-        pending.emplace_back(rcmd);
         PUSH_RCMD(rcmd)
     }
 }
 
 // ---- spot.orders update ----
 void GateioSpotTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
-    for (auto b_res : arr) {
+    for (auto b_val : arr) {
         auto b_res = b_val.get_object();
         if (b_res.error()) {
             continue;
@@ -339,14 +338,14 @@ void GateioSpotTradeUnit::query_account(const pubsub::TCommand&) {
                 std::string_view k = field.unescaped_key().value_unsafe();
                 if (k == "balances") {
                     field.value().get(balances);
-                    for (auto field : balances) {
-                        std::string_view asset = field.unescaped_key().value_unsafe();
-                        auto b = field.value().get_object();
+                    for (auto bal : balances) {
+                        std::string_view asset = bal.unescaped_key().value_unsafe();
+                        auto b = bal.value().get_object();
 
                         std::string_view av_sv;
                         std::string_view fr_sv;
                         std::string_view eq_sv;
-                        for (ass : b) {
+                        for (auto ass : b) {
                             std::string_view v = ass.unescaped_key().value_unsafe();
                             if (v == "available") {
                                 ass.value().get(av_sv);
@@ -373,7 +372,7 @@ void GateioSpotTradeUnit::query_account(const pubsub::TCommand&) {
                         rcmd.body.balance.updateTime = crypto::getCurrentTime();
                         rcmd.body.balance.apiSourceEnum = AS_REST;
                         pending.emplace_back(rcmd);  
-                    }                  }
+                    }
                 }
                 else if (k == "unified_account_total_equity") {
                     field.value().get(teq_sv);
