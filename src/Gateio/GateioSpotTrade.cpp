@@ -6,14 +6,6 @@
 #include <simdjson.h>
 
 
-namespace {
-    // 同 string_view
-    inline std::string escape_json_sv(std::string_view sv) {
-        return escape_json(std::string(sv));
-    }
-}
-
-
 GateioSpotTradeUnit::GateioSpotTradeUnit(AccountCfg& a, sm::SecurityManager* s) : BaseTradeUnit(a, s) {
 
 }
@@ -637,106 +629,129 @@ void GateioSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     LOG_INFO("TB {} Gate spot add_new_order body={}", acc.accountId, body);
 
     asyncRequest(boost::beast::http::verb::post, newOrderUrl, std::move(body), "", std::move(headers), [this, rcmd](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
-            if (ec) {
-                if (ec == boost::system::errc::no_stream_resources || ec == boost::system::errc::no_buffer_space || ec == boost::system::errc::not_connected) {
-                    rcmd.body.orderResponse.orderStatus = OS_REJECTED;
-                }
-                else {
-                    rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
-                }
+        if (ec) {
+            if (ec == boost::system::errc::no_stream_resources || ec == boost::system::errc::no_buffer_space || ec == boost::system::errc::not_connected) {
+                rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+            }
+            else {
+                rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
+            }
 
-                rcmd.body.orderResponse.errorId = NetworkError;
-                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, ec.message());
+            rcmd.body.orderResponse.errorId = NetworkError;
+            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, ec.message());
+            rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+            PUSH_RCMD(rcmd)
+            return;
+        }
+
+        if (rcmd.body.orderResponse.clientOrderId == TESTCLIENTORDERID) {
+            return;
+        }
+
+        try {
+            simdjson::padded_string padded(resp.body);
+            auto doc = g_parser.iterate(padded);
+            if (doc.error()) {
+                rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+                rcmd.body.orderResponse.errorId = UnknownError;
                 rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
                 PUSH_RCMD(rcmd)
                 return;
             }
 
-            if (rcmd.body.orderResponse.clientOrderId == TESTCLIENTORDERID) {
-                return;
+            auto doc_value = doc.get_object().value_unsafe();
+
+            std::string_view status_sv;
+            std::string_view finishAs_sv;
+            std::string_view label_sv;
+            std::string_view text_sv;
+            std::string_view avg_sv;
+            std::string_view left_sv;
+            std::string_view id_sv;
+            bool has_status = false;
+            bool has_label = false;
+
+            for (auto field : doc_value) {
+                std::string_view k = field.unescaped_key().value_unsafe();
+                if (k == "status") {
+                    has_status = field.value().get(status_sv) == simdjson::SUCCESS;
+                }
+                else if (k == "finish_as") {
+                    field.value().get(finishAs_sv);
+                }
+                else if (k == "label") {
+                    has_label = field.value().get(label_sv) == simdjson::SUCCESS;
+                }
+                else if (k == "text") {
+                    field.value().get(text_sv);
+                }
+                else if (k == "avg_deal_price") {
+                    field.value().get(avg_sv);
+                }
+                else if (k == "left") {
+                    field.value().get(left_sv);
+                }
+                else if (k == "id") {
+                    field.value().get(id_sv);
+                }
             }
 
-            try {
-                simdjson::padded_string padded(resp.body);
-                auto doc = g_parser.iterate(padded);
-                if (doc.error()) {
-                    rcmd.body.orderResponse.orderStatus = OS_REJECTED;
-                    rcmd.body.orderResponse.errorId = UnknownError;
-                    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                    PUSH_RCMD(rcmd)
-                    return;
+            if (has_status) {
+                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
+                rcmd.body.orderResponse.errorId = ERROR_NoError;
+                nano_strcpy(rcmd.body.orderResponse.orderSysId, text_sv);
+                if (!avg_sv.empty()) {
+                    rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
                 }
 
-                auto doc_value = doc.get_object().value_unsafe();
-
-                std::string_view id_sv;
-                std::string_view status_sv;
-                std::string_view left_sv;
-                std::string_view avg_sv;
-                std::string_view label_sv;
-                bool has_status = false;
-
-                for (auto field : doc_value) {
-                    std::string_view k = field.unescaped_key().value_unsafe();
-                    if (k == "status") {
-                        has_status = field.value().get(status_sv) == simdjson::SUCCESS;
-                    }
-                    else if (k == "") {
-                        
-                    }
-                }
-
-
-
-
-
-                std::string_view id_sv, status_sv, left_sv, avg_sv, label_sv;
-                bool has_status = (doc.find_field_unordered("status").get(status_sv) == simdjson::SUCCESS);
-                bool has_label  = (doc.find_field_unordered("label").get(label_sv)  == simdjson::SUCCESS);
-
-                if (has_status) {
-                    doc.find_field_unordered("id").get(id_sv);
-                    doc.find_field_unordered("left").get(left_sv);
-                    doc.find_field_unordered("avg_deal_price").get(avg_sv);
-
-                    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
-                    rcmd.body.orderResponse.errorId = NoError;
-                    if (!avg_sv.empty()) rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
-
-                    double left = std::fabs(crypto::fast_atod(left_sv));
-                    rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
-
-                    std::string st(status_sv);
-                    // Gate spot status: open / closed / cancelled
-                    if      (st == "open")      rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.volumeTraded > ZERO_NUM) ? OS_PARTFILLED : OS_NEW;
-                    else if (st == "closed")    rcmd.body.orderResponse.orderStatus = OS_FILLED;
-                    else if (st == "cancelled") rcmd.body.orderResponse.orderStatus = OS_CANCELED;
-                    else                        rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
-
-                    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                    PUSH_RCMD(rcmd)
-                } else if (has_label) {
-                    rcmd.body.orderResponse.orderStatus = OS_REJECTED;
-                    rcmd.body.orderResponse.errorId     = crypto::get_gateio_errorid(resp.body.c_str());
-                    if (rcmd.body.orderResponse.errorId == 0) rcmd.body.orderResponse.errorId = UnknownError;
-                    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, label_sv);
-                    rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
-                    PUSH_RCMD(rcmd)
+                double left = std::fabs(crypto::fast_atod(left_sv));
+                left = left > 0 ? left : -left;
+                rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
+                
+                if (status_sv == "open") {
+                    rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.volumeTotal > rcmd.body.orderResponse.volumeTraded && rcmd.body.orderResponse.volumeTraded > ZERO_NUM) ? OS_PARTFILLED : OS_NEW;
+                } else if (status_sv == "closed") {
+                    rcmd.body.orderResponse.orderStatus = OS_FILLED;
+                } else if (status_sv == "cancelled") {
+                    rcmd.body.orderResponse.orderStatus = OS_CANCELED;
+                } else if (finishAs_sv == "filled") {
+                    rcmd.body.orderResponse.orderStatus = OS_FILLED;
                 } else {
-                    rcmd.body.orderResponse.orderStatus = OS_REJECTED;
-                    rcmd.body.orderResponse.errorId     = UnknownError;
-                    rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
-                    PUSH_RCMD(rcmd)
+                    rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
                 }
-            }
-            catch (const std::exception& e) {
-                LOG_ERROR("TB {} Gate spot add_new_order cb exc: {}", acc.accountId, e.what());
-                rcmd.body.orderResponse.orderStatus = OS_REJECTED;
-                rcmd.body.orderResponse.errorId     = NetworkError;
-                rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
+
                 PUSH_RCMD(rcmd)
             }
-        });
+            else if (has_label) {
+                rcmd.body.orderResponse.errorId = crypto::get_gateio_errorid(resp.body.c_str());
+                if (rcmd.body.orderResponse.errorId == 0) {
+                    rcmd.body.orderResponse.errorId = UnknownError;
+                }
+                
+                crypto::replace_string(resp.body, ":", "");
+                crypto::replace_string(resp.body, "\"", "");
+                nano_strcpy(rcmd.body.orderResponse.originMsg, originMsg.c_str(), ORIGINMSG_SIZE);
+                rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+                LOG_WARN("{}",resp.body.c_str());
+                PUSH_RCMD(rcmd)
+            }
+            else {
+                rcmd.body.orderResponse.orderStatus = OrderStatus_UNKNOWN;
+                rcmd.body.orderResponse.errorId = ERROR_UnknownError; 
+                crypto::replace_string(resp.body, ":", "");
+                crypto::replace_string(resp.body, "\"", "");
+                nano_strcpy(rcmd.body.orderResponse.originMsg, originMsg.c_str(), ORIGINMSG_SIZE);
+                PUSH_RCMD(rcmd)  
+            }
+        }
+        catch (const std::exception& e) {
+            LOG_ERROR("TB {} Gate spot add_new_order cb exc: {}", acc.accountId, e.what());
+            rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+            rcmd.body.orderResponse.errorId  = NetworkError;
+            rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
+            PUSH_RCMD(rcmd)
+        }
+    });
 }
 
 
@@ -747,24 +762,22 @@ void GateioSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     CANCEL_ORDER_TCMD_2_RCMD(tcmd)
 
     md::InstrumentInfo info;
-    if (!smc->get_instrument_info(tcmd.body.cancelOrder.exchangeTypeEnum,
-                                  tcmd.body.cancelOrder.instTypeEnum,
-                                  tcmd.body.cancelOrder.instId, info)) {
+    if (!smc->get_instrument_info(tcmd.body.cancelOrder.exchangeTypeEnum, tcmd.body.cancelOrder.instTypeEnum, tcmd.body.cancelOrder.instId, info)) {
         rcmd.body.orderResponse.orderStatus = OS_FAILED;
-        rcmd.body.orderResponse.errorId     = SMCInstrumentNotExistError;
+        rcmd.body.orderResponse.errorId = SMCInstrumentNotExistError;
         rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
         PUSH_RCMD(rcmd)
         return;
     }
 
-    std::string idSeg;
+    std::string idSeg = "";
     if (!crypto::str_cmp(tcmd.body.cancelOrder.orderId, "")) {
         idSeg = tcmd.body.cancelOrder.orderId;
     } else if (!crypto::str_cmp(tcmd.body.cancelOrder.orderSysId, "")) {
         idSeg = tcmd.body.cancelOrder.orderSysId;
     } else {
         rcmd.body.orderResponse.orderStatus = OS_FAILED;
-        rcmd.body.orderResponse.errorId     = OrderIdError;
+        rcmd.body.orderResponse.errorId = OrderIdError;
         rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
         PUSH_RCMD(rcmd)
         return;
@@ -777,60 +790,97 @@ void GateioSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
 #endif
 
     std::string time_str = std::to_string(crypto::getCurrentTimeSeconds());
-    std::string sign     = crypto::getGateioSignatureRest("DELETE", pathBase, time_str, queryStr, "", acc.secretKey);
+    std::string sign = crypto::getGateioSignatureRest("DELETE", pathBase, time_str, queryStr, "", acc.secretKey);
     std::vector<std::pair<std::string, std::string>> headers = {{"KEY", acc.apiKey}, {"Timestamp", time_str}, {"SIGN", sign}};
 
     std::string fullPath = pathBase + "?" + queryStr;
     LOG_INFO("TB {} Gate spot cancel_order: {}", acc.accountId, fullPath);
 
-    auto info_captured = info;
-
-    asyncRequest(boost::beast::http::verb::delete_, std::move(fullPath), "", "", std::move(headers),
-        [this, rcmd, info_captured](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
-            if (ec) {
+    asyncRequest(boost::beast::http::verb::delete_, std::move(fullPath), "", "", std::move(headers), [this, rcmd](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
+        if (ec) {
+            LOG_ERROR("TB {} cancel_order ec: {}", acc.accountId, ec.message());
+            rcmd.body.orderResponse.orderStatus = OS_FAILED;
+            rcmd.body.orderResponse.errorId = NetworkError;
+            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, ec.message());
+            rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
+            PUSH_RCMD(rcmd)
+            return;
+        }
+        try {
+            std::cout << "cancel_order : " << resp.body.c_str() << std::endl;
+            simdjson::padded_string padded(resp.body);
+            auto doc = g_parser.iterate(padded);
+            if (doc.error()) {
                 rcmd.body.orderResponse.orderStatus = OS_FAILED;
-                rcmd.body.orderResponse.errorId     = NetworkError;
-                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, ec.message());
-                rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
+                rcmd.body.orderResponse.errorId = UnknownError;
+                rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
                 PUSH_RCMD(rcmd)
                 return;
             }
-            try {
-                simdjson::padded_string padded(resp.body);
-                auto doc = g_parser.iterate(padded);
-                if (doc.error()) return;
 
-                std::string_view status_sv, label_sv, id_sv, avg_sv, amount_sv, left_sv;
-                bool has_status = (doc.find_field_unordered("status").get(status_sv) == simdjson::SUCCESS);
-                bool has_label  = (doc.find_field_unordered("label").get(label_sv)  == simdjson::SUCCESS);
+            auto doc_value = doc.get_object().value_unsafe();
 
-                if (has_status) {
-                    doc.find_field_unordered("id").get(id_sv);
-                    doc.find_field_unordered("avg_deal_price").get(avg_sv);
-                    doc.find_field_unordered("amount").get(amount_sv);
-                    doc.find_field_unordered("left").get(left_sv);
+            std::string_view status_sv;
+            std::string_view label_sv;
+            std::string_view avg_sv;
+            std::string_view left_sv;
+            std::string_view id_sv;
+            bool has_status = false;
+            bool has_label = false;
 
-                    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
-                    if (!avg_sv.empty()) rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
-                    double amount = crypto::fast_atod(amount_sv);
-                    double left   = std::fabs(crypto::fast_atod(left_sv));
-                    rcmd.body.orderResponse.volumeTraded = amount - left;
-                    rcmd.body.orderResponse.orderStatus  = OS_CANCELED;
-                    rcmd.body.orderResponse.updateTime   = crypto::getCurrentTime();
-                    PUSH_RCMD(rcmd)
-                } else if (has_label) {
-                    rcmd.body.orderResponse.orderStatus = OS_FAILED;
-                    rcmd.body.orderResponse.errorId     = crypto::get_gateio_errorid(resp.body.c_str());
-                    if (rcmd.body.orderResponse.errorId == OrderNotFoundError) rcmd.body.orderResponse.orderStatus = OS_REJECTED;
-                    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, label_sv);
-                    rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
-                    PUSH_RCMD(rcmd)
+            for (auto field : doc_value) {
+                std::string_view k = field.unescaped_key().value_unsafe();
+                if (k == "status") {
+                    has_status = field.value().get(status_sv) == simdjson::SUCCESS;
+                }
+                else if (k == "label") {
+                    has_label = field.value().get(label_sv) == simdjson::SUCCESS;
+                }
+                else if (k == "avg_deal_price") {
+                    field.value().get(avg_sv);
+                }
+                else if (k == "left") {
+                    field.value().get(left_sv);
+                }
+                else if (k == "id") {
+                    field.value().get(id_sv);
                 }
             }
-            catch (const std::exception& e) {
-                LOG_ERROR("TB {} Gate spot cancel_order cb exc: {}", acc.accountId, e.what());
+
+            if (has_status) {
+                crypto::copy_sv_to_char_array(rcmd.body.newOrder.orderId, id_sv);
+                if (!avg_sv.empty()) {
+                    rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
+                }
+                double left = std::fabs(crypto::fast_atod(left_sv));
+                left = left > 0 ? left : -left;
+                rcmd.body.newOrder.volumeTraded = rcmd.body.newOrder.volumeTotal - left;
+                rcmd.body.orderResponse.orderStatus = OS_CANCELED;
+                PUSH_RCMD(rcmd)
             }
-        });
+            else if (has_label) {
+                rcmd.body.orderResponse.orderStatus = OS_FAILED;
+                rcmd.body.orderResponse.errorId = crypto::get_gateio_errorid(resp.body.c_str());
+                if (rcmd.body.orderResponse.errorId == OrderNotFoundError) {
+                    rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+                }
+                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, label_sv);
+                rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+                PUSH_RCMD(rcmd)ss
+            }
+            else {
+                rcmd.body.newOrder.orderStatus = OS_FAILED;
+                rcmd.body.newOrder.ErrorID = ERROR_UnknownError; 
+                crypto::replace_string(resp.body, ":", "");
+                crypto::replace_string(resp.body, "\"", "");
+                nano_strcpy(rcmd.body.newOrder.originMsg, originMsg.c_str(), ORIGINMSG_SIZE);
+                PUSH_RCMD(rcmd)  
+            }
+        }
+        catch (const std::exception& e) {
+            LOG_ERROR("TB {} Gate spot cancel_order cb exc: {}", acc.accountId, e.what());
+        }
+    });
 }
 
 
@@ -841,15 +891,12 @@ void GateioSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     QUERY_ORDER_TCMD_2_RCMD(tcmd);
 
     md::InstrumentInfo info;
-    if (!smc->get_instrument_info(tcmd.body.queryOrder.exchangeTypeEnum,
-                                  tcmd.body.queryOrder.instTypeEnum,
-                                  tcmd.body.queryOrder.instId, info)) {
+    if (!smc->get_instrument_info(tcmd.body.queryOrder.exchangeTypeEnum, tcmd.body.queryOrder.instTypeEnum, tcmd.body.queryOrder.instId, info)) {
         LOG_INFO("TB {} Gate spot query_order smc miss: {}", acc.accountId, tcmd.body.queryOrder.instId);
         return;
     }
 
     std::string idSeg;
-    // Fix: 老代码把逻辑写反了 (少了 !), 这里改对: id 非空才 append。
     if (!crypto::str_cmp(tcmd.body.queryOrder.orderId, "")) {
         idSeg = tcmd.body.queryOrder.orderId;
     } else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
@@ -871,52 +918,85 @@ void GateioSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     std::string fullPath = pathBase + "?" + queryStr;
     LOG_INFO("TB {} Gate spot query_order: {}", acc.accountId, fullPath);
 
-    auto info_captured = info;
+    asyncRequest(boost::beast::http::verb::get, std::move(fullPath), "", "", std::move(headers), [this, rcmd, info](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
+            if (ec) {
+                LOG_ERROR("TB {} query_order ec: {}", acc.accountId, ec.message());
+                return;
+            }
 
-    asyncRequest(boost::beast::http::verb::get, std::move(fullPath), "", "", std::move(headers),
-        [this, rcmd, info_captured](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
-            if (ec) return;
             try {
+                std::cout << "query order: " << resp.body << std::endl;
                 simdjson::padded_string padded(resp.body);
                 auto doc = g_parser.iterate(padded);
-                if (doc.error()) return;
+                if (doc.error()) {
+                    LOG_ERROR("TB {} query_order parse err: {}", acc.accountId, resp.body);
+                    return;
+                }
+    
+                auto doc_value = doc.get_object().value_unsafe();
 
                 std::string_view status_sv;
-                if (doc.find_field_unordered("status").get(status_sv) != simdjson::SUCCESS) {
-                    // error
+                std::string_view id_sv;
+                std::string_view text_sv;
+                std::string_view amount_sv;
+                std::string_view price_sv;
+                std::string_view left_sv;
+                std::string_view avg_sv;
+                std::string_view finishAs_sv;
+    
+                for (auto field : doc_value) {
+                    std::string_view k = field.unescaped_key().value_unsafe();
+                    if (k == "status") {
+                        field.value().get(status_sv);
+                    }
+                    else if (k == "id") {
+                        field.value().get(id_sv);
+                    }
+                    else if (k == "text") {
+                        field.value().get(text_sv);
+                    }
+                    else if (k == "amount") {
+                        field.value().get(amount_sv);
+                    }
+                    else if (k == "price") {
+                        field.value().get(price_sv);
+                    }
+                    else if (k == "left") {
+                        field.value().get(left_sv);
+                    }
+                    else if (k == "avg_deal_price") {
+                        field.value().get(avg_sv);
+                    }
+                    else if (k == "finish_as") {
+                        field.value().get(finishAs_sv);
+                    }
+                }
+
+                if (!status_sv.empty()) {
                     rcmd.body.orderResponse.errorId = crypto::get_gateio_errorid(resp.body.c_str());
-                    rcmd.body.orderResponse.orderStatus =
-                        (rcmd.body.orderResponse.errorId == OrderNotFoundError) ? OS_REJECTED : OS_UNKNOWN;
+                    rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.errorId == OrderNotFoundError) ? OS_REJECTED : OS_UNKNOWN;
                     rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
                     PUSH_RCMD(rcmd)
                     return;
+
                 }
 
-                std::string_view id_sv, text_sv, amount_sv, price_sv, left_sv, avg_sv, finishAs_sv;
-                doc.find_field_unordered("id").get(id_sv);
-                doc.find_field_unordered("text").get(text_sv);
-                doc.find_field_unordered("amount").get(amount_sv);
-                doc.find_field_unordered("price").get(price_sv);
-                doc.find_field_unordered("left").get(left_sv);
-                doc.find_field_unordered("avg_deal_price").get(avg_sv);
-                doc.find_field_unordered("finish_as").get(finishAs_sv);
-
-                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId,    id_sv);
+                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
                 crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, text_sv);
                 rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(amount_sv);
-                rcmd.body.orderResponse.limitPrice  = crypto::fast_atod(price_sv);
+                rcmd.body.orderResponse.limitPrice = crypto::fast_atod(price_sv);
                 double left = std::fabs(crypto::fast_atod(left_sv));
+                left = left > 0 ? left : -left;
                 rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
-                if (!avg_sv.empty()) rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
+                if (!avg_sv.empty()) {
+                    rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
+                }
 
-                std::string st(status_sv);
-                if (st == "open") {
-                    rcmd.body.orderResponse.orderStatus =
-                        (rcmd.body.orderResponse.volumeTotal > rcmd.body.orderResponse.volumeTraded && rcmd.body.orderResponse.volumeTraded > ZERO_NUM)
-                            ? OS_PARTFILLED : OS_NEW;
-                } else if (st == "closed") {
+                if (status_sv == "open") {
+                    rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.volumeTotal > rcmd.body.orderResponse.volumeTraded && rcmd.body.orderResponse.volumeTraded > ZERO_NUM) ? OS_PARTFILLED : OS_NEW;
+                } else if (status_sv == "closed") {
                     rcmd.body.orderResponse.orderStatus = OS_FILLED;
-                } else if (st == "cancelled") {
+                } else if (status_sv == "cancelled") {
                     rcmd.body.orderResponse.orderStatus = OS_CANCELED;
                 } else if (finishAs_sv == "filled") {
                     rcmd.body.orderResponse.orderStatus = OS_FILLED;
