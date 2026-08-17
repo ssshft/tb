@@ -739,7 +739,7 @@ void GateioSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
                 rcmd.body.orderResponse.errorId = NetworkUnknownError; 
                 crypto::replace_string(resp.body, ":", "");
                 crypto::replace_string(resp.body, "\"", "");
-                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, resp.body.c_str(), ORIGINMSG_SIZE);
+                strncpy(rcmd.body.orderResponse.originMsg, resp.body.c_str(), ORIGINMSG_SIZE);
                 PUSH_RCMD(rcmd)  
             }
         }
@@ -847,13 +847,13 @@ void GateioSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
             }
 
             if (has_status) {
-                crypto::copy_sv_to_char_array(rcmd.body.newOrder.orderId, id_sv);
+                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
                 if (!avg_sv.empty()) {
                     rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
                 }
                 double left = std::fabs(crypto::fast_atod(left_sv));
                 left = left > 0 ? left : -left;
-                rcmd.body.newOrder.volumeTraded = rcmd.body.newOrder.volumeTotal - left;
+                rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
                 rcmd.body.orderResponse.orderStatus = OS_CANCELED;
                 PUSH_RCMD(rcmd)
             }
@@ -868,11 +868,11 @@ void GateioSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
                 PUSH_RCMD(rcmd)ss
             }
             else {
-                rcmd.body.newOrder.orderStatus = OS_FAILED;
-                rcmd.body.newOrder.ErrorID = ERROR_UnknownError; 
+                rcmd.body.orderResponse.orderStatus = OS_FAILED;
+                rcmd.body.orderResponse.ErrorID = UnknownError; 
                 crypto::replace_string(resp.body, ":", "");
                 crypto::replace_string(resp.body, "\"", "");
-                nano_strcpy(rcmd.body.newOrder.originMsg, resp.body.c_str(), ORIGINMSG_SIZE);
+                strncpy(rcmd.body.orderResponse.originMsg, resp.body.c_str(), ORIGINMSG_SIZE);
                 PUSH_RCMD(rcmd)  
             }
         }
