@@ -865,11 +865,11 @@ void GateioSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
                 }
                 crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, label_sv);
                 rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                PUSH_RCMD(rcmd)ss
+                PUSH_RCMD(rcmd)
             }
             else {
                 rcmd.body.orderResponse.orderStatus = OS_FAILED;
-                rcmd.body.orderResponse.ErrorID = UnknownError; 
+                rcmd.body.orderResponse.errorId = UnknownError; 
                 crypto::replace_string(resp.body, ":", "");
                 crypto::replace_string(resp.body, "\"", "");
                 strncpy(rcmd.body.orderResponse.originMsg, resp.body.c_str(), ORIGINMSG_SIZE);
