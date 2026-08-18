@@ -401,7 +401,7 @@ void GateioUSTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
         rcmd.body.position.liquidPrice = crypto::fast_atod(liq_sv) * info.reduceNumber;
 
         double adl = 1;
-        double adl_s = static_cast<int>(crypto::fast_atod(adl_sv))
+        double adl_s = static_cast<int>(crypto::fast_atod(adl_sv));
         if (adl_s >= 5) {
             adl = 1;
         }
@@ -629,7 +629,7 @@ void GateioUSTradeUnit::query_position(const pubsub::TCommand&) {
                 rcmd.body.position.liquidPrice = crypto::fast_atod(liq_sv) * info.reduceNumber;
 
                 double adl = 1;
-                double adl_s = static_cast<int>(crypto::fast_atod(adl_sv))
+                double adl_s = static_cast<int>(crypto::fast_atod(adl_sv));
                 if (adl_s >= 5) {
                     adl = 1;
                 }
@@ -809,13 +809,6 @@ void GateioUSTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
 
             auto doc_value = doc.get_object().value_unsafe();
 
-
-            std::string_view label_sv;
-            std::string_view text_sv;
-            std::string_view avg_sv;
-            std::string_view left_sv;
-            std::string_view id_sv;
-
             std::string_view id_sv;
             std::string_view label_sv;
             std::string_view fill_sv;
@@ -835,20 +828,19 @@ void GateioUSTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
                     has_label = field.value().get(label_sv) == simdjson::SUCCESS;
                 }
                 else if (k == "fill_price") {
-                    field.value().get(fill_sv)
+                    field.value().get(fill_sv);
                 }
                 else if (k == "left") {
-                    field.value().get(left_sv)
+                    field.value().get(left_sv);
                 }
                 else if (k == "status") {
-                    field.value().get(status_sv)
+                    field.value().get(status_sv);
                 }
                 else if (k == "finish_as") {
-                    field.value().get(finishAs_sv)
+                    field.value().get(finishAs_sv);
                 }
             }
 
-        
             if (has_id) {
                 crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
                 rcmd.body.orderResponse.errorId = NoError;
@@ -861,9 +853,9 @@ void GateioUSTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
                 // 用 status/finish_as 判 orderStatus, 逻辑与 query_order 一致
                 if (status_sv == "open") {
                     rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.volumeTraded > ZERO_NUM) ? OS_PARTFILLED : OS_NEW;
-                } else if (finish_sv == "filled") {
+                } else if (finishAs_sv == "filled") {
                     rcmd.body.orderResponse.orderStatus = OS_FILLED;
-                } else if (finish_sv == "cancelled" || finish_sv == "ioc" || finish_sv == "liquidated" || finish_sv == "auto_deleveraged" || finish_sv == "reduce_only" || finish_sv == "reduce_out") {
+                } else if (finishAs_sv == "cancelled" || finishAs_sv == "ioc" || finishAs_sv == "liquidated" || finishAs_sv == "auto_deleveraged" || finishAs_sv == "reduce_only" || finishAs_sv == "reduce_out") {
                     rcmd.body.orderResponse.orderStatus = OS_CANCELED;
                 } else if (rcmd.body.orderResponse.orderType == OT_IOC) {
                     rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.volumeTraded < rcmd.body.orderResponse.volumeTotal) ? OS_CANCELED : OS_FILLED;
@@ -1132,10 +1124,10 @@ void GateioUSTradeUnit::query_order(const pubsub::TCommand& tcmd) {
                 if (status_sv == "open") {
                     rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.volumeTotal > rcmd.body.orderResponse.volumeTraded && rcmd.body.orderResponse.volumeTraded > ZERO_NUM) ? OS_PARTFILLED : OS_NEW;
                 } else {
-                    if (finish_sv == "filled") {
+                    if (finishAs_sv == "filled") {
                         rcmd.body.orderResponse.orderStatus = OS_FILLED;
                     }                           
-                    else if (finish_sv == "cancelled" || finish_sv == "liquidated" || finish_sv == "ioc" || finish_sv == "auto_deleveraged" || finish_sv == "reduce_only" || finish_sv == "reduce_out") {
+                    else if (finishAs_sv == "cancelled" || finishAs_sv == "liquidated" || finishAs_sv == "ioc" || finishAs_sv == "auto_deleveraged" || finishAs_sv == "reduce_only" || finishAs_sv == "reduce_out") {
                         rcmd.body.orderResponse.orderStatus = OS_CANCELED;
                     }                                                       
                     else {
