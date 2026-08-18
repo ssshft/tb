@@ -131,6 +131,37 @@ namespace crypto {
         }
         return OS_UNKNOWN;
     }
+
+
+    inline OrderStatus get_gateio_orderstatus(const char* msg) noexcept{
+        using crypto::has_str;
+        constexpr std::string_view rejectedPatterns[] = {
+            "PRICE_TOO_DEVIATED", "ORDER_POC_IMMEDIATE", "TOO_MANY_ORDERS",
+            "INVALID_PARAM_VALUE", "INVALID_PROTOCOL", "INSUFFICIENT_AVAILABLE",
+            "INVALID_ARGUMENT", "POC_FILL_IMMEDIATELY", "BALANCE_NOT_ENOUGH",
+            "RISK_LIMIT_EXCEEDED", "TOO_MANY_REQUESTS", "ACCOUNT_NOT_ELIGIBLE",
+            "FORBIDDEN", "BORROW_FAILED", "AUTO_BORROW_TOO_MUCH", "INVALID_KEY",
+            "INCREASE_POSITION"
+        };
+
+        for (const auto& pat : rejectedPatterns) {
+            if (has_str(msg, pat)) return OS_REJECTED;
+        }
+
+        constexpr std::string_view unknownPatterns[] = {
+            "ORDER_NOT_FOUND",
+            "NOT_FOUND",
+            "SERVER_ERROR"
+        };
+
+        for (const auto& pat : unknownPatterns) {
+            if (has_str(msg, pat)) return OS_UNKNOWN;
+        }
+
+        return OS_UNKNOWN;
+    }
+
+
     /**
      * @brief 判断oms中订单状态颠倒，比如，oms中状态是成交，部分成交，但是推送过来的状态是NEW,
      * 这时候应该判断为ws推送落后于当前的oms，返回false

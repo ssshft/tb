@@ -760,6 +760,14 @@ void GateioSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
 void GateioSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     CANCEL_ORDER_TCMD_2_RCMD(tcmd)
 
+    if (!isConnected.load()) {
+        rcmd.body.orderResponse.orderStatus = OS_FAILED;
+        rcmd.body.orderResponse.errorId = TBDisconnectError;
+        rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+        PUSH_RCMD(rcmd)
+        return;
+    }
+
     md::InstrumentInfo info;
     if (!smc->get_instrument_info(tcmd.body.cancelOrder.exchangeTypeEnum, tcmd.body.cancelOrder.instTypeEnum, tcmd.body.cancelOrder.instId, info)) {
         rcmd.body.orderResponse.orderStatus = OS_FAILED;
