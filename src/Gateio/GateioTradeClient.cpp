@@ -6,10 +6,22 @@ GateioTradeClient::GateioTradeClient(rapidjson::Value& accCfg, sm::SecurityManag
         auto& acc = vAccount[i];        
         if (acc.instTypeEnum == SPOT) {
             std::cout << "----------spot created-------" << acc.accountId << " " << acc.strategyId << std::endl;
-            spotTradeUnit = new GateioSpotTradeUnit(acc, smc);
+            if (acc.apiMode == AM_REST) {
+                spotTradeUnit = new GateioSpotTradeUnit(acc, smc);
+            }
+            else if (acc.apiMode == AM_WS) {
+                spotTradeUnit = new GateioSpotWsTradeUnit(acc, smc);
+            }
+            
         }
         else if (acc.instTypeEnum == USDT_SWAP) {
-            usTradeClient = new GateioUSTradeUnit(acc, smc);
+            if (acc.apiMode == AM_REST) {
+                usTradeClient = new GateioUSTradeUnit(acc, smc);
+            }
+            else if (acc.apiMode == AM_WS) {
+                usTradeClient = new GateioUSWsTradeUnit(acc, smc);
+            }
+            
         }    
     }
 }
@@ -140,5 +152,4 @@ void GateioTradeClient::query_order(const pubsub::TCommand& tcmd) {
             usTradeClient->query_order(tcmd);
         }
     }
-
 }

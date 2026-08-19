@@ -926,95 +926,95 @@ void GateioSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     LOG_INFO("TB {} Gate spot query_order: {}", acc.accountId, fullPath);
 
     asyncRequest(boost::beast::http::verb::get, std::move(fullPath), "", "", std::move(headers), [this, rcmd, info](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
-            if (ec) {
-                LOG_ERROR("TB {} query_order ec: {}", acc.accountId, ec.message());
+        if (ec) {
+            LOG_ERROR("TB {} query_order ec: {}", acc.accountId, ec.message());
+            return;
+        }
+
+        try {
+            std::cout << "query order: " << resp.body << std::endl;
+            simdjson::padded_string padded(resp.body);
+            auto doc = g_parser.iterate(padded);
+            if (doc.error()) {
+                LOG_ERROR("TB {} query_order parse err: {}", acc.accountId, resp.body);
                 return;
             }
 
-            try {
-                std::cout << "query order: " << resp.body << std::endl;
-                simdjson::padded_string padded(resp.body);
-                auto doc = g_parser.iterate(padded);
-                if (doc.error()) {
-                    LOG_ERROR("TB {} query_order parse err: {}", acc.accountId, resp.body);
-                    return;
-                }
-    
-                auto doc_value = doc.get_object().value_unsafe();
+            auto doc_value = doc.get_object().value_unsafe();
 
-                std::string_view status_sv;
-                std::string_view id_sv;
-                std::string_view text_sv;
-                std::string_view amount_sv;
-                std::string_view price_sv;
-                std::string_view left_sv;
-                std::string_view avg_sv;
-                std::string_view finishAs_sv;
-    
-                for (auto field : doc_value) {
-                    std::string_view k = field.unescaped_key().value_unsafe();
-                    if (k == "status") {
-                        field.value().get(status_sv);
-                    }
-                    else if (k == "id") {
-                        field.value().get(id_sv);
-                    }
-                    else if (k == "text") {
-                        field.value().get(text_sv);
-                    }
-                    else if (k == "amount") {
-                        field.value().get(amount_sv);
-                    }
-                    else if (k == "price") {
-                        field.value().get(price_sv);
-                    }
-                    else if (k == "left") {
-                        field.value().get(left_sv);
-                    }
-                    else if (k == "avg_deal_price") {
-                        field.value().get(avg_sv);
-                    }
-                    else if (k == "finish_as") {
-                        field.value().get(finishAs_sv);
-                    }
-                }
+            std::string_view status_sv;
+            std::string_view id_sv;
+            std::string_view text_sv;
+            std::string_view amount_sv;
+            std::string_view price_sv;
+            std::string_view left_sv;
+            std::string_view avg_sv;
+            std::string_view finishAs_sv;
 
-                if (!status_sv.empty()) {
-                    rcmd.body.orderResponse.errorId = crypto::get_gateio_errorid(resp.body.c_str());
-                    rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.errorId == OrderNotFoundError) ? OS_REJECTED : OS_UNKNOWN;
-                    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                    PUSH_RCMD(rcmd)
-                    return;
-
+            for (auto field : doc_value) {
+                std::string_view k = field.unescaped_key().value_unsafe();
+                if (k == "status") {
+                    field.value().get(status_sv);
                 }
-
-                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
-                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, text_sv);
-                rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(amount_sv);
-                rcmd.body.orderResponse.limitPrice = crypto::fast_atod(price_sv);
-                double left = std::fabs(crypto::fast_atod(left_sv));
-                left = left > 0 ? left : -left;
-                rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
-                if (!avg_sv.empty()) {
-                    rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
+                else if (k == "id") {
+                    field.value().get(id_sv);
                 }
-
-                if (status_sv == "open") {
-                    rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.volumeTotal > rcmd.body.orderResponse.volumeTraded && rcmd.body.orderResponse.volumeTraded > ZERO_NUM) ? OS_PARTFILLED : OS_NEW;
-                } else if (status_sv == "closed") {
-                    rcmd.body.orderResponse.orderStatus = OS_FILLED;
-                } else if (status_sv == "cancelled") {
-                    rcmd.body.orderResponse.orderStatus = OS_CANCELED;
-                } else if (finishAs_sv == "filled") {
-                    rcmd.body.orderResponse.orderStatus = OS_FILLED;
-                } else {
-                    rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
+                else if (k == "text") {
+                    field.value().get(text_sv);
                 }
+                else if (k == "amount") {
+                    field.value().get(amount_sv);
+                }
+                else if (k == "price") {
+                    field.value().get(price_sv);
+                }
+                else if (k == "left") {
+                    field.value().get(left_sv);
+                }
+                else if (k == "avg_deal_price") {
+                    field.value().get(avg_sv);
+                }
+                else if (k == "finish_as") {
+                    field.value().get(finishAs_sv);
+                }
+            }
+
+            if (!status_sv.empty()) {
+                rcmd.body.orderResponse.errorId = crypto::get_gateio_errorid(resp.body.c_str());
+                rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.errorId == OrderNotFoundError) ? OS_REJECTED : OS_UNKNOWN;
                 rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
                 PUSH_RCMD(rcmd)
+                return;
+
             }
-            catch (const std::exception& e) {
-                LOG_ERROR("TB {} Gate spot query_order cb exc: {}", acc.accountId, e.what());
+
+            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
+            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, text_sv);
+            rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(amount_sv);
+            rcmd.body.orderResponse.limitPrice = crypto::fast_atod(price_sv);
+            double left = std::fabs(crypto::fast_atod(left_sv));
+            left = left > 0 ? left : -left;
+            rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
+            if (!avg_sv.empty()) {
+                rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
             }
-        });
+
+            if (status_sv == "open") {
+                rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.volumeTotal > rcmd.body.orderResponse.volumeTraded && rcmd.body.orderResponse.volumeTraded > ZERO_NUM) ? OS_PARTFILLED : OS_NEW;
+            } else if (status_sv == "closed") {
+                rcmd.body.orderResponse.orderStatus = OS_FILLED;
+            } else if (status_sv == "cancelled") {
+                rcmd.body.orderResponse.orderStatus = OS_CANCELED;
+            } else if (finishAs_sv == "filled") {
+                rcmd.body.orderResponse.orderStatus = OS_FILLED;
+            } else {
+                rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
+            }
+            rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+            PUSH_RCMD(rcmd)
+        }
+        catch (const std::exception& e) {
+            LOG_ERROR("TB {} Gate spot query_order cb exc: {}", acc.accountId, e.what());
+        }
+    });
 }

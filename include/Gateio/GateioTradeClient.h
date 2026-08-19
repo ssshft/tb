@@ -2,6 +2,8 @@
 #include "base/BaseTrade.h"
 #include "Gateio/GateioSpotTrade.h"
 #include "Gateio/GateioUSTrade.h"
+#include "Gateio/GateioSpotWsTrade.h"
+#include "Gateio/GateioUSWsTrade.h"
 
 
 
@@ -21,6 +23,6 @@ public:
     virtual void query_balance(const pubsub::TCommand& tcmd);
 
 protected:
-    GateioSpotTradeUnit* spotTradeUnit = nullptr;
-    GateioUSTradeUnit* usTradeClient = nullptr;
+    BaseTradeUnit* spotTradeUnit = nullptr;
+    BaseTradeUnit* usTradeClient = nullptr;
 };

@@ -173,7 +173,6 @@ void BinanceSpotWsTradeUnit::clearPending() {
         if (now_ms - it->second.ts_ms > kPendingTtlMs) {
             pendingMap_.erase(it->first);
         }
-
     }
 }
 

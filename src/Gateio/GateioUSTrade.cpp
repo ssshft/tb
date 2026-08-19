@@ -147,7 +147,6 @@ void GateioUSTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, in
     }
 }
 
-
 // ---- futures.orders update ----
 void GateioUSTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
     for (auto b_val : arr) {
