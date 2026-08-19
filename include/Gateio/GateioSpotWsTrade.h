@@ -25,14 +25,13 @@
 //   req_id 是 string. 我们用 "100", "101", ... 递增, atoi 回来查表。
 //
 #include "base/BaseTrade.h"
-
 #include <simdjson.h>
-
 #include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <tbb/concurrent_hash_map.h>
 
 
 class GateioSpotWsTradeUnit : public BaseTradeUnit {

@@ -13,6 +13,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <tbb/concurrent_hash_map.h>
 
 
 class GateioUsWsTradeUnit : public BaseTradeUnit {
