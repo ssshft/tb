@@ -204,7 +204,7 @@ void GateioUsWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /
         // 用 "request_id" 存在与否区分。
 
         std::string_view req_id_sv;
-        std::string status_sv;
+        std::string_view status_sv;
         simdjson::ondemand::object header;
         simdjson::ondemand::object data;
         bool has_request_id = false;
