@@ -19,7 +19,7 @@ GateioTradeClient::GateioTradeClient(rapidjson::Value& accCfg, sm::SecurityManag
                 usTradeClient = new GateioUSTradeUnit(acc, smc);
             }
             else if (acc.apiMode == AM_WS) {
-                usTradeClient = new GateioUSWsTradeUnit(acc, smc);
+                usTradeClient = new GateioUsWsTradeUnit(acc, smc);
             }
             
         }    
