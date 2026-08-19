@@ -346,7 +346,7 @@ void GateioUsWsTradeUnit::handleWsApiResponse(WsPending& pending, simdjson::onde
                 field.value().get(size_sv);
             }
             else if (k == "fill_price") {
-                field.value().get(avg_sv);
+                field.value().get(fill_sv);
             }
             else if (k == "status") {
                 field.value().get(status_sv);
@@ -396,7 +396,7 @@ void GateioUsWsTradeUnit::handleWsApiResponse(WsPending& pending, simdjson::onde
                 field.value().get(left_sv);
             }
             else if (k == "fill_price") {
-                field.value().get(avg_sv);
+                field.value().get(fill_sv);
             }
         }
 

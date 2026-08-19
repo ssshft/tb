@@ -976,13 +976,13 @@ void GateioUSTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
                     has_label = field.value().get(label_sv) == simdjson::SUCCESS;
                 }
                 else if (k == "id") {
-                    field.value().get(id_sv) == simdjson::SUCCESS;
+                    field.value().get(id_sv);
                 }
                 else if (k == "fill_price") {
-                    field.value().get(fill_sv) == simdjson::SUCCESS;
+                    field.value().get(fill_sv);
                 }
                 else if (k == "left") {
-                    field.value().get(left_sv) == simdjson::SUCCESS;
+                    field.value().get(left_sv);
                 }
             }
 
