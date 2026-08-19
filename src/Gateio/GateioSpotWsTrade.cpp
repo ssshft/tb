@@ -292,7 +292,8 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
             }
         }
 
-        int id = crypto::fast_atol(req_id_sv);
+        auto id = crypto::fast_atol(req_id_sv);
+        auto status = crypto::fast_atol(status_sv);
         if (has_request_id) {
             if (id == kLoginId) {
                 if (status == 200) {
@@ -304,7 +305,7 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
                     }
                 } else {
                     wsLoggedIn_.store(false);
-                    LOG_ERROR("TB {} Gate spot spot.login FAILED ack={} status={}", acc.accountId, ack, status);
+                    LOG_ERROR("TB {} Gate spot spot.login FAILED status={}", acc.accountId, status);
                 }
             }
             else if (id == kOrdersSubId || id == kBalancesSubId) {

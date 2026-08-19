@@ -69,8 +69,7 @@ private:
     std::atomic<bool> wsLoggedIn_{false};
     std::atomic<int> nextWsId_{100};
 
-    std::mutex pendingMtx_;
-    std::unordered_map<int, WsPending> pendingMap_;
+    tbb::concurrent_hash_map<int, WsPending> pendingMap_;
     std::atomic<int64_t> pendingLastGcMs_{0};
 
     std::string balanceUrl = "/api/v4/futures/usdt/accounts";

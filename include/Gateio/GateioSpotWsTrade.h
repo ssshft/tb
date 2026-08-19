@@ -85,13 +85,12 @@ private:
     void handleWsApiError(WsPending& pending, simdjson::ondemand::object& err);
     void handleBalancesUpdate(simdjson::ondemand::array& arr);
     void handleOrdersUpdate(simdjson::ondemand::array& arr);
-    
+
 private:
     std::atomic<bool> wsLoggedIn_{false};
     std::atomic<int> nextWsId_{100};
 
-    std::mutex pendingMtx_;
-    std::unordered_map<int, WsPending> pendingMap_;
+    tbb::concurrent_hash_map<int, WsPending> pendingMap_;
     std::atomic<int64_t> pendingLastGcMs_{0};
 
     // REST 端点 (query_balance / query_order 走 REST)
