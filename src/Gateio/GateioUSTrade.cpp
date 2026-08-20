@@ -437,65 +437,55 @@ void GateioUSTradeUnit::query_balance(const pubsub::TCommand&) {
         }
 
         try {
-            std::cout << "query_balance: " << resp.body << std::endl;
-            simdjson::padded_string padded(resp.body);
+           simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
+                LOG_ERROR("TB {} query_order parse err: {}", acc.accountId, resp.body);
                 return;
             }
 
-            simdjson::ondemand::array arr;
-            if (doc.get_array().get(arr) != simdjson::SUCCESS) {
-                return;
-            }
+            auto doc_value = doc.get_object().value_unsafe();
 
             std::vector<pubsub::RCommand> pending;
-            for (auto b_val : arr) {
-                auto b_res = b_val.get_object();
-                if (b_res.error()) {
-                    continue;
+            std::string_view cur_sv;
+            std::string_view avail_sv;
+            std::string_view om_sv;
+            std::string_view pm_sv;
+            std::string_view tot_sv;
+            for (auto field : doc_value) {
+                std::string_view k = field.unescaped_key().value_unsafe();
+                if (k == "currency") {
+                    field.value().get(cur_sv);
                 }
-                auto& b = b_res.value_unsafe();
-
-                std::string_view cur_sv;
-                std::string_view avail_sv;
-                std::string_view om_sv;
-                std::string_view pm_sv;
-                std::string_view tot_sv;
-                for (auto field : b) {
-                    std::string_view k = field.unescaped_key().value_unsafe();
-                    if (k == "currency") {
-                        field.value().get(cur_sv);
-                    }
-                    else if (k == "available") {
-                        field.value().get(avail_sv);
-                    }
-                    else if (k == "order_margin") {
-                        field.value().get(om_sv);
-                    }
-                    else if (k == "position_margin") {
-                        field.value().get(pm_sv);
-                    }
-                    else if (k == "total") {
-                        field.value().get(tot_sv);
-                    }
+                else if (k == "available") {
+                    field.value().get(avail_sv);
                 }
-
-                pubsub::RCommand rcmd;
-                memset(&rcmd, 0, sizeof(pubsub::RCommand));
-                rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
-                rcmd.body.balance.exchangeTypeEnum = GATEIO;
-                rcmd.body.balance.instTypeEnum = USDT_SWAP;
-                crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
-                crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
-                crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(cur_sv)));
-                rcmd.body.balance.available = crypto::fast_atod(avail_sv);
-                rcmd.body.balance.frozen = crypto::fast_atod(om_sv) + crypto::fast_atod(pm_sv);
-                rcmd.body.balance.total = crypto::fast_atod(tot_sv);
-                rcmd.body.balance.updateTime = crypto::getCurrentTime();
-                rcmd.body.balance.apiSourceEnum = AS_REST;
-                pending.emplace_back(rcmd);
+                else if (k == "order_margin") {
+                    field.value().get(om_sv);
+                }
+                else if (k == "position_margin") {
+                    field.value().get(pm_sv);
+                }
+                else if (k == "total") {
+                    field.value().get(tot_sv);
+                }
             }
+
+            pubsub::RCommand rcmd;
+            memset(&rcmd, 0, sizeof(pubsub::RCommand));
+            rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
+            rcmd.body.balance.exchangeTypeEnum = GATEIO;
+            rcmd.body.balance.instTypeEnum = USDT_SWAP;
+            crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
+            crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
+            crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(cur_sv)));
+            rcmd.body.balance.available = crypto::fast_atod(avail_sv);
+            rcmd.body.balance.frozen = crypto::fast_atod(om_sv) + crypto::fast_atod(pm_sv);
+            rcmd.body.balance.total = crypto::fast_atod(tot_sv);
+            rcmd.body.balance.updateTime = crypto::getCurrentTime();
+            rcmd.body.balance.apiSourceEnum = AS_REST;
+            pending.emplace_back(rcmd);
+            
             if (pending.empty()) {
                 pubsub::RCommand rcmd;
                 memset(&rcmd, 0, sizeof(pubsub::RCommand));
