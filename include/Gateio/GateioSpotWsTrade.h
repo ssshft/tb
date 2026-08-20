@@ -83,7 +83,7 @@ private:
         std::string_view id_sv;
         std::string_view amount_sv;
         std::string_view left_sv;
-        std::string_view avg_deal_price_sv;
+        std::string_view avg_sv;
         std::string_view status_sv;
     };
 
