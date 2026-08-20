@@ -247,11 +247,16 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
         simdjson::ondemand::object header;
         simdjson::ondemand::object data;
         bool has_request_id = false;
-        bool has_data = false;
+        bool has_data_result = false;
+        bool has_data_error = false;
+
+        OrderResultFields orf;
+        ErrorFields ef;
 
         std::string_view channel_sv;
         std::string_view event_sv;
         simdjson::ondemand::array result_obj;
+
         bool has_balances = false;
         bool has_orders = false;
         bool has_event = false;
@@ -267,9 +272,8 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
                 }
             }
             else if (k == "channel") {
-                field.value().get(channel_sv);
                 if (channel_sv == "spot.balances") {
-                   has_balances = true; 
+                    has_balances = true; 
                 }
                 else if (channel_sv == "spot.orders") {
                     has_orders = true;
@@ -283,8 +287,50 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
                 }
             }
             else if (k == "data") {
-                has_data = field.value().get(data) == simdjson::SUCCESS;
-                break;
+                if (field.value().get(data) == simdjson::SUCCESS) {
+                    for (auto d : data) {
+                        std::string_view dk = d.unescaped_key().value_unsafe();
+                        if (dk == "result") {
+                            simdjson::ondemand::object res;
+                            if (d.value().get(res) == simdjson::SUCCESS) {
+                                has_data_result = true;
+                                for (auto r : res) {
+                                   std::string_view rk = r.unescaped_key().value_unsafe(); 
+                                    if (rk == "id") {
+                                        r.value().get(orf.id_sv);
+                                    }
+                                    else if (rk == "amount") {
+                                        r.value().get(orf.amount_sv);
+                                    }
+                                    else if (rk == "left") {
+                                        r.value().get(orf.left_sv);
+                                    }
+                                    else if (rk == "avg_deal_price") {
+                                        r.value().get(orf.avg_sv);
+                                    }
+                                    else if (rk == "status") {
+                                        r.value().get(orf.status_sv);
+                                    }
+                                }
+                            }
+                        }
+                        else if (dk == "errs") {
+                            simdjson::ondemand::object err;
+                            if (d.value().get(err) == simdjson::SUCCESS) {
+                                has_data_error = true;
+                                for (auto r : err) {
+                                   std::string_view rk = r.unescaped_key().value_unsafe(); 
+                                    if (rk == "label") {
+                                        r.value().get(ef.label_sv);
+                                    }
+                                    else if (rk == "message") {
+                                        r.value().get(ef.message_sv);
+                                    }
+                                }
+                            }    
+                        }
+                    }
+                }
             }
             else if (k == "result") {
                 field.value().get(result_obj);
@@ -294,6 +340,7 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
 
         auto id = crypto::fast_atol(req_id_sv);
         auto status = crypto::fast_atol(status_sv);
+
         if (has_request_id) {
             if (id == kLoginId) {
                 if (status == 200) {
@@ -318,16 +365,12 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
             else {
                 WsPending pending;
                 if (takePending(id, pending)) {
-                    if (status == 200 && has_data) {
-                        simdjson::ondemand::object res;
-                        data["result"].get(res);
-                        handleWsApiResponse(pending, res);
+                    if (status == 200 && has_data_result) {
+                        handleWsApiResponse(pending, orf);
 
                     }
-                    else {
-                        // if (has_error) {
-                            // handleWsApiError(pending, error);
-                        // }
+                    else if (has_data_error){ 
+                        handleWsApiError(pending, ef);
                     }     
                 }
                 else {
@@ -349,7 +392,7 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
     }
 }
 
-void GateioSpotWsTradeUnit::handleWsApiResponse(WsPending& pending, simdjson::ondemand::object& result) {
+void GateioSpotWsTradeUnit::handleWsApiResponse(WsPending& pending, const OrderResultFields& fields) {
     pubsub::RCommand& rcmd = pending.rcmd;
 
     // 测试单不上报
@@ -364,41 +407,21 @@ void GateioSpotWsTradeUnit::handleWsApiResponse(WsPending& pending, simdjson::on
     }
 
     if (pending.type == pubsub::CMD_NEW_ORDER) {
-        std::string_view id_sv;
-        std::string_view left_sv;
-        std::string_view avg_sv;
-        std::string_view status_sv;
-        for (auto field : result) {
-            std::string_view k = field.unescaped_key().value_unsafe();
-            if (k == "id") {
-                field.value().get(id_sv);
-            }
-            else if (k == "left") {
-                field.value().get(left_sv);
-            }
-            else if (k == "avg_deal_price") {
-                field.value().get(avg_sv);
-            }
-            else if (k == "status") {
-                field.value().get(status_sv);
-            }
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, fields.id_sv);
+        if (!fields.avg_sv.empty()) {
+            rcmd.body.orderResponse.tradePrice = crypto::fast_atod(fields.avg_sv);
         }
 
-        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
-        if (!avg_sv.empty()) {
-            rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
-        }
-
-        double left = std::fabs(crypto::fast_atod(left_sv));
+        double left = std::fabs(crypto::fast_atod(fields.left_sv));
         rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
 
-        if (status_sv == "open") {
+        if (fields.status_sv == "open") {
             rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.volumeTraded > ZERO_NUM) ? OS_PARTFILLED : OS_NEW;
         }
-        else if (status_sv == "closed") {
+        else if (fields.status_sv == "closed") {
             rcmd.body.orderResponse.orderStatus = OS_FILLED;
         }
-        else if (status_sv == "cancelled") {
+        else if (fields.status_sv == "cancelled") {
             rcmd.body.orderResponse.orderStatus = OS_CANCELED;
         }
         else {
@@ -409,32 +432,12 @@ void GateioSpotWsTradeUnit::handleWsApiResponse(WsPending& pending, simdjson::on
         rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
         PUSH_RCMD(rcmd)
     } else if (pending.type == pubsub::CMD_CANCEL_ORDER) {
-        std::string_view id_sv;
-        std::string_view amount_sv;
-        std::string_view left_sv;
-        std::string_view avg_sv;
-        for (auto field : result) {
-            std::string_view k = field.unescaped_key().value_unsafe();
-            if (k == "id") {
-                field.value().get(id_sv);
-            }
-            else if (k == "amount") {
-                field.value().get(amount_sv);
-            }
-            else if (k == "left") {
-                field.value().get(left_sv);
-            }
-            else if (k == "avg_deal_price") {
-                field.value().get(avg_sv);
-            }
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, fields.id_sv);
+        if (!fields.avg_sv.empty()) {
+            rcmd.body.orderResponse.tradePrice = crypto::fast_atod(fields.avg_sv);
         }
-
-        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
-        if (!avg_sv.empty()) {
-            rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
-        }
-        double amount = crypto::fast_atod(amount_sv);
-        double left = std::fabs(crypto::fast_atod(left_sv));
+        double amount = crypto::fast_atod(fields.amount_sv);
+        double left = std::fabs(crypto::fast_atod(fields.left_sv));
         rcmd.body.orderResponse.volumeTraded = amount - left;
 
         rcmd.body.orderResponse.orderStatus = OS_CANCELED;
@@ -443,7 +446,7 @@ void GateioSpotWsTradeUnit::handleWsApiResponse(WsPending& pending, simdjson::on
     }
 }
 
-void GateioSpotWsTradeUnit::handleWsApiError(WsPending& pending, simdjson::ondemand::object& error) {
+void GateioSpotWsTradeUnit::handleWsApiError(WsPending& pending, const ErrorFields& fields) {
     pubsub::RCommand& rcmd = pending.rcmd;
 
     // 测试单不上报
@@ -451,20 +454,7 @@ void GateioSpotWsTradeUnit::handleWsApiError(WsPending& pending, simdjson::ondem
         return;
     }
  
-    int code = 0;
-    std::string_view msg_sv;
-
-    for (auto field : error) {
-        std::string_view k = field.unescaped_key().value_unsafe();
-        if (k == "code") {
-            field.value().get(code);
-        }
-        else if (k == "msg") {
-            field.value().get(msg_sv);
-        }
-    }
-
-    rcmd.body.orderResponse.errorId = crypto::get_binance_errorid(static_cast<int>(code));
+    // rcmd.body.orderResponse.errorId = crypto::get_binance_errorid(static_cast<int>(code));
 
     if (pending.type == pubsub::CMD_NEW_ORDER) {
         rcmd.body.orderResponse.orderStatus = OS_REJECTED;    
@@ -472,7 +462,7 @@ void GateioSpotWsTradeUnit::handleWsApiError(WsPending& pending, simdjson::ondem
         rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.errorId == OrderNotFoundError) ? OS_REJECTED : OS_FAILED;
     }
 
-    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, msg_sv);
+    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, fields.message_sv);
     rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
     PUSH_RCMD(rcmd)
 }
