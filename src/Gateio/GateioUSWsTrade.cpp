@@ -16,7 +16,7 @@ GateioUsWsTradeUnit::~GateioUsWsTradeUnit() = default;
 // ============================================================================
 std::string GateioUsWsTradeUnit::buildLoginJson(long ts) const {
     std::string time_str = std::to_string(ts);
-    std::string sign = crypto::getGateioSignatureWs("futures.login", "api", time_str, acc.secretKey);
+    std::string sign = crypto::getGateioSignatureWsApi("futures.login", "api", time_str, "", acc.secretKey);
     return fmt::format(
         R"({{"time":{},"channel":"futures.login","event":"api","payload":{{)"
         R"("req_id":"{}","req_header":{{}},)"

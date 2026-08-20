@@ -18,13 +18,13 @@ GateioSpotWsTradeUnit::~GateioSpotWsTradeUnit() = default;
 std::string GateioSpotWsTradeUnit::buildLoginJson(long ts) const {
     // sign payload: channel=spot.login&event=api&time=T
     std::string time_str = std::to_string(ts);
-    std::string sign = crypto::getGateioSignatureWs("spot.login", "api", time_str, acc.secretKey);
+    std::string sign = crypto::getGateioSignatureWsApi("spot.login", "api", time_str, "", acc.secretKey);
     // req_id 用固定的 "1" (kLoginId)
     return fmt::format(
         R"({{"time":{},"channel":"spot.login","event":"api","payload":{{)"
         R"("req_id":"{}","req_header":{{}},)"
         R"("api_key":"{}","signature":"{}","timestamp":"{}"}}}})",
-        ts, kLoginId, escape_json(acc.apiKey), sign, time_str);
+        ts, kLoginId, acc.apiKey, sign, time_str);
 }
 
 std::string GateioSpotWsTradeUnit::buildSubscribeJson(int reqId, const char* channel, const char* payload_first, const char* payload_second) const {
