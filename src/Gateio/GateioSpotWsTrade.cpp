@@ -272,6 +272,7 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
                 }
             }
             else if (k == "channel") {
+                field.value().get(channel_sv);
                 if (channel_sv == "spot.balances") {
                     has_balances = true; 
                 }
