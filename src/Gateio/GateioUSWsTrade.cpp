@@ -30,6 +30,9 @@ std::string GateioUsWsTradeUnit::buildSubscribeJson(int reqId, const char* chann
     std::string time_str = std::to_string(ts);
     std::string sign = crypto::getGateioSignatureWs(channel, "subscribe", time_str, acc.secretKey);
 
+    std::string_view ch(channel);
+    bool balancesOnly = (ch == "futures.balances");
+
     std::string j;
     j.reserve(180);
     j.append(R"({"time":)");     
@@ -38,8 +41,16 @@ std::string GateioUsWsTradeUnit::buildSubscribeJson(int reqId, const char* chann
     j.append(channel);                                     
     j.push_back('"');
     j.append(R"(,"event":"subscribe","payload":[")"); 
-    j.append(acc.userId);            
-    j.append(R"(","!all"])");
+    j.append(acc.userId);        
+    if (!balancesOnly) {
+        j.append(R"(","!all)");
+    }
+    j.append(R"("])");
+    j.append(R"(,"auth":{"method":"api_key","KEY":")");
+    j.append(acc.apiKey);
+    j.append(R"(","SIGN":")");
+    j.append(sign);
+    j.append(R"("})");
     j.append(R"(,"req_id":")");  
     j.append(std::to_string(reqId));                       
     j.push_back('"');
