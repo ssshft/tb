@@ -208,7 +208,11 @@ void GateioUsWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /
         simdjson::ondemand::object header;
         simdjson::ondemand::object data;
         bool has_request_id = false;
-        bool has_data = false;
+        bool has_data_result = false;
+        bool has_data_error = false;
+
+        OrderResultFields orf;
+        ErrorFields ef;
 
         std::string_view channel_sv;
         std::string_view event_sv;
@@ -248,8 +252,57 @@ void GateioUsWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /
                 }
             }
             else if (k == "data") {
-                has_data = field.value().get(data) == simdjson::SUCCESS;
-                break;
+                if (field.value().get(data) == simdjson::SUCCESS) {
+                    for (auto d : data) {
+                        std::string_view dk = d.unescaped_key().value_unsafe();
+                        if (dk == "result") {
+                            simdjson::ondemand::object res;
+                            if (d.value().get(res) == simdjson::SUCCESS) {
+                                has_data_result = true;
+                                for (auto r : res) {
+                                    std::string_view rk = r.unescaped_key().value_unsafe(); 
+                                    if (rk == "id") {
+                                        r.value().get(orf.id_sv);
+                                    }
+                                    else if (rk == "size") {
+                                        r.value().get(orf.amount_sv);
+                                    }
+                                    else if (rk == "left") {
+                                        r.value().get(orf.left_sv);
+                                    }
+                                    else if (rk == "fill_price") {
+                                        r.value().get(orf.fill_sv);
+                                    }
+                                    else if (rk == "status") {
+                                        r.value().get(orf.status_sv);
+                                    } 
+                                    else if (rk == "finish_as") {
+                                        field.value().get(finish_sv);
+                                    }
+                                    else if (rk == "req_id") { // 有req_id的回报不推送
+                                        has_data_result = false;
+                                    }
+                                }
+                            }
+                        }
+                        else if (dk == "errs") {
+                            simdjson::ondemand::object err;
+                            if (d.value().get(err) == simdjson::SUCCESS) {
+                                has_data_error = true;
+                                for (auto r : err) {
+                                   std::string_view rk = r.unescaped_key().value_unsafe(); 
+                                    if (rk == "label") {
+                                        r.value().get(ef.label_sv);
+                                    }
+                                    else if (rk == "message") {
+                                        r.value().get(ef.message_sv);
+                                    }
+                                }
+                            }    
+                        }
+                    }
+                }
+                
             }
             else if (k == "result") {
                 field.value().get(result_obj);
@@ -283,20 +336,16 @@ void GateioUsWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /
             }
             else {
                 WsPending pending;
-                if (takePending(id, pending)) {
-                    if (status == 200 && has_data) {
-                        handleWsApiResponse(pending, data);
-
+                if (status == 200 && has_data_result) {
+                    if (takePending(id, pending)) {
+                        handleWsApiResponse(pending, orf);
                     }
-                    else {
-                        // if (has_error) {
-                            // handleWsApiError(pending, error);
-                        // }
-                    }     
                 }
-                else {
-                    LOG_WARN("TB {} spot ws-api unknown response id={}", acc.accountId, id);
-                }
+                else if (has_data_error){ 
+                    if (takePending(id, pending)) {
+                        handleWsApiError(pending, ef);
+                    }
+                } 
             }
         }
 
@@ -316,7 +365,7 @@ void GateioUsWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /
     }
 }
 
-void GateioUsWsTradeUnit::handleWsApiResponse(WsPending& pending, simdjson::ondemand::object& result) {
+void GateioUsWsTradeUnit::handleWsApiResponse(WsPending& pending, const OrderResultFields& fields) {
     pubsub::RCommand& rcmd = pending.rcmd;
 
     // 测试单不上报
@@ -331,45 +380,20 @@ void GateioUsWsTradeUnit::handleWsApiResponse(WsPending& pending, simdjson::onde
     }
 
     if (pending.type == pubsub::CMD_NEW_ORDER) {
-        std::string_view id_sv;
-        std::string_view size_sv;
-        std::string_view left_sv;
-        std::string_view fill_sv;
-        std::string_view status_sv;
-        std::string_view finish_sv;
-        for (auto field : result) {
-            std::string_view k = field.unescaped_key().value_unsafe();
-            if (k == "id") {
-                field.value().get(id_sv);
-            }
-            else if (k == "size") {
-                field.value().get(size_sv);
-            }
-            else if (k == "fill_price") {
-                field.value().get(fill_sv);
-            }
-            else if (k == "status") {
-                field.value().get(status_sv);
-            }
-            else if (k == "finish_as") {
-                field.value().get(finish_sv);
-            }
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, fields.id_sv);
+        if (!fields.fill_sv.empty()) {
+            rcmd.body.orderResponse.tradePrice = crypto::fast_atod(fields.fill_sv);
         }
-
-        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
-        if (!fill_sv.empty()) {
-            rcmd.body.orderResponse.tradePrice = crypto::fast_atod(fill_sv);
-        }
-        double left = std::fabs(crypto::fast_atod(left_sv));
+        double left = std::fabs(crypto::fast_atod(fields.left_sv));
         rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
 
-        if (status_sv == "open") {
+        if (fields.status_sv == "open") {
             rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.volumeTraded > ZERO_NUM) ? OS_PARTFILLED : OS_NEW;
         }
-        else if (finish_sv == "filled") {
+        else if (fields.finish_sv == "filled") {
             rcmd.body.orderResponse.orderStatus = OS_FILLED;
         }
-        else if (finish_sv == "cancelled" || finish_sv == "ioc" || finish_sv == "liquidated" || finish_sv == "auto_deleveraged" || finish_sv == "reduce_only") {
+        else if (fields.finish_sv == "cancelled" || fields.finish_sv == "ioc" || fields.finish_sv == "liquidated" || fields.finish_sv == "auto_deleveraged" || fields.finish_sv == "reduce_only") {
             rcmd.body.orderResponse.orderStatus = OS_CANCELED;
         }
         else {
@@ -380,32 +404,12 @@ void GateioUsWsTradeUnit::handleWsApiResponse(WsPending& pending, simdjson::onde
         rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
         PUSH_RCMD(rcmd)
     } else if (pending.type == pubsub::CMD_CANCEL_ORDER) {
-        std::string_view id_sv;
-        std::string_view size_sv;
-        std::string_view left_sv;
-        std::string_view fill_sv;
-        for (auto field : result) {
-            std::string_view k = field.unescaped_key().value_unsafe();
-            if (k == "id") {
-                field.value().get(id_sv);
-            }
-            else if (k == "size") {
-                field.value().get(size_sv);
-            }
-            else if (k == "left") {
-                field.value().get(left_sv);
-            }
-            else if (k == "fill_price") {
-                field.value().get(fill_sv);
-            }
-        }
-
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
-        if (!fill_sv.empty()) {
-            rcmd.body.orderResponse.tradePrice = crypto::fast_atod(fill_sv);
+        if (!fields.fill_sv.empty()) {
+            rcmd.body.orderResponse.tradePrice = crypto::fast_atod(fields.fill_sv);
         }
-        double sz = std::fabs(crypto::fast_atod(size_sv));
-        double left = std::fabs(crypto::fast_atod(left_sv));
+        double sz = std::fabs(crypto::fast_atod(fields.size_sv));
+        double left = std::fabs(crypto::fast_atod(fields.left_sv));
         rcmd.body.orderResponse.volumeTraded = sz - left;
 
         rcmd.body.orderResponse.orderStatus = OS_CANCELED;
@@ -414,7 +418,7 @@ void GateioUsWsTradeUnit::handleWsApiResponse(WsPending& pending, simdjson::onde
     }
 }
 
-void GateioUsWsTradeUnit::handleWsApiError(WsPending& pending, simdjson::ondemand::object& error) {
+void GateioUsWsTradeUnit::handleWsApiError(WsPending& pending, const ErrorFields& fields) {
     pubsub::RCommand& rcmd = pending.rcmd;
 
     // 测试单不上报
@@ -422,20 +426,7 @@ void GateioUsWsTradeUnit::handleWsApiError(WsPending& pending, simdjson::ondeman
         return;
     }
  
-    int code = 0;
-    std::string_view msg_sv;
-
-    for (auto field : error) {
-        std::string_view k = field.unescaped_key().value_unsafe();
-        if (k == "code") {
-            field.value().get(code);
-        }
-        else if (k == "msg") {
-            field.value().get(msg_sv);
-        }
-    }
-
-    rcmd.body.orderResponse.errorId = crypto::get_binance_errorid(static_cast<int>(code));
+    rcmd.body.orderResponse.errorId = crypto::get_gateio_errorid(std::string(fields.label_sv).c_str());
 
     if (pending.type == pubsub::CMD_NEW_ORDER) {
         rcmd.body.orderResponse.orderStatus = OS_REJECTED;    
@@ -443,7 +434,7 @@ void GateioUsWsTradeUnit::handleWsApiError(WsPending& pending, simdjson::ondeman
         rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.errorId == OrderNotFoundError) ? OS_REJECTED : OS_FAILED;
     }
 
-    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, msg_sv);
+    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, fields.message_sv);
     rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
     PUSH_RCMD(rcmd)
 }
@@ -458,13 +449,13 @@ void GateioUsWsTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
         auto& b = b_res.value_unsafe();
 
         std::string_view contract_sv;
-        std::string_view id_sv;
+        int64_t id = 0;
         std::string_view text_sv;
-        std::string_view price_sv;
+        double price = 0.0;
         std::string_view tif_sv;
-        std::string_view size_sv;
-        std::string_view left_sv;
-        std::string_view fill_sv;
+        double size = 0.0;
+        double left = 0.0;
+        double fill = 0.0;
         std::string_view status_sv;
         std::string_view finish_sv;
         bool isClose = false;
@@ -475,25 +466,25 @@ void GateioUsWsTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
                 field.value().get(contract_sv);
             }
             else if (k == "id") {
-                field.value().get(id_sv);
+                field.value().get(id);
             }
             else if (k == "text") {
                 field.value().get(text_sv);
             }
             else if (k == "price") {
-                field.value().get(price_sv);
+                field.value().get(price);
             }
             else if (k == "tif") {
                 field.value().get(tif_sv);
             }
             else if (k == "size") {
-                field.value().get(size_sv);
+                field.value().get(size);
             }
             else if (k == "left") {
-                field.value().get(left_sv);
+                field.value().get(left);
             }
             else if (k == "fill_price") {
-                field.value().get(fill_sv);
+                field.value().get(fill);
             }
             else if (k == "status") {
                 field.value().get(status_sv);
@@ -521,7 +512,7 @@ void GateioUsWsTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountId, acc.accountId);
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
-        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
+        fmt::format_to(rcmd.body.orderResponse.orderId, "{}", id);
 
         if (!text_sv.empty()) {
             crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, text_sv);
@@ -535,15 +526,11 @@ void GateioUsWsTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
 
         rcmd.body.orderResponse.offsetFlag = isClose ? OF_CLOSE : OF_OPEN;
 
-        if (!size_sv.empty()) {
-            double sz = crypto::fast_atod(size_sv);
-            rcmd.body.orderResponse.direction = sz > 0 ? DT_LONG : DT_SHORT;
-            rcmd.body.orderResponse.volumeTotal = std::fabs(sz);
-        }
-
-        if (!price_sv.empty()) {
-            rcmd.body.orderResponse.limitPrice = crypto::fast_atod(price_sv);
-        }
+        rcmd.body.orderResponse.direction = size > 0 ? DT_LONG : DT_SHORT;
+        rcmd.body.orderResponse.volumeTotal = std::fabs(size);
+        
+        rcmd.body.orderResponse.limitPrice = price;
+        
 
         if (!tif_sv.empty()) {
             switch (tif_sv[0]) {
@@ -565,14 +552,10 @@ void GateioUsWsTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
             }
         }
 
-        if (!left_sv.empty()) {
-            double left = std::fabs(crypto::fast_atod(left_sv));
-            rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
-        }
-
-        if (!fill_sv.empty()) {
-            rcmd.body.orderResponse.tradePrice = crypto::fast_atod(fill_sv);
-        }
+        left = std::fabs(left);
+        rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
+        
+        rcmd.body.orderResponse.tradePrice = fill;
 
         if (status_sv == "open") {
             rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.volumeTotal > rcmd.body.orderResponse.volumeTraded && rcmd.body.orderResponse.volumeTraded > ZERO_NUM) ? OS_PARTFILLED : OS_NEW;
@@ -604,14 +587,14 @@ void GateioUsWsTradeUnit::handleBalancesUpdate(simdjson::ondemand::array& arr) {
         auto& b = b_res.value_unsafe();
 
         std::string_view cur_sv;
-        std::string_view bal_sv;
+        double bal = 0;
         for (auto field : b) {
             std::string_view k = field.unescaped_key().value_unsafe();
             if (k == "currency") {
                 field.value().get(cur_sv);
             }
             else if (k == "balance") {
-                field.value().get(bal_sv);
+                field.value().get(bal);
             }
         }
 
@@ -623,7 +606,7 @@ void GateioUsWsTradeUnit::handleBalancesUpdate(simdjson::ondemand::array& arr) {
         crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
         crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
         crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(cur_sv)));
-        rcmd.body.balance.total = crypto::fast_atod(bal_sv);
+        rcmd.body.balance.total = bal;
         rcmd.body.balance.available = rcmd.body.balance.total;
         rcmd.body.balance.updateTime = crypto::getCurrentTime();
         rcmd.body.balance.apiSourceEnum = AS_WEBSOCKET;
@@ -641,38 +624,38 @@ void GateioUsWsTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) 
         auto& b = b_res.value_unsafe();
 
         std::string_view contract_sv;
-        std::string_view size_sv;
-        std::string_view margin_sv;
-        std::string_view entry_sv;
-        std::string_view up_sv;
-        std::string_view mark_sv;
-        std::string_view liq_sv;
-        std::string_view adl_sv;
+        int size = 0;
+        double margin = 0;
+        double entry = 0;
+        double up = 0;
+        double mark = 0;
+        double liq = 0;
+        double adl = 1;
         for (auto field : b) {
             std::string_view k = field.unescaped_key().value_unsafe();
             if (k == "contract") {
                 field.value().get(contract_sv);
             }
             else if (k == "size") {
-                field.value().get(size_sv);
+                field.value().get(size);
             }
             else if (k == "margin") {
-                field.value().get(margin_sv);
+                field.value().get(margin);
             }
             else if (k == "entry_price") {
-                field.value().get(entry_sv);
+                field.value().get(entry);
             }
             else if (k == "unrealised_pnl") {
-                field.value().get(up_sv);
+                field.value().get(up);
             }
             else if (k == "mark_price") {
-                field.value().get(mark_sv);
+                field.value().get(mark);
             }
             else if (k == "liq_price") {
-                field.value().get(liq_sv);
+                field.value().get(liq);
             }
             else if (k == "adl_ranking") {
-                field.value().get(adl_sv);
+                field.value().get(adl);
             }
         }
 
@@ -682,7 +665,6 @@ void GateioUsWsTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) 
             continue;
         }
 
-        double sz = crypto::fast_atod(size_sv);
         pubsub::RCommand rcmd;
         memset(&rcmd, 0, sizeof(pubsub::RCommand));
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
@@ -691,16 +673,15 @@ void GateioUsWsTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) 
         crypto::copy_sv_to_char_array(rcmd.body.position.accountId, acc.accountId);
         crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
         crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
-        rcmd.body.position.direction = sz >= 0 ? DT_LONG : DT_SHORT;
-        rcmd.body.position.volume = std::fabs(sz) * info.magnifyNumber;
-        rcmd.body.position.maintMargin = crypto::fast_atod(margin_sv);
-        rcmd.body.position.avgPrice = crypto::fast_atod(entry_sv) * info.reduceNumber;
-        rcmd.body.position.unrealizedPnl = crypto::fast_atod(up_sv);
-        rcmd.body.position.markPrice = crypto::fast_atod(mark_sv) * info.reduceNumber;
-        rcmd.body.position.liquidPrice = crypto::fast_atod(liq_sv) * info.reduceNumber;
+        rcmd.body.position.direction = size >= 0 ? DT_LONG : DT_SHORT;
+        rcmd.body.position.volume = std::fabs(size) * info.magnifyNumber;
+        rcmd.body.position.maintMargin = margin;
+        rcmd.body.position.avgPrice = entry * info.reduceNumber;
+        rcmd.body.position.unrealizedPnl = up;
+        rcmd.body.position.markPrice = mark * info.reduceNumber;
+        rcmd.body.position.liquidPrice = liq * info.reduceNumber;
 
-        double adl = 1;
-        double adl_s = static_cast<int>(crypto::fast_atod(adl_sv));
+        double adl_s = static_cast<int>(adl);
         if (adl_s >= 5) {
             adl = 1;
         }
@@ -746,65 +727,55 @@ void GateioUsWsTradeUnit::query_balance(const pubsub::TCommand&) {
         }
 
         try {
-            std::cout << "query_balance: " << resp.body << std::endl;
-            simdjson::padded_string padded(resp.body);
+           simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
+                LOG_ERROR("TB {} query_order parse err: {}", acc.accountId, resp.body);
                 return;
             }
 
-            simdjson::ondemand::array arr;
-            if (doc.get_array().get(arr) != simdjson::SUCCESS) {
-                return;
-            }
+            auto doc_value = doc.get_object().value_unsafe();
 
             std::vector<pubsub::RCommand> pending;
-            for (auto b_val : arr) {
-                auto b_res = b_val.get_object();
-                if (b_res.error()) {
-                    continue;
+            std::string_view cur_sv;
+            std::string_view avail_sv;
+            std::string_view om_sv;
+            std::string_view pm_sv;
+            std::string_view tot_sv;
+            for (auto field : doc_value) {
+                std::string_view k = field.unescaped_key().value_unsafe();
+                if (k == "currency") {
+                    field.value().get(cur_sv);
                 }
-                auto& b = b_res.value_unsafe();
-
-                std::string_view cur_sv;
-                std::string_view avail_sv;
-                std::string_view om_sv;
-                std::string_view pm_sv;
-                std::string_view tot_sv;
-                for (auto field : b) {
-                    std::string_view k = field.unescaped_key().value_unsafe();
-                    if (k == "currency") {
-                        field.value().get(cur_sv);
-                    }
-                    else if (k == "available") {
-                        field.value().get(avail_sv);
-                    }
-                    else if (k == "order_margin") {
-                        field.value().get(om_sv);
-                    }
-                    else if (k == "position_margin") {
-                        field.value().get(pm_sv);
-                    }
-                    else if (k == "total") {
-                        field.value().get(tot_sv);
-                    }
+                else if (k == "available") {
+                    field.value().get(avail_sv);
                 }
-
-                pubsub::RCommand rcmd;
-                memset(&rcmd, 0, sizeof(pubsub::RCommand));
-                rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
-                rcmd.body.balance.exchangeTypeEnum = GATEIO;
-                rcmd.body.balance.instTypeEnum = USDT_SWAP;
-                crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
-                crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
-                crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(cur_sv)));
-                rcmd.body.balance.available = crypto::fast_atod(avail_sv);
-                rcmd.body.balance.frozen = crypto::fast_atod(om_sv) + crypto::fast_atod(pm_sv);
-                rcmd.body.balance.total = crypto::fast_atod(tot_sv);
-                rcmd.body.balance.updateTime = crypto::getCurrentTime();
-                rcmd.body.balance.apiSourceEnum = AS_REST;
-                pending.emplace_back(rcmd);
+                else if (k == "order_margin") {
+                    field.value().get(om_sv);
+                }
+                else if (k == "position_margin") {
+                    field.value().get(pm_sv);
+                }
+                else if (k == "total") {
+                    field.value().get(tot_sv);
+                }
             }
+
+            pubsub::RCommand rcmd;
+            memset(&rcmd, 0, sizeof(pubsub::RCommand));
+            rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
+            rcmd.body.balance.exchangeTypeEnum = GATEIO;
+            rcmd.body.balance.instTypeEnum = USDT_SWAP;
+            crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
+            crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
+            crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(cur_sv)));
+            rcmd.body.balance.available = crypto::fast_atod(avail_sv);
+            rcmd.body.balance.frozen = crypto::fast_atod(om_sv) + crypto::fast_atod(pm_sv);
+            rcmd.body.balance.total = crypto::fast_atod(tot_sv);
+            rcmd.body.balance.updateTime = crypto::getCurrentTime();
+            rcmd.body.balance.apiSourceEnum = AS_REST;
+            pending.emplace_back(rcmd);
+            
             if (pending.empty()) {
                 pubsub::RCommand rcmd;
                 memset(&rcmd, 0, sizeof(pubsub::RCommand));
@@ -867,7 +838,7 @@ void GateioUsWsTradeUnit::query_position(const pubsub::TCommand&) {
                 auto& b = b_res.value_unsafe();
 
                 std::string_view contract_sv;
-                std::string_view size_sv;
+                int size = 0;
                 std::string_view margin_sv;
                 std::string_view entry_sv;
                 std::string_view up_sv;
@@ -880,7 +851,7 @@ void GateioUsWsTradeUnit::query_position(const pubsub::TCommand&) {
                         field.value().get(contract_sv);
                     }
                     else if (k == "size") {
-                        field.value().get(size_sv);
+                        field.value().get(size);
                     }
                     else if (k == "margin") {
                         field.value().get(margin_sv);
@@ -908,7 +879,6 @@ void GateioUsWsTradeUnit::query_position(const pubsub::TCommand&) {
                     continue;
                 }
 
-                double sz = crypto::fast_atod(size_sv);
                 pubsub::RCommand rcmd;
                 memset(&rcmd, 0, sizeof(pubsub::RCommand));
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
@@ -917,8 +887,8 @@ void GateioUsWsTradeUnit::query_position(const pubsub::TCommand&) {
                 crypto::copy_sv_to_char_array(rcmd.body.position.accountId, acc.accountId);
                 crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
-                rcmd.body.position.direction = sz >= 0 ? DT_LONG : DT_SHORT;
-                rcmd.body.position.volume = std::fabs(sz) * info.magnifyNumber;
+                rcmd.body.position.direction = size >= 0 ? DT_LONG : DT_SHORT;
+                rcmd.body.position.volume = std::fabs(size) * info.magnifyNumber;
                 rcmd.body.position.maintMargin = crypto::fast_atod(margin_sv);
                 rcmd.body.position.avgPrice = crypto::fast_atod(entry_sv) * info.reduceNumber;
                 rcmd.body.position.unrealizedPnl = crypto::fast_atod(up_sv);
@@ -1020,7 +990,7 @@ void GateioUsWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
             auto doc_value = doc.get_object().value_unsafe();
 
             std::string_view status_sv;
-            std::string_view id_sv;
+            int64_t id = 0;
             std::string_view text_sv;
             std::string_view size_sv;
             std::string_view price_sv;
@@ -1036,7 +1006,7 @@ void GateioUsWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
                     has_status = field.value().get(status_sv) == simdjson::SUCCESS;
                 }
                 else if (k == "id") {
-                    field.value().get(id_sv);
+                    field.value().get(id);
                 }
                 else if (k == "text") {
                     field.value().get(text_sv);
@@ -1059,7 +1029,7 @@ void GateioUsWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
             }
 
             if (has_status) {
-                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
+                fmt::format_to(rcmd.body.orderResponse.orderId, "{}", id);
                 crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, text_sv);
                 rcmd.body.orderResponse.volumeTotal = std::fabs(crypto::fast_atod(size_sv));
                 rcmd.body.orderResponse.limitPrice = crypto::fast_atod(price_sv);

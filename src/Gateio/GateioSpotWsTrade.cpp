@@ -455,7 +455,7 @@ void GateioSpotWsTradeUnit::handleWsApiError(WsPending& pending, const ErrorFiel
         return;
     }
  
-    // rcmd.body.orderResponse.errorId = crypto::get_binance_errorid(static_cast<int>(code));
+    rcmd.body.orderResponse.errorId = crypto::get_gateio_errorid(std::string(fields.label_sv).c_str());
 
     if (pending.type == pubsub::CMD_NEW_ORDER) {
         rcmd.body.orderResponse.orderStatus = OS_REJECTED;    

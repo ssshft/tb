@@ -59,9 +59,25 @@ private:
     bool takePending(int id, WsPending& out);
     void clearPending();
 
+    struct OrderResultFields {
+        std::string_view id_sv;
+        std::string_view size_sv;
+        std::string_view left_sv;
+        std::string_view fill_sv;
+        std::string_view status_sv;
+        std::string_view finish_sv;
+    };
+
+    struct ErrorFields {
+        std::string_view label_sv;
+        std::string_view message_sv;
+    };
+
     // ---- msg 分派 ----
-    void handleWsApiResponse(WsPending& pending, simdjson::ondemand::object& result);
-    void handleWsApiError(WsPending& pending, simdjson::ondemand::object& err);
+
+    void handleWsApiResponse(WsPending& pending, const OrderResultFields& fields);
+    void handleWsApiError(WsPending& pending, const ErrorFields& fields);
+
     void handleOrdersUpdate(simdjson::ondemand::array& arr);
     void handleBalancesUpdate(simdjson::ondemand::array& arr);
     void handlePositionsUpdate(simdjson::ondemand::array& arr);
