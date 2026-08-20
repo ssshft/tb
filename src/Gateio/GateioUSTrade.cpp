@@ -157,7 +157,7 @@ void GateioUSTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
         auto& b = b_res.value_unsafe();
 
         std::string_view contract_sv;
-        std::string_view id_sv;
+        int64_t id = 0;
         std::string_view text_sv;
         std::string_view price_sv;
         std::string_view tif_sv;
@@ -174,7 +174,7 @@ void GateioUSTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
                 field.value().get(contract_sv);
             }
             else if (k == "id") {
-                field.value().get(id_sv);
+                field.value().get(id);
             }
             else if (k == "text") {
                 field.value().get(text_sv);
@@ -220,7 +220,7 @@ void GateioUSTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountId, acc.accountId);
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
-        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
+        fmt::format_to(rcmd.body.orderResponse.orderId, "{}", id);
 
         if (!text_sv.empty()) {
             crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, text_sv);
@@ -810,7 +810,7 @@ void GateioUSTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
 
             auto doc_value = doc.get_object().value_unsafe();
 
-            std::string_view id_sv;
+            int64_t id = 0;
             std::string_view label_sv;
             std::string_view fill_sv;
             std::string_view left_sv;
@@ -823,7 +823,7 @@ void GateioUSTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             for (auto field : doc_value) {
                 std::string_view k = field.unescaped_key().value_unsafe();
                 if (k == "id") {
-                    has_id = field.value().get(id_sv) == simdjson::SUCCESS;
+                    has_id = field.value().get(id) == simdjson::SUCCESS;
                 }
                 else if (k == "label") {
                     has_label = field.value().get(label_sv) == simdjson::SUCCESS;
@@ -843,7 +843,7 @@ void GateioUSTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             }
 
             if (has_id) {
-                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
+                fmt::format_to(rcmd.body.orderResponse.orderId, "{}", id);
                 rcmd.body.orderResponse.errorId = NoError;
                 if (!fill_sv.empty()) {
                     rcmd.body.orderResponse.tradePrice = crypto::fast_atod(fill_sv);
