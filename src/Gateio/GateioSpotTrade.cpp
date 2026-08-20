@@ -309,7 +309,7 @@ void GateioSpotTradeUnit::query_account(const pubsub::TCommand&) {
     std::string sign = crypto::getGateioSignatureRest("GET", unifiedUrl, time_str, "", "", acc.secretKey);
     std::vector<std::pair<std::string, std::string>> headers = {{"KEY", acc.apiKey}, {"Timestamp", time_str}, {"SIGN", sign}};
 
-    asyncRequest(boost::beast::http::verb::get, unifiedUrl, "", "", std::move(headers), [this](boost::system::error_code ec, ::net::HttpResponse resp) {
+    asyncRequest(boost::beast::http::verb::get, unifiedUrl, "", "application/json", std::move(headers), [this](boost::system::error_code ec, ::net::HttpResponse resp) {
         if (ec) { 
             LOG_ERROR("TB {} UF query_account ec: {}", acc.accountId, ec.message()); 
             return; 
@@ -424,7 +424,7 @@ void GateioSpotTradeUnit::query_balance(const pubsub::TCommand&) {
     std::string sign = crypto::getGateioSignatureRest("GET", balanceUrl, time_str, "", "", acc.secretKey);
     std::vector<std::pair<std::string, std::string>> headers = {{"KEY", acc.apiKey}, {"Timestamp", time_str}, {"SIGN", sign}};
 
-    asyncRequest(boost::beast::http::verb::get, balanceUrl, "", "", std::move(headers), [this](boost::system::error_code ec, ::net::HttpResponse resp) {
+    asyncRequest(boost::beast::http::verb::get, balanceUrl, "", "application/json", std::move(headers), [this](boost::system::error_code ec, ::net::HttpResponse resp) {
         if (ec) { 
             LOG_ERROR("TB {} Gate query_balance ec: {}", acc.accountId, ec.message()); 
             return; 
@@ -627,7 +627,7 @@ void GateioSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
 
     LOG_INFO("TB {} Gate spot add_new_order body={}", acc.accountId, body);
 
-    asyncRequest(boost::beast::http::verb::post, newOrderUrl, std::move(body), "", std::move(headers), [this, rcmd](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
+    asyncRequest(boost::beast::http::verb::post, newOrderUrl, std::move(body), "application/json", std::move(headers), [this, rcmd](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
         std::cout << "add new order: " << resp.body << std::endl;
         if (ec) {
             if (ec == boost::system::errc::no_stream_resources || ec == boost::system::errc::no_buffer_space || ec == boost::system::errc::not_connected) {
@@ -804,7 +804,7 @@ void GateioSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     std::string fullPath = pathBase + "?" + queryStr;
     LOG_INFO("TB {} Gate spot cancel_order: {}", acc.accountId, fullPath);
 
-    asyncRequest(boost::beast::http::verb::delete_, std::move(fullPath), "", "", std::move(headers), [this, rcmd](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
+    asyncRequest(boost::beast::http::verb::delete_, std::move(fullPath), "", "application/json", std::move(headers), [this, rcmd](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
         std::cout << "cancel order: " << resp.body << std::endl;
         if (ec) {
             LOG_ERROR("TB {} cancel_order ec: {}", acc.accountId, ec.message());
@@ -927,7 +927,7 @@ void GateioSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     std::string fullPath = pathBase + "?" + queryStr;
     LOG_INFO("TB {} Gate spot query_order: {}", acc.accountId, fullPath);
 
-    asyncRequest(boost::beast::http::verb::get, std::move(fullPath), "", "", std::move(headers), [this, rcmd, info](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
+    asyncRequest(boost::beast::http::verb::get, std::move(fullPath), "", "application/json", std::move(headers), [this, rcmd, info](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
         if (ec) {
             LOG_ERROR("TB {} query_order ec: {}", acc.accountId, ec.message());
             return;

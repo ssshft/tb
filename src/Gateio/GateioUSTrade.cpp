@@ -440,7 +440,7 @@ void GateioUSTradeUnit::query_balance(const pubsub::TCommand&) {
     std::string sign = crypto::getGateioSignatureRest("GET", balanceUrl, time_str, "", "", acc.secretKey);
     std::vector<std::pair<std::string, std::string>> headers = {{"KEY", acc.apiKey}, {"Timestamp", time_str}, {"SIGN", sign}};
 
-    asyncRequest(boost::beast::http::verb::get, balanceUrl, "", "", std::move(headers), [this](boost::system::error_code ec, ::net::HttpResponse resp) {
+    asyncRequest(boost::beast::http::verb::get, balanceUrl, "", "application/json", std::move(headers), [this](boost::system::error_code ec, ::net::HttpResponse resp) {
         if (ec) { 
             LOG_ERROR("TB {} Gate US query_balance ec: {}", acc.accountId, ec.message()); 
             return; 
@@ -541,7 +541,7 @@ void GateioUSTradeUnit::query_position(const pubsub::TCommand&) {
     std::string sign = crypto::getGateioSignatureRest("GET", positionUrl, time_str, "", "", acc.secretKey);
     std::vector<std::pair<std::string, std::string>> headers = {{"KEY", acc.apiKey}, {"Timestamp", time_str}, {"SIGN", sign}};
 
-    asyncRequest(boost::beast::http::verb::get, positionUrl, "", "", std::move(headers), [this](boost::system::error_code ec, ::net::HttpResponse resp) {
+    asyncRequest(boost::beast::http::verb::get, positionUrl, "", "application/json", std::move(headers), [this](boost::system::error_code ec, ::net::HttpResponse resp) {
         if (ec) { 
             LOG_ERROR("TB {} Gate US query_position ec: {}", acc.accountId, ec.message()); 
             return; 
@@ -935,7 +935,7 @@ void GateioUSTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
 
     LOG_INFO("TB {} Gate US cancel_order: {}", acc.accountId, pathBase);
 
-    asyncRequest(boost::beast::http::verb::delete_, pathBase, "", "", std::move(headers), [this, rcmd, info](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
+    asyncRequest(boost::beast::http::verb::delete_, pathBase, "", "application/json", std::move(headers), [this, rcmd, info](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
         if (ec) {
             LOG_ERROR("TB {} cancel_order ec: {}", acc.accountId, ec.message());
             rcmd.body.orderResponse.orderStatus = OS_FAILED;
@@ -1053,7 +1053,7 @@ void GateioUSTradeUnit::query_order(const pubsub::TCommand& tcmd) {
 
     LOG_INFO("TB {} Gate US query_order: {}", acc.accountId, pathBase);
 
-    asyncRequest(boost::beast::http::verb::get, pathBase, "", "", std::move(headers), [this, rcmd, info](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
+    asyncRequest(boost::beast::http::verb::get, pathBase, "", "application/json", std::move(headers), [this, rcmd, info](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
         if (ec) {
             LOG_ERROR("TB {} query_order ec: {}", acc.accountId, ec.message());
             return;

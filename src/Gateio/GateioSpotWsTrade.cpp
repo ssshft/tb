@@ -658,7 +658,7 @@ void GateioSpotWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
     std::string sign = crypto::getGateioSignatureRest("GET", balanceUrl, time_str, "", "", acc.secretKey);
     std::vector<std::pair<std::string, std::string>> headers = {{"KEY", acc.apiKey}, {"Timestamp", time_str}, {"SIGN", sign}};
 
-    asyncRequest(boost::beast::http::verb::get, balanceUrl, "", "", std::move(headers), [this](boost::system::error_code ec, ::net::HttpResponse resp) {
+    asyncRequest(boost::beast::http::verb::get, balanceUrl, "", "application/json", std::move(headers), [this](boost::system::error_code ec, ::net::HttpResponse resp) {
         if (ec) { 
             LOG_ERROR("TB {} Gate query_balance ec: {}", acc.accountId, ec.message()); 
             return; 
@@ -772,7 +772,7 @@ void GateioSpotWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     std::string fullPath = pathBase + "?" + queryStr;
     LOG_INFO("TB {} Gate spot query_order: {}", acc.accountId, fullPath);
 
-    asyncRequest(boost::beast::http::verb::get, std::move(fullPath), "", "", std::move(headers), [this, rcmd, info](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
+    asyncRequest(boost::beast::http::verb::get, std::move(fullPath), "", "application/json", std::move(headers), [this, rcmd, info](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
         if (ec) {
             LOG_ERROR("TB {} query_order ec: {}", acc.accountId, ec.message());
             return;
