@@ -159,11 +159,11 @@ void GateioUSTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
         std::string_view contract_sv;
         int64_t id = 0;
         std::string_view text_sv;
-        double price;
+        double price = 0.0;
         std::string_view tif_sv;
-        double size;
-        double left;
-        double fill;
+        double size = 0.0;
+        double left = 0.0;
+        double fill = 0.0;
         std::string_view status_sv;
         std::string_view finish_sv;
         bool isClose = false;
@@ -260,7 +260,7 @@ void GateioUSTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
             }
         }
 
-        double left = std::fabs(left);
+        left = std::fabs(left);
         rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
         
         rcmd.body.orderResponse.tradePrice = fill;
@@ -295,7 +295,7 @@ void GateioUSTradeUnit::handleBalancesUpdate(simdjson::ondemand::array& arr) {
         auto& b = b_res.value_unsafe();
 
         std::string_view cur_sv;
-        double bal;
+        double bal = 0;
         for (auto field : b) {
             std::string_view k = field.unescaped_key().value_unsafe();
             if (k == "currency") {
@@ -334,12 +334,12 @@ void GateioUSTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
 
         std::string_view contract_sv;
         int size = 0;
-        double margin;
-        double entry;
-        double up;
-        double mark;
-        double liq;
-        double adl;
+        double margin = 0;
+        double entry = 0;
+        double up = 0;
+        double mark = 0;
+        double liq = 0;
+        double adl = 1;
         for (auto field : b) {
             std::string_view k = field.unescaped_key().value_unsafe();
             if (k == "contract") {
@@ -390,7 +390,6 @@ void GateioUSTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
         rcmd.body.position.markPrice = mark * info.reduceNumber;
         rcmd.body.position.liquidPrice = liq * info.reduceNumber;
 
-        double adl = 1;
         double adl_s = static_cast<int>(adl);
         if (adl_s >= 5) {
             adl = 1;
