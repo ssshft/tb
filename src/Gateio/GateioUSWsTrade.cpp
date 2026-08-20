@@ -265,7 +265,7 @@ void GateioUsWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /
                                         r.value().get(orf.id_sv);
                                     }
                                     else if (rk == "size") {
-                                        r.value().get(orf.amount_sv);
+                                        r.value().get(orf.size_sv);
                                     }
                                     else if (rk == "left") {
                                         r.value().get(orf.left_sv);
@@ -277,7 +277,7 @@ void GateioUsWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /
                                         r.value().get(orf.status_sv);
                                     } 
                                     else if (rk == "finish_as") {
-                                        field.value().get(finish_sv);
+                                        field.value().get(orf.finish_sv);
                                     }
                                     else if (rk == "req_id") { // 有req_id的回报不推送
                                         has_data_result = false;
@@ -403,8 +403,9 @@ void GateioUsWsTradeUnit::handleWsApiResponse(WsPending& pending, const OrderRes
         rcmd.body.orderResponse.errorId = NoError;
         rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
         PUSH_RCMD(rcmd)
-    } else if (pending.type == pubsub::CMD_CANCEL_ORDER) {
-        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, id_sv);
+    } 
+    else if (pending.type == pubsub::CMD_CANCEL_ORDER) {
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, fields.id_sv);
         if (!fields.fill_sv.empty()) {
             rcmd.body.orderResponse.tradePrice = crypto::fast_atod(fields.fill_sv);
         }
