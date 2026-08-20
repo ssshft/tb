@@ -387,10 +387,10 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
 
         if (has_event) {
             if (has_balances) {
-                //handleBalancesUpdate(result_obj);
+                handleBalancesUpdate(result_obj);
             }
             else if (has_orders) {
-                //handleOrdersUpdate(result_obj);
+                handleOrdersUpdate(result_obj);
             }
         }
     } catch (const std::exception& e) {
@@ -437,7 +437,6 @@ void GateioSpotWsTradeUnit::handleWsApiResponse(WsPending& pending, const OrderR
         rcmd.body.orderResponse.errorId = NoError;
         rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
 
-        std::cout << "ws api resonse: " << rcmd.getString() << std::endl;
         PUSH_RCMD(rcmd)
     } else if (pending.type == pubsub::CMD_CANCEL_ORDER) {
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, fields.id_sv);
