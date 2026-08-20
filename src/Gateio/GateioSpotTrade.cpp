@@ -628,6 +628,7 @@ void GateioSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     LOG_INFO("TB {} Gate spot add_new_order body={}", acc.accountId, body);
 
     asyncRequest(boost::beast::http::verb::post, newOrderUrl, std::move(body), "", std::move(headers), [this, rcmd](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
+        std::cout << "add new order: " << resp.body << std::endl;
         if (ec) {
             if (ec == boost::system::errc::no_stream_resources || ec == boost::system::errc::no_buffer_space || ec == boost::system::errc::not_connected) {
                 rcmd.body.orderResponse.orderStatus = OS_REJECTED;
@@ -804,6 +805,7 @@ void GateioSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     LOG_INFO("TB {} Gate spot cancel_order: {}", acc.accountId, fullPath);
 
     asyncRequest(boost::beast::http::verb::delete_, std::move(fullPath), "", "", std::move(headers), [this, rcmd](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
+        std::cout << "cancel order: " << resp.body << std::endl;
         if (ec) {
             LOG_ERROR("TB {} cancel_order ec: {}", acc.accountId, ec.message());
             rcmd.body.orderResponse.orderStatus = OS_FAILED;

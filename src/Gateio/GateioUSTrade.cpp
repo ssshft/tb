@@ -776,6 +776,7 @@ void GateioUSTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     LOG_INFO("TB {} Gate US add_new_order body={}", acc.accountId, body);
 
     asyncRequest(boost::beast::http::verb::post, newOrderUrl, std::move(body), "application/json", std::move(headers), [this, rcmd, info](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
+        std::cout << "add new order: " << resp.body << std::endl;
         if (ec) {
             if (ec == boost::system::errc::no_stream_resources || ec == boost::system::errc::no_buffer_space || ec == boost::system::errc::not_connected) {
                 rcmd.body.orderResponse.orderStatus = OS_REJECTED;
