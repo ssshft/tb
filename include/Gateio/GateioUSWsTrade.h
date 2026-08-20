@@ -60,9 +60,9 @@ private:
     void clearPending();
 
     struct OrderResultFields {
-        std::string_view id_sv;
-        std::string_view size_sv;
-        std::string_view left_sv;
+        int64_t id;
+        double size;
+        double left;
         std::string_view fill_sv;
         std::string_view status_sv;
         std::string_view finish_sv;
