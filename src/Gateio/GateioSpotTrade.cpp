@@ -705,7 +705,6 @@ void GateioSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
                 }
 
                 double left = std::fabs(crypto::fast_atod(left_sv));
-                left = left > 0 ? left : -left;
                 rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
                 
                 if (status_sv == "open") {
@@ -805,7 +804,6 @@ void GateioSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     LOG_INFO("TB {} Gate spot cancel_order: {}", acc.accountId, fullPath);
 
     asyncRequest(boost::beast::http::verb::delete_, std::move(fullPath), "", "application/json", std::move(headers), [this, rcmd](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
-        std::cout << "cancel order: " << resp.body << std::endl;
         if (ec) {
             LOG_ERROR("TB {} cancel_order ec: {}", acc.accountId, ec.message());
             rcmd.body.orderResponse.orderStatus = OS_FAILED;
@@ -862,7 +860,6 @@ void GateioSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
                     rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
                 }
                 double left = std::fabs(crypto::fast_atod(left_sv));
-                left = left > 0 ? left : -left;
                 rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
                 rcmd.body.orderResponse.orderStatus = OS_CANCELED;
                 PUSH_RCMD(rcmd)
@@ -995,7 +992,6 @@ void GateioSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
             rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(amount_sv);
             rcmd.body.orderResponse.limitPrice = crypto::fast_atod(price_sv);
             double left = std::fabs(crypto::fast_atod(left_sv));
-            left = left > 0 ? left : -left;
             rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
             if (!avg_sv.empty()) {
                 rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
