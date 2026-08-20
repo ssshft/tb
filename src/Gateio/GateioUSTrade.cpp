@@ -742,7 +742,7 @@ void GateioUSTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
 
     int pricePrecision = static_cast<int>(std::llround(-std::log10(info.tickSize)));
     int sizePrecision = static_cast<int>(std::llround(-std::log10(info.lotSize)));
-    std::cout << "pricePrecision: " << pricePrecision << "  sizePrecision: " << sizePrecision << std::endl;
+ 
     std::string price_str = priceZero ? "0" : fmt::format("{:.{}f}", price, pricePrecision);
     std::string size_str = fmt::format("{:.{}f}", sizeSigned, sizePrecision);
 

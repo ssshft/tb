@@ -46,7 +46,10 @@ std::string GateioUsWsTradeUnit::buildSubscribeJson(int reqId, const char* chann
 
 std::string GateioUsWsTradeUnit::buildOrderPlaceJson(int reqId, const pubsub::TCommand& tcmd, const md::InstrumentInfo& info, const std::string& price, double sizeSigned, const char* tif) const {
     long ts = crypto::getCurrentTimeSeconds();
-    std::string size_str = fmt::format("{}", sizeSigned);
+
+    int sizePrecision = static_cast<int>(std::llround(-std::log10(info.lotSize)));
+    std::string size_str = fmt::format("{:.{}f}", sizeSigned, sizePrecision);
+
     std::string j;
     j.reserve(400);
     j.append(R"({"time":)"); 
@@ -1148,7 +1151,8 @@ void GateioUsWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
         return;
     }
 
-    std::string price_str = priceZero ? "0" : fmt::format("{}", price);
+    int pricePrecision = static_cast<int>(std::llround(-std::log10(info.tickSize)));
+    std::string price_str = priceZero ? "0" : fmt::format("{:.{}f}", price, pricePrecision);
     const int wsId = nextWsId_.fetch_add(1, std::memory_order_relaxed);
     std::string msg = buildOrderPlaceJson(wsId, tcmd, info, price_str, sizeSigned, tif);
 
