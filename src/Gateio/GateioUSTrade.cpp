@@ -341,7 +341,7 @@ void GateioUSTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
         auto& b = b_res.value_unsafe();
 
         std::string_view contract_sv;
-        std::string_view size_sv;
+        int size = 0;
         std::string_view margin_sv;
         std::string_view entry_sv;
         std::string_view up_sv;
@@ -354,7 +354,7 @@ void GateioUSTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
                 field.value().get(contract_sv);
             }
             else if (k == "size") {
-                field.value().get(size_sv);
+                field.value().get(size);
             }
             else if (k == "margin") {
                 field.value().get(margin_sv);
@@ -382,7 +382,6 @@ void GateioUSTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
             continue;
         }
 
-        double sz = crypto::fast_atod(size_sv);
         pubsub::RCommand rcmd;
         memset(&rcmd, 0, sizeof(pubsub::RCommand));
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
@@ -391,8 +390,8 @@ void GateioUSTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
         crypto::copy_sv_to_char_array(rcmd.body.position.accountId, acc.accountId);
         crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
         crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
-        rcmd.body.position.direction = sz >= 0 ? DT_LONG : DT_SHORT;
-        rcmd.body.position.volume = std::fabs(sz) * info.magnifyNumber;
+        rcmd.body.position.direction = size >= 0 ? DT_LONG : DT_SHORT;
+        rcmd.body.position.volume = std::fabs(size) * info.magnifyNumber;
         rcmd.body.position.maintMargin = crypto::fast_atod(margin_sv);
         rcmd.body.position.avgPrice = crypto::fast_atod(entry_sv) * info.reduceNumber;
         rcmd.body.position.unrealizedPnl = crypto::fast_atod(up_sv);
@@ -569,7 +568,7 @@ void GateioUSTradeUnit::query_position(const pubsub::TCommand&) {
                 auto& b = b_res.value_unsafe();
 
                 std::string_view contract_sv;
-                std::string_view size_sv;
+                int size = 0;
                 std::string_view margin_sv;
                 std::string_view entry_sv;
                 std::string_view up_sv;
@@ -582,7 +581,7 @@ void GateioUSTradeUnit::query_position(const pubsub::TCommand&) {
                         field.value().get(contract_sv);
                     }
                     else if (k == "size") {
-                        field.value().get(size_sv);
+                        field.value().get(size);
                     }
                     else if (k == "margin") {
                         field.value().get(margin_sv);
@@ -610,7 +609,6 @@ void GateioUSTradeUnit::query_position(const pubsub::TCommand&) {
                     continue;
                 }
 
-                double sz = crypto::fast_atod(size_sv);
                 pubsub::RCommand rcmd;
                 memset(&rcmd, 0, sizeof(pubsub::RCommand));
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
@@ -619,8 +617,8 @@ void GateioUSTradeUnit::query_position(const pubsub::TCommand&) {
                 crypto::copy_sv_to_char_array(rcmd.body.position.accountId, acc.accountId);
                 crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
-                rcmd.body.position.direction = sz >= 0 ? DT_LONG : DT_SHORT;
-                rcmd.body.position.volume = std::fabs(sz) * info.magnifyNumber;
+                rcmd.body.position.direction = size >= 0 ? DT_LONG : DT_SHORT;
+                rcmd.body.position.volume = std::fabs(size) * info.magnifyNumber;
                 rcmd.body.position.maintMargin = crypto::fast_atod(margin_sv);
                 rcmd.body.position.avgPrice = crypto::fast_atod(entry_sv) * info.reduceNumber;
                 rcmd.body.position.unrealizedPnl = crypto::fast_atod(up_sv);
@@ -761,8 +759,10 @@ void GateioUSTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
         return;
     }
 
-    std::string price_str = priceZero ? "0" : fmt::format("{}", price);
-    std::string size_str = fmt::format("{}", sizeSigned);
+    int pricePrecision = 1 / info.tickSize;
+    int sizePrecision = 1 / info.lotSize;
+    std::string price_str = priceZero ? "0" : fmt::format("{:.{}f}", pricePrecision, price);
+    std::string size_str = fmt::format("{:.{}f}", sizePrecision, sizeSigned);
 
     std::string body = fmt::format(
         R"({{"text":"{}","contract":"{}","price":"{}","size":{},"tif":"{}","reduce_only":{}}})",
