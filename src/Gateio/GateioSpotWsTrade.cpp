@@ -372,18 +372,18 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
                 WsPending pending;
                 if (status == 200 && has_data_result) {
                     if (takePending(id, pending)) {
-                        handleWsApiResponse(pending, orf);
+                        //handleWsApiResponse(pending, orf);
                     }
                 }
                 else if (has_data_error){ 
                     if (takePending(id, pending)) {
-                        handleWsApiError(pending, ef);
+                        //handleWsApiError(pending, ef);
                     }
                 }     
             }
         }
 
-        std::cout << "has event------------ " << has_event << std::endl;;
+        std::cout << "has event------------ " << has_event  << "  has_balances: " << has_balances << "  has_orders: "<< has_orders << std::endl;;
 
         if (has_event) {
             if (has_balances) {
