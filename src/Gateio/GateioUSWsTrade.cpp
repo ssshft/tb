@@ -27,10 +27,13 @@ std::string GateioUsWsTradeUnit::buildLoginJson(long ts) const {
 std::string GateioUsWsTradeUnit::buildSubscribeJson(int reqId, const char* channel) const {
     long ts = crypto::getCurrentTimeSeconds();
     // futures 订阅 payload=[userId, "!all"] (login 后 userId 可以省, 但 Gate 服务器还是需要一个 payload)
+    std::string time_str = std::to_string(ts);
+    std::string sign = crypto::getGateioSignatureWs(channel, "subscribe", time_str, acc.secretKey);
+
     std::string j;
     j.reserve(180);
     j.append(R"({"time":)");     
-    j.append(std::to_string(ts));
+    j.append(time_str);
     j.append(R"(,"channel":")"); 
     j.append(channel);                                     
     j.push_back('"');
@@ -265,13 +268,13 @@ void GateioUsWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /
                                 for (auto r : res) {
                                     std::string_view rk = r.unescaped_key().value_unsafe(); 
                                     if (rk == "id") {
-                                        r.value().get(orf.id_sv);
+                                        r.value().get(orf.id);
                                     }
                                     else if (rk == "size") {
-                                        r.value().get(orf.size_sv);
+                                        r.value().get(orf.size);
                                     }
                                     else if (rk == "left") {
-                                        r.value().get(orf.left_sv);
+                                        r.value().get(orf.left);
                                     }
                                     else if (rk == "fill_price") {
                                         r.value().get(orf.fill_sv);
@@ -321,8 +324,8 @@ void GateioUsWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /
                     wsLoggedIn_.store(true);
                     LOG_INFO("TB {} spot session.logon OK, will subscribe userDataStream", acc.accountId);
                     if (pWsClient) {
-                        pWsClient->send_text(buildSubscribeJson(kOrdersSubId,    "futures.orders"));
-                        pWsClient->send_text(buildSubscribeJson(kBalancesSubId,  "futures.balances"));
+                        pWsClient->send_text(buildSubscribeJson(kOrdersSubId, "futures.orders"));
+                        pWsClient->send_text(buildSubscribeJson(kBalancesSubId, "futures.balances"));
                         pWsClient->send_text(buildSubscribeJson(kPositionsSubId, "futures.positions"));
                     }
                 } else {
@@ -383,11 +386,11 @@ void GateioUsWsTradeUnit::handleWsApiResponse(WsPending& pending, const OrderRes
     }
 
     if (pending.type == pubsub::CMD_NEW_ORDER) {
-        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, fields.id_sv);
+        fmt::format_to(rcmd.body.orderResponse.orderId, "{}", fields.id);
         if (!fields.fill_sv.empty()) {
             rcmd.body.orderResponse.tradePrice = crypto::fast_atod(fields.fill_sv);
         }
-        double left = std::fabs(crypto::fast_atod(fields.left_sv));
+        double left = std::fabs(fields.left);
         rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
 
         if (fields.status_sv == "open") {
@@ -408,12 +411,12 @@ void GateioUsWsTradeUnit::handleWsApiResponse(WsPending& pending, const OrderRes
         PUSH_RCMD(rcmd)
     } 
     else if (pending.type == pubsub::CMD_CANCEL_ORDER) {
-        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, fields.id_sv);
+        fmt::format_to(rcmd.body.orderResponse.orderId, "{}", fields.id);
         if (!fields.fill_sv.empty()) {
             rcmd.body.orderResponse.tradePrice = crypto::fast_atod(fields.fill_sv);
         }
-        double sz = std::fabs(crypto::fast_atod(fields.size_sv));
-        double left = std::fabs(crypto::fast_atod(fields.left_sv));
+        double sz = std::fabs(fields.size);
+        double left = std::fabs(fields.left);
         rcmd.body.orderResponse.volumeTraded = sz - left;
 
         rcmd.body.orderResponse.orderStatus = OS_CANCELED;
