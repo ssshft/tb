@@ -369,9 +369,12 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
                 }
             }
             else {
+                std::cout << "wspending---------------" << std::endl;
                 WsPending pending;
                 if (takePending(id, pending)) {
+                    std::cout << "----------takepending------------" << std::endl;
                     if (status == 200 && has_data_result) {
+                        std::cout << "----------handle ws api--------------" << std::endl;
                         handleWsApiResponse(pending, orf);
 
                     }
