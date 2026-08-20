@@ -456,19 +456,16 @@ void BinanceUFWsTradeUnit::onWsTradeMsg(const uint8_t* data, size_t len, bool /*
             }
             else {
                 WsPending pending;
-                if (takePending(id, pending)) {
-                    if (status == 200 && has_result) {
+                if (status == 200 && has_result) {
+                    if (takePending(id, pending)) {
                         handleWsApiResponse(pending, result);
                     }
-                    else {
-                        if (has_error) {
-                            handleWsApiError(pending, error);
-                        }
-                    }     
                 }
-                else {
-                    LOG_WARN("TB {} spot ws-api unknown response id={}", acc.accountId, id);
-                }
+                else if (has_error) {       
+                    if (takePending(id, pending)) {
+                        handleWsApiError(pending, error);
+                    }
+                }     
             }
         }
     } catch (const std::exception& e) {
