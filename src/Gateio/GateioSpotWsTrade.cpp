@@ -296,7 +296,8 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
                             if (d.value().get(res) == simdjson::SUCCESS) {
                                 has_data_result = true;
                                 for (auto r : res) {
-                                   std::string_view rk = r.unescaped_key().value_unsafe(); 
+                                    std::string_view rk = r.unescaped_key().value_unsafe(); 
+                                    std::cout << "result key: " << std::string(rk) << std::endl;
                                     if (rk == "id") {
                                         r.value().get(orf.id_sv);
                                     }
@@ -386,10 +387,10 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
 
         if (has_event) {
             if (has_balances) {
-                handleBalancesUpdate(result_obj);
+                //handleBalancesUpdate(result_obj);
             }
             else if (has_orders) {
-                handleOrdersUpdate(result_obj);
+                //handleOrdersUpdate(result_obj);
             }
         }
     } catch (const std::exception& e) {
