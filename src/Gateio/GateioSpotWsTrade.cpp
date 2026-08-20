@@ -312,6 +312,8 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
                                     }
                                     else if (rk == "status") {
                                         r.value().get(orf.status_sv);
+                                    } else if (rk == "req_id") { // 有req_id的回报不推送
+                                        has_data_result = false;
                                     }
                                 }
                             }
