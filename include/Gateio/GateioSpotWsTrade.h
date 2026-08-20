@@ -89,7 +89,7 @@ private:
 
     struct ErrorFields {
         std::string_view label_sv;
-        std::string message_sv;
+        std::string_view message_sv;
     };
 
     // ---- msg 分派 ----
