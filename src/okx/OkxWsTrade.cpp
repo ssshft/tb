@@ -504,7 +504,6 @@ void OkxWsTradeUnit::handleAccountUpdate(simdjson::ondemand::value& dataArr) {
                 rcmd.body.balance.available     = crypto::fast_atod(avail_sv.empty() ? cash_sv : avail_sv);
                 rcmd.body.balance.frozen        = crypto::fast_atod(frozen_sv);
                 rcmd.body.balance.total         = crypto::fast_atod(eq_sv.empty() ? cash_sv : eq_sv);
-                rcmd.body.balance.unrealizedPnl = crypto::fast_atod(upl_sv);
                 rcmd.body.balance.updateTime    = crypto::getCurrentTime();
                 rcmd.body.balance.apiSourceEnum = AS_WEBSOCKET;
                 pending.emplace_back(rcmd);
