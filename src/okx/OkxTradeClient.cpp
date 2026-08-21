@@ -1,8 +1,7 @@
 #include "okx/OkxTradeClient.h"
 
 
-OkxTradeClient::OkxTradeClient(rapidjson::Value& accCfg, sm::SecurityManager* s)
-    : BaseTradeClient(accCfg, s) {
+OkxTradeClient::OkxTradeClient(rapidjson::Value& accCfg, sm::SecurityManager* s) : BaseTradeClient(accCfg, s) {
     if (!vAccount.empty()) {
         // OKX 所有 instType 走一个 ws + rest 连接, 拿 vAccount[0] 建 unit 即可。
         if (vAccount[0].apiMode == AM_REST) {

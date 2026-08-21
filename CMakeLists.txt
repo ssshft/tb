@@ -104,7 +104,7 @@ add_executable(TB
         ${DIR_OPERATION_SRCS}
         ${DIR_BINANCE_SRCS}
         ${DIR_GATEIO_SRCS}
-        ${OKX_SRCS}
+        ${DIR_OKX_SRCS}
         # ${HUOBI_SRCS}
         # ${XT_SRCS}
         # ${KUCOIN_SRCS}
