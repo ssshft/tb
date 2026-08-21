@@ -169,7 +169,6 @@ void OkxTradeUnit::handleAccountUpdate(simdjson::ondemand::array& arr) {
                         std::string_view cash_sv;
                         std::string_view avail_sv;
                         std::string_view frozen_sv;
-                        std::string_view upl_sv;
                         std::string_view eq_sv;              
                         for (auto bf : d) {
                             std::string_view bk = bf.unescaped_key().value_unsafe();
@@ -184,9 +183,6 @@ void OkxTradeUnit::handleAccountUpdate(simdjson::ondemand::array& arr) {
                             }
                             else if (bk == "frozenBal") {
                                 bf.value().get(frozen_sv);
-                            }
-                            else if (bk == "upl") {
-                                bf.value().get(upl_sv);
                             }
                             else if (bk == "eq") {
                                 bf.value().get(eq_sv);
@@ -204,7 +200,6 @@ void OkxTradeUnit::handleAccountUpdate(simdjson::ondemand::array& arr) {
                         rcmd.body.balance.available = crypto::fast_atod(avail_sv);
                         rcmd.body.balance.frozen = crypto::fast_atod(frozen_sv);
                         rcmd.body.balance.total = crypto::fast_atod(eq_sv);
-                        rcmd.body.balance.unrealizedPnl = crypto::fast_atod(upl_sv);
                         rcmd.body.balance.updateTime = crypto::getCurrentTime();
                         rcmd.body.balance.apiSourceEnum = AS_WEBSOCKET;
                         PUSH_RCMD(rcmd)
@@ -296,8 +291,8 @@ void OkxTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
             }
         } else if (iType_sv == "SWAP" || iType_sv == "FUTURES") {
             // 依次试 USDT_* → C_* (根据 instId 是否含 -USDT- 大致预判也可, 但这么写更 robust)
-            InstType u_swap = (okxInstType == "SWAP") ? USDT_SWAP : USDT_FUTURES;
-            InstType c_swap = (okxInstType == "SWAP") ? C_SWAP : C_FUTURES;
+            InstType u_swap = (iType_sv == "SWAP") ? USDT_SWAP : USDT_FUTURES;
+            InstType c_swap = (iType_sv == "SWAP") ? C_SWAP : C_FUTURES;
 
             if (smc->get_instrument_info(OKX, u_swap, originInstId.c_str(), info)) { 
                 instType = u_swap;
@@ -337,7 +332,7 @@ void OkxTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
 // ---- orders update ----
 // data = [{instType, instId, ordId, clOrdId, sz, px, side, ordType, state, accFillSz, avgPx}]
 void OkxTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
-    for (auto b_val : data_arr) {
+    for (auto b_val : arr) {
         auto b_res = b_val.get_object();
         if (b_res.error()) {
             continue;
@@ -410,8 +405,8 @@ void OkxTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
                 }
             } else if (iType_sv == "SWAP" || iType_sv == "FUTURES") {
                 // 依次试 USDT_* → C_* (根据 instId 是否含 -USDT- 大致预判也可, 但这么写更 robust)
-                InstType u_swap = (okxInstType == "SWAP") ? USDT_SWAP : USDT_FUTURES;
-                InstType c_swap = (okxInstType == "SWAP") ? C_SWAP : C_FUTURES;
+                InstType u_swap = (iType_sv == "SWAP") ? USDT_SWAP : USDT_FUTURES;
+                InstType c_swap = (iType_sv == "SWAP") ? C_SWAP : C_FUTURES;
 
                 if (smc->get_instrument_info(OKX, u_swap, originInstId.c_str(), info)) { 
                     instType = u_swap;
@@ -493,8 +488,8 @@ void OkxTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
                     rcmd.body.orderResponse.orderStatus = OS_FILLED;
                 }
                 else if (state_sv == "canceled" || state_sv == "mmp_canceled") {
-                    cmd.body.orderResponse.orderStatus = OS_CANCELED;
-                }                                    r
+                    rcmd.body.orderResponse.orderStatus = OS_CANCELED;
+                }                                    
                 else {
                     rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
                 }                                
@@ -585,7 +580,6 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                                     std::string_view cash_sv;
                                     std::string_view avail_sv;
                                     std::string_view frozen_sv;
-                                    std::string_view upl_sv;
                                     std::string_view eq_sv;              
                                     for (auto bf : d) {
                                         std::string_view bk = bf.unescaped_key().value_unsafe();
@@ -600,9 +594,6 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                                         }
                                         else if (bk == "frozenBal") {
                                             bf.value().get(frozen_sv);
-                                        }
-                                        else if (bk == "upl") {
-                                            bf.value().get(upl_sv);
                                         }
                                         else if (bk == "eq") {
                                             bf.value().get(eq_sv);
@@ -620,7 +611,6 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                                     rcmd.body.balance.available = crypto::fast_atod(avail_sv);
                                     rcmd.body.balance.frozen = crypto::fast_atod(frozen_sv);
                                     rcmd.body.balance.total = crypto::fast_atod(eq_sv);
-                                    rcmd.body.balance.unrealizedPnl = crypto::fast_atod(upl_sv);
                                     rcmd.body.balance.updateTime = crypto::getCurrentTime();
                                     rcmd.body.balance.apiSourceEnum = AS_REST;
                                     pending.emplace_back(rcmd);
@@ -740,8 +730,8 @@ void OkxTradeUnit::query_position(const pubsub::TCommand&) {
                         }
                     } else if (iType_sv == "SWAP" || iType_sv == "FUTURES") {
                         // 依次试 USDT_* → C_* (根据 instId 是否含 -USDT- 大致预判也可, 但这么写更 robust)
-                        InstType u_swap = (okxInstType == "SWAP") ? USDT_SWAP : USDT_FUTURES;
-                        InstType c_swap = (okxInstType == "SWAP") ? C_SWAP : C_FUTURES;
+                        InstType u_swap = (iType_sv == "SWAP") ? USDT_SWAP : USDT_FUTURES;
+                        InstType c_swap = (iType_sv == "SWAP") ? C_SWAP : C_FUTURES;
 
                         if (smc->get_instrument_info(OKX, u_swap, originInstId.c_str(), info)) { 
                             instType = u_swap;
