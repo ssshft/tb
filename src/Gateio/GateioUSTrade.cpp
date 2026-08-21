@@ -782,7 +782,7 @@ void GateioUSTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
-                rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+                rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
                 rcmd.body.orderResponse.errorId = UnknownError;
                 rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
                 PUSH_RCMD(rcmd)

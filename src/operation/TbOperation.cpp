@@ -1,6 +1,7 @@
 #include "operation/TbOperation.h"
 #include "binance/BinanceTradeClient.h"
 #include "Gateio/GateioTradeClient.h"
+#include "okx/OkxTradeClient.h"
 
 
 #define PUBLISH_RCMD(rcmd) \
@@ -77,10 +78,10 @@ bool TbOperation::preStart(Config* config) {
                 BaseTradeClient *client = new GateioTradeClient(accountConfig , smc);
                 mTradeClient[exchIdAccountKey] = client;
             }
-            // else if(crypto::str_cmp(exchId.c_str(), "OKX") == true){
-            //     BaseTradeClient *client = new OKXTradingClient(accountConfig , smc);
-            //     mTradeClient[exchIdAccountKey] = client;
-            // }
+            else if(crypto::str_cmp(exchId.c_str(), "OKX") == true){
+                BaseTradeClient *client = new OKXTradingClient(accountConfig , smc);
+                mTradeClient[exchIdAccountKey] = client;
+            }
             // else if(crypto::str_cmp(exchId.c_str(), "BYBIT") == true){
             //     BaseTradeClient *client = new BybitTradingClient(accountConfig , smc);
             //     mTradeClient[exchIdAccountKey] = client;
