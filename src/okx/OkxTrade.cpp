@@ -955,8 +955,15 @@ void OkxTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             }
 
             if (code_sv == "0") {
-                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, orderId_sv);
-                rcmd.body.orderResponse.orderStatus = OS_NEW;
+                if (sCode_sv == "0") {
+                    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, orderId_sv);
+                    rcmd.body.orderResponse.orderStatus = OS_NEW;
+                }
+                else {
+                    rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+                    rcmd.body.orderResponse.errorId = crypto::get_okx_errorid(crypto::fast_atol(sCode_sv);   // TODO sCode 映射
+                    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, sMsg_sv);  
+                }
             }
             else {
                 int code = 0;
@@ -1114,7 +1121,6 @@ void OkxTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
         }
     });
 }
-
 
 // ============================================================================
 // query_order —— GET /api/v5/trade/order?instId=X&ordId=Y

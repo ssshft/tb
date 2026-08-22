@@ -21,14 +21,11 @@
 //   WS 未 login → REJECT。 query_balance/query_position/query_order 走 REST。
 //
 #include "base/BaseTrade.h"
-
 #include <simdjson.h>
-
 #include <atomic>
-#include <cstdint>
-#include <mutex>
 #include <string>
 #include <unordered_map>
+#include <tbb/concurrent_hash_map.h>
 
 
 class OkxWsTradeUnit : public BaseTradeUnit {
@@ -42,20 +39,19 @@ public:
     virtual void onOpen() override;
     virtual void onCloseMsg(int code, const std::string& reason) override;
 
-    virtual void query_account (const pubsub::TCommand& tcmd) override;
-    virtual void query_balance (const pubsub::TCommand& tcmd) override;
+    virtual void query_account(const pubsub::TCommand& tcmd) override;
+    virtual void query_balance(const pubsub::TCommand& tcmd) override;
     virtual void query_position(const pubsub::TCommand& tcmd) override;
-    virtual void add_new_order (const pubsub::TCommand& tcmd) override;
-    virtual void cancel_order  (const pubsub::TCommand& tcmd) override;
-    virtual void query_order   (const pubsub::TCommand& tcmd) override;
+    virtual void add_new_order(const pubsub::TCommand& tcmd) override;
+    virtual void cancel_order(const pubsub::TCommand& tcmd) override;
+    virtual void query_order(const pubsub::TCommand& tcmd) override;
 
 private:
-    enum class WsReqType : uint8_t { NEW_ORDER, CANCEL_ORDER };
+    // ---- 请求类型 (pending map 里记类型分派响应) ----
     struct WsPending {
-        pubsub::RCommand   rcmd;
-        WsReqType          type;
-        int64_t            ts_ms;
-        md::InstrumentInfo info;
+        pubsub::CommandType type;
+        pubsub::RCommand rcmd;
+        int64_t ts_ms;
     };
 
     // ---- 签名 ----
@@ -80,51 +76,52 @@ private:
                                      const std::string& price, const std::string& amount,
                                      const char* side, const char* ordType) const;
     // op:cancel-order  args=[{...}]
-    std::string buildOrderCancelJson(int reqId, const pubsub::TCommand& tcmd,
-                                      const md::InstrumentInfo& info) const;
+    std::string buildOrderCancelJson(int reqId, const pubsub::TCommand& tcmd, const md::InstrumentInfo& info) const;
 
     // ---- pending map ----
-    void recordPending(int id, WsReqType type,
-                       const pubsub::RCommand& rcmd,
-                       const md::InstrumentInfo& info);
+    void recordPending(int id, pubsub::CommandType type, const pubsub::RCommand& rcmd);
     bool takePending(int id, WsPending& out);
     void clearPending();
-    void gcPendingLocked(int64_t now_ms);
+
+    struct OrderResultFields {
+        std::string_view ordId_sv;
+        std::string_view sCode_sv;
+        std::string_view sMsg_sv;
+    };
+
+    struct ErrorFields {
+        std::string_view code_sv;
+        std::string_view msg_sv;
+    };
 
     // ---- msg 分派 ----
     // login/subscribe/error ack 有 "event" 字段
     // order.place / cancel-order 响应有 "id" + "op" + "code" + "data"
     // subscription push 有 "arg" + "data"
-    void handleWsApiResponse (simdjson::ondemand::document& doc);
-    void handleSubUpdate     (simdjson::ondemand::document& doc);
-    void handleAccountUpdate  (simdjson::ondemand::value& dataArr);
-    void handlePositionsUpdate(simdjson::ondemand::value& dataArr);
-    void handleOrdersUpdate   (simdjson::ondemand::value& dataArr);
+    void handleWsApiResponse(WsPending& pending, const OrderResultFields& fields);
+    void handleWsApiError(WsPending& pending, const ErrorFields& fields);
 
-    // ---- 响应处理 ----
-    void onLoginResponse       (simdjson::ondemand::document& doc);
-    void onOrderPlaceResponse  (WsPending& pending, simdjson::ondemand::document& doc);
-    void onOrderCancelResponse (WsPending& pending, simdjson::ondemand::document& doc);
-
-    // ---- helpers ----
-    bool lookupInstrument(const std::string& originInstId,
-                          std::string_view okxInstType,
-                          md::InstrumentInfo& info,
-                          InstType& out) const;
-
+    void handleAccountUpdate(simdjson::ondemand::array& arr);
+    void handlePositionsUpdate(simdjson::ondemand::array& arr);
+    void handleOrdersUpdate(simdjson::ondemand::array& arr);
+    
 private:
+    // WS session state
     std::atomic<bool> wsLoggedIn_{false};
-    std::atomic<int>  nextWsId_{100};
+    std::atomic<int> nextWsId_{100};
 
-    std::mutex                                   pendingMtx_;
-    std::unordered_map<int, WsPending>           pendingMap_;
-    std::atomic<int64_t>                         pendingLastGcMs_{0};
+    tbb::concurrent_hash_map<int, WsPending> pendingMap_;
+    std::atomic<int64_t> pendingLastGcMs_{0};
 
     // WS 路径
     std::string wsPath_ = "/ws/v5/private";
 
     // REST 端点
-    std::string balanceUrl    = "/api/v5/account/balance";
-    std::string positionUrl   = "/api/v5/account/positions";
+    std::string balanceUrl = "/api/v5/account/balance";
+    std::string positionUrl = "/api/v5/account/positions";
     std::string queryOrderUrl = "/api/v5/trade/order";
+
+    int64_t kPendingTtlMs = 30 * 1000;
+    size_t  kPendingHardMax = 10000;
+    int64_t kGcIntervalMs = 5000;
 };
