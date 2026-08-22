@@ -309,7 +309,7 @@ void OkxWsTradeUnit::handleWsApiResponse(WsPending& pending, const OrderResultFi
     }
 
     if (pending.type == pubsub::CMD_NEW_ORDER) {
-        if (sCode_sv == "0") {
+        if (fields.sCode_sv == "0") {
             crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, fields.ordId_sv);
             rcmd.body.orderResponse.orderStatus = OS_NEW;
         }
@@ -1014,7 +1014,7 @@ void OkxWsTradeUnit::query_position(const pubsub::TCommand&) {
 // ============================================================================
 // query_order —— GET /api/v5/trade/order?instId=X&ordId=Y
 // ============================================================================
-void OkxTradeUnit::query_order(const pubsub::TCommand& tcmd) {
+void OkxWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     QUERY_ORDER_TCMD_2_RCMD(tcmd);
 
     md::InstrumentInfo info;
