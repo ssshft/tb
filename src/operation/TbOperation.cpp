@@ -2,6 +2,7 @@
 #include "binance/BinanceTradeClient.h"
 #include "Gateio/GateioTradeClient.h"
 #include "okx/OkxTradeClient.h"
+#include "bybit/BybitTradeClient.h"
 
 
 #define PUBLISH_RCMD(rcmd) \
@@ -82,13 +83,13 @@ bool TbOperation::preStart(Config* config) {
                 BaseTradeClient *client = new OkxTradeClient(accountConfig, smc);
                 mTradeClient[exchIdAccountKey] = client;
             }
-            // else if(crypto::str_cmp(exchId.c_str(), "BYBIT") == true){
-            //     BaseTradeClient *client = new BybitTradingClient(accountConfig , smc);
-            //     mTradeClient[exchIdAccountKey] = client;
-            // }    
-            //else {
-            //    LOG_ERROR("not implemented exchId: {}", exchId);
-            //}
+            else if(crypto::str_cmp(exchId.c_str(), "BYBIT") == true){
+                BaseTradeClient *client = new BybitTradeClient(accountConfig , smc);
+                mTradeClient[exchIdAccountKey] = client;
+            }    
+            else {
+               LOG_ERROR("not implemented exchId: {}", exchId);
+            }
         }
         else {
             LOG_ERROR("not found accountId: {} configuration in trade_config.json. please add it first", accountId);

@@ -110,6 +110,6 @@ private:
     std::string queryOrderUrl = "/api/v4/spot/orders";
 
     int64_t kPendingTtlMs = 30 * 1000;
-    size_t  kPendingHardMax = 10000;
+    size_t kPendingHardMax = 10000;
     int64_t kGcIntervalMs = 5000;
 };

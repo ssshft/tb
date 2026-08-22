@@ -1,6 +1,7 @@
 #pragma once
 #include "base/BaseTrade.h"
 #include "bybit/BybitTrade.h"
+#include "bybit/BybitWsTrade.h"
 
 
 class BybitTradeClient : public TradingClientBase{
@@ -20,7 +21,7 @@ public:
 
 protected:
 
-    BybitTradeUnit* tradeUnit = nullptr;
+    BaseTradeUnit* tradeUnit = nullptr;
     sm::SecurityManager *smc;
 
 };
