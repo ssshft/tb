@@ -10,51 +10,6 @@ OkxWsTradeUnit::OkxWsTradeUnit(AccountCfg& a, sm::SecurityManager* s) : BaseTrad
 
 OkxWsTradeUnit::~OkxWsTradeUnit() = default;
 
-
-
-std::string OkxWsTradeUnit::restSign(const std::string& timestamp, const std::string& method,
-                                       const std::string& requestPath, const std::string& body) const {
-    return signBase64(timestamp + method + requestPath + body);
-}
-
-std::vector<std::pair<std::string, std::string>>
-OkxWsTradeUnit::restAuthHeaders(const std::string& method, const std::string& requestPath,
-                                  const std::string& body) const {
-    std::string ts   = okxIsoTimestamp();
-    std::string sign = restSign(ts, method, requestPath, body);
-    return {
-        {"OK-ACCESS-KEY",        acc.apiKey},
-        {"OK-ACCESS-TIMESTAMP",  ts},
-        {"OK-ACCESS-SIGN",       sign},
-        {"OK-ACCESS-PASSPHRASE", acc.password},
-    };
-}
-
-
-// ============================================================================
-// InstType 查找
-// ============================================================================
-bool OkxWsTradeUnit::lookupInstrument(const std::string& originInstId,
-                                        std::string_view okxInstType,
-                                        md::InstrumentInfo& info,
-                                        InstType& out) const {
-    if (okxInstType == "SPOT") {
-        if (smc->get_instrument_info(OKX, SPOT, originInstId.c_str(), info)) { out = SPOT; return true; }
-    } else if (okxInstType == "MARGIN") {
-        if (smc->get_instrument_info(OKX, MARGIN, originInstId.c_str(), info)) { out = MARGIN; return true; }
-    } else if (okxInstType == "SWAP" || okxInstType == "FUTURES") {
-        InstType u_swap = (okxInstType == "SWAP") ? USDT_SWAP : USDT_FUTURES;
-        InstType c_swap = (okxInstType == "SWAP") ? C_SWAP    : C_FUTURES;
-        if (smc->get_instrument_info(OKX, u_swap, originInstId.c_str(), info)) { out = u_swap; return true; }
-        if (smc->get_instrument_info(OKX, c_swap, originInstId.c_str(), info)) { out = c_swap; return true; }
-    } else {
-        for (InstType t : {SPOT, USDT_SWAP, USDT_FUTURES, C_SWAP, C_FUTURES, MARGIN}) {
-            if (smc->get_instrument_info(OKX, t, originInstId.c_str(), info)) { out = t; return true; }
-        }
-    }
-    return false;
-}
-
 // ============================================================================
 // WS JSON builders
 // ============================================================================
@@ -360,7 +315,7 @@ void OkxWsTradeUnit::handleWsApiResponse(WsPending& pending, const OrderResultFi
         }
         else {
             rcmd.body.orderResponse.orderStatus = OS_REJECTED;
-            rcmd.body.orderResponse.errorId = crypto::get_okx_errorid(crypto::fast_atol(fields.sCode_sv);
+            rcmd.body.orderResponse.errorId = crypto::get_okx_errorid(crypto::fast_atol(fields.sCode_sv));
             crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, fields.sMsg_sv);  
         }
 

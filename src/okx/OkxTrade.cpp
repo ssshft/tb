@@ -961,7 +961,7 @@ void OkxTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
                 }
                 else {
                     rcmd.body.orderResponse.orderStatus = OS_REJECTED;
-                    rcmd.body.orderResponse.errorId = crypto::get_okx_errorid(crypto::fast_atol(sCode_sv);   // TODO sCode 映射
+                    rcmd.body.orderResponse.errorId = crypto::get_okx_errorid(crypto::fast_atol(sCode_sv));   // TODO sCode 映射
                     crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, sMsg_sv);  
                 }
             }

@@ -54,17 +54,6 @@ private:
         int64_t ts_ms;
     };
 
-    // ---- 签名 ----
-    // sign_base64(HMAC-SHA256(secret, payload))
-    std::string signBase64(const std::string& payload) const;
-
-    // REST 签名 (ISO8601 时间戳)
-    static std::string okxIsoTimestamp();
-    std::string restSign(const std::string& timestamp, const std::string& method,
-                         const std::string& requestPath, const std::string& body) const;
-    std::vector<std::pair<std::string, std::string>>
-    restAuthHeaders(const std::string& method, const std::string& requestPath, const std::string& body) const;
-
     // ---- WS JSON builders ----
     // op:login (timestamp 秒), 单条消息里签名
     std::string buildLoginJson();
@@ -104,7 +93,7 @@ private:
     void handleAccountUpdate(simdjson::ondemand::array& arr);
     void handlePositionsUpdate(simdjson::ondemand::array& arr);
     void handleOrdersUpdate(simdjson::ondemand::array& arr);
-    
+
 private:
     // WS session state
     std::atomic<bool> wsLoggedIn_{false};
