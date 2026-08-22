@@ -1253,7 +1253,7 @@ void OkxWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     const int reqId = nextWsId_.fetch_add(1, std::memory_order_relaxed);
     std::string msg = buildOrderPlaceJson(reqId, tcmd, info, price_str, sz_str, side, ordType);
 
-    recordPending(wsId, pubsub::CMD_NEW_ORDER, rcmd);
+    recordPending(reqId, pubsub::CMD_NEW_ORDER, rcmd);
     LOG_INFO("TB {} OKX ws op:order id={} msg={}", acc.accountId, reqId, msg);
     pWsClient->send_text(std::move(msg));
 }
@@ -1293,7 +1293,7 @@ void OkxWsTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     const int reqId = nextWsId_.fetch_add(1, std::memory_order_relaxed);
     std::string msg = buildOrderCancelJson(reqId, tcmd, info);
 
-    recordPending(wsId, pubsub::CMD_CANCEL_ORDER, rcmd);
+    recordPending(reqId, pubsub::CMD_CANCEL_ORDER, rcmd);
     LOG_INFO("TB {} OKX ws op:cancel-order id={} msg={}", acc.accountId, reqId, msg);
     pWsClient->send_text(std::move(msg));
 }
