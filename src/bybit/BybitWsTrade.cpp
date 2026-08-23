@@ -53,7 +53,7 @@ std::string BybitWsTradeUnit::buildOrderPlaceJson(int reqId,
     j.append(ts_ms);              
     j.push_back('"');
     j.append(R"(,"X-BAPI-RECV-WINDOW":")");          
-    j.append(recvWindow_);        
+    j.append("5000");        
     j.push_back('"');
     j.append(R"(},"op":"order.create","args":[{)");
     j.append(R"("category":")");     
@@ -104,7 +104,7 @@ std::string BybitWsTradeUnit::buildOrderCancelJson(int reqId, const pubsub::TCom
     j.append(ts_ms);               
     j.push_back('"');
     j.append(R"(,"X-BAPI-RECV-WINDOW":")");         
-    j.append(recvWindow_);         
+    j.append("5000");         
     j.push_back('"');
     j.append(R"(},"op":"order.cancel","args":[{)");
     j.append(R"("category":")");    
@@ -284,14 +284,16 @@ void BybitWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /*is
 
 void BybitWsTradeUnit::onWsTradeMsg(const uint8_t* data, size_t len, bool /*isBinary*/, int64_t /*recv_ns*/) {
     try {
+        std::string msg(reinterpret_cast<const char*>(data), len);
+        std::cout << "onWsTradeMsg: " << msg << std::endl;
+
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
-        auto doc_res = g_parser.iterate(padded);
-        if (doc_res.error()) {
+        auto doc = g_parser.iterate(padded);
+        if (doc.error()) {
             return;
         }
       
         auto doc_value = doc.get_object().value_unsafe();
-
 
         std::string_view reqId_val;
         int retCode = 0;
