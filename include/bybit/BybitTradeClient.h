@@ -11,7 +11,7 @@ public:
     ~BybitTradeClient();
 
     virtual void start();
-    virtual void Initial();
+    virtual void initial();
     virtual void add_new_order(pubsub::TCommand &tcmd);
     virtual void cancel_order(pubsub::TCommand &tcmd);
     virtual void query_order(pubsub::TCommand &tcmd);
