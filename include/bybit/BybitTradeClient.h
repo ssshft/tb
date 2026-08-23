@@ -12,12 +12,12 @@ public:
 
     virtual void start();
     virtual void initial();
-    virtual void query_account(pubsub::TCommand& tcmd);
-    virtual void query_position(pubsub::TCommand& tcmd);
-    virtual void query_balance(pubsub::TCommand& tcmd);
-    virtual void add_new_order(pubsub::TCommand& tcmd);
-    virtual void cancel_order(pubsub::TCommand& tcmd);
-    virtual void query_order(pubsub::TCommand& tcmd);
+    virtual void query_account(const pubsub::TCommand& tcmd);
+    virtual void query_position(const pubsub::TCommand& tcmd);
+    virtual void query_balance(const pubsub::TCommand& tcmd);
+    virtual void add_new_order(const pubsub::TCommand& tcmd);
+    virtual void cancel_order(const pubsub::TCommand& tcmd);
+    virtual void query_order(const pubsub::TCommand& tcmd);
 
 protected:
 
