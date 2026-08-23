@@ -4,7 +4,6 @@
 #include <simdjson.h>
 
 
-
 BybitTradeUnit::BybitTradeUnit(AccountCfg& a, sm::SecurityManager* s) : BaseTradeUnit(a, s) {
 
 }
