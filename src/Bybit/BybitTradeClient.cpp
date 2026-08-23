@@ -1,8 +1,7 @@
 #include "bybit/BybitTradeClient.h"
 
 
-BybitTradeClient::BybitTradeClient(rapidjson::Value& accCfg, sm::SecurityManager* s)
-    : BaseTradeClient(accCfg, s) {
+BybitTradeClient::BybitTradeClient(rapidjson::Value& accCfg, sm::SecurityManager* s) : BaseTradeClient(accCfg, s) {
     if (!vAccount.empty()) {
         if (vAccount[0].apiMode == AM_REST) {
             tradeUnit = new BybitTradeUnit(vAccount[0], smc);
