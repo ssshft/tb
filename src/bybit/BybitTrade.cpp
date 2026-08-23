@@ -82,10 +82,10 @@ void BybitTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, int64
             else if (k == "data") {
                 field.value().get(data_arr);
                 if (topic_sv == "wallet") {
-                    handleAccountUpdate(data_arr);
+                    handleWalletUpdate(data_arr);
                 }
                 else if (topic_sv == "position") {
-                    handlePositionsUpdate(data_arr);
+                    handlePositionUpdate(data_arr);
                 }
                 else if (topic_sv == "order") {
                     handleOrdersUpdate(data_arr);
@@ -129,7 +129,7 @@ void BybitTradeUnit::handleWalletUpdate(simdjson::ondemand::array& dataArr) {
             else if (k == "coin") {
                 field.value().get(coin_arr);
                 for (auto c_val : coin_arr) {
-                    auto b_res = c_val.get_object();
+                    auto c_res = c_val.get_object();
                     if (c_res.error()) {
                         continue;
                     }
@@ -139,7 +139,6 @@ void BybitTradeUnit::handleWalletUpdate(simdjson::ondemand::array& dataArr) {
                     std::string_view eq_sv;
                     std::string_view wal_sv;
                     std::string_view avail_sv;
-                    std::string_view upl_sv;
                     for (auto f : c) {
                         std::string_view ck = f.unescaped_key().value_unsafe();
                         if (ck == "coin") {
@@ -154,9 +153,6 @@ void BybitTradeUnit::handleWalletUpdate(simdjson::ondemand::array& dataArr) {
                         else if (ck == "availableToWithdraw") {
                             f.value().get(avail_sv);
                         }
-                        else if (ck == "unrealisedPnl") {
-                            f.value().get(upl_sv);
-                        }
                     }
 
                     pubsub::RCommand rcmd;
@@ -169,7 +165,6 @@ void BybitTradeUnit::handleWalletUpdate(simdjson::ondemand::array& dataArr) {
                     crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(ccy_sv)));
                     rcmd.body.balance.available = crypto::fast_atod(avail_sv);
                     rcmd.body.balance.total = crypto::fast_atod(eq_sv.empty() ? wal_sv : eq_sv);
-                    rcmd.body.balance.unrealizedPnl = crypto::fast_atod(upl_sv);
                     rcmd.body.balance.updateTime = crypto::getCurrentTime();
                     rcmd.body.balance.apiSourceEnum = AS_WEBSOCKET;
                     PUSH_RCMD(rcmd);
@@ -309,9 +304,9 @@ void BybitTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& dataArr) {
         std::string_view price_sv;
         std::string_view cum_sv;
         std::string_view avg_sv;
-        std::string_vie side_sv;
-        std::string_vie oType_sv;
-        std::string_vie tif_sv;
+        std::string_view side_sv;
+        std::string_view oType_sv;
+        std::string_view tif_sv;
         std::string_view status_sv;
         std::string_view createTy_sv;
 
@@ -378,6 +373,12 @@ void BybitTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& dataArr) {
                 instType = C_FUTURES; 
             }
         }
+
+        pubsub::RCommand rcmd;
+        memset(&rcmd, 0, sizeof(pubsub::RCommand));
+        rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
+        rcmd.body.orderResponse.exchangeTypeEnum = BYBIT;
+        rcmd.body.orderResponse.instTypeEnum = instType;
 
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, ordId_sv);
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, ordLink_sv);
@@ -453,94 +454,6 @@ void BybitTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& dataArr) {
         }
 
         rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-        PUSH_RCMD(rcmd)
-    }
-
-
-
-
-
-
-
-
-
-
-
-
-
-    simdjson::ondemand::array arr;
-    if (dataArr.get_array().get(arr) != simdjson::SUCCESS) return;
-
-    for (auto it : arr) {
-        auto o = it.get_object();
-        if (o.error()) continue;
-
-        std::string_view cat_sv, sym_sv, ordId_sv, ordLink_sv, side_sv, oType_sv, tif_sv,
-                          qty_sv, px_sv, status_sv, cumQty_sv, avg_sv;
-        o["category"].get(cat_sv);
-        o["symbol"].get(sym_sv);
-        o["orderId"].get(ordId_sv);
-        o["orderLinkId"].get(ordLink_sv);
-        o["side"].get(side_sv);
-        o["orderType"].get(oType_sv);
-        o["timeInForce"].get(tif_sv);
-        o["qty"].get(qty_sv);
-        o["price"].get(px_sv);
-        o["orderStatus"].get(status_sv);
-        o["cumExecQty"].get(cumQty_sv);
-        o["avgPrice"].get(avg_sv);
-
-        std::string originInstId(sym_sv);
-        std::string category(cat_sv);
-        md::InstrumentInfo info;
-        InstType instType;
-        if (!lookupInstrument(originInstId, category, info, instType)) {
-            LOG_ERROR("TB {} Bybit order not found in smc: {} ({})", acc.accountId, originInstId, category);
-            continue;
-        }
-
-        pubsub::RCommand rcmd;
-        memset(&rcmd, 0, sizeof(pubsub::RCommand));
-        rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
-        rcmd.body.orderResponse.exchangeTypeEnum = BYBIT;
-        rcmd.body.orderResponse.instTypeEnum     = instType;
-        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountId,  acc.accountId);
-        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
-        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId,     std::string_view(info.instId));
-        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId,    ordId_sv);
-        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, ordLink_sv);
-
-        rcmd.body.orderResponse.offsetFlag = OF_OPEN;
-        if (!side_sv.empty()) rcmd.body.orderResponse.direction = (side_sv[0] == 'B') ? DT_LONG : DT_SHORT;
-
-        if (!oType_sv.empty()) {
-            // Bybit: "Limit" / "Market". Post-only 靠 timeInForce=PostOnly。
-            if (oType_sv == "Market") {
-                rcmd.body.orderResponse.orderType = OT_MARKET;
-            } else if (oType_sv == "Limit") {
-                if      (tif_sv == "PostOnly") rcmd.body.orderResponse.orderType = OT_POST_ONLY;
-                else if (tif_sv == "FOK")      rcmd.body.orderResponse.orderType = OT_FOK;
-                else if (tif_sv == "IOC")      rcmd.body.orderResponse.orderType = OT_IOC;
-                else                            rcmd.body.orderResponse.orderType = OT_LIMIT;
-            }
-        }
-
-        if (!qty_sv.empty())    rcmd.body.orderResponse.volumeTotal  = crypto::fast_atod(qty_sv);
-        if (!px_sv.empty())     rcmd.body.orderResponse.limitPrice   = crypto::fast_atod(px_sv);
-        if (!cumQty_sv.empty()) rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(cumQty_sv);
-        if (!avg_sv.empty())    rcmd.body.orderResponse.tradePrice   = crypto::fast_atod(avg_sv);
-
-        // Bybit orderStatus: New / PartiallyFilled / Filled / Cancelled / Rejected / ...
-        if      (status_sv == "New")             rcmd.body.orderResponse.orderStatus = OS_NEW;
-        else if (status_sv == "PartiallyFilled") rcmd.body.orderResponse.orderStatus = OS_PARTFILLED;
-        else if (status_sv == "Filled")          rcmd.body.orderResponse.orderStatus = OS_FILLED;
-        else if (status_sv == "Cancelled" ||
-                 status_sv == "PartiallyFilledCanceled") rcmd.body.orderResponse.orderStatus = OS_CANCELED;
-        else if (status_sv == "Rejected")        rcmd.body.orderResponse.orderStatus = OS_REJECTED;
-        else                                      rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
-
-        rcmd.body.orderResponse.updateTime    = crypto::getCurrentTime();
-        rcmd.body.orderResponse.apiSourceEnum = AS_WEBSOCKET;
         PUSH_RCMD(rcmd)
     }
 }
