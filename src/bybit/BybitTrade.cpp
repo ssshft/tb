@@ -1020,64 +1020,66 @@ void BybitTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     std::vector<std::pair<std::string, std::string>> headers = {{"X-BAPI-API-KEY", acc.apiKey}, {"X-BAPI-TIMESTAMP", ts}, {"X-BAPI-RECV-WINDOW", "5000"}, {"X-BAPI-SIGN", sign}};
 
     asyncRequest(boost::beast::http::verb::post, cancelOrderUrl, std::move(body), "application/json", std::move(headers), [this, rcmd](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
-            if (ec) {
+        if (ec) {
+            rcmd.body.orderResponse.orderStatus = OS_FAILED;
+            rcmd.body.orderResponse.errorId = NetworkError;
+            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, ec.message());
+            rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+            PUSH_RCMD(rcmd)
+            return;
+        }
+
+        try {
+            simdjson::padded_string padded(resp.body);
+            auto doc = g_parser.iterate(padded);
+            if (doc.error()) {
                 rcmd.body.orderResponse.orderStatus = OS_FAILED;
-                rcmd.body.orderResponse.errorId = NetworkError;
-                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, ec.message());
+                rcmd.body.orderResponse.errorId = UnknownError;
                 rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
                 PUSH_RCMD(rcmd)
                 return;
             }
 
-            try {
-                simdjson::padded_string padded(resp.body);
-                auto doc = g_parser.iterate(padded);
-                if (doc.error()) {
+
+            auto doc_value = doc.get_object().value_unsafe();
+
+            int64_t retCode = 0;
+            std::string_view retMsg_sv;
+
+            for (auto field : doc_value) {
+                std::string_view k = field.unescaped_key().value_unsafe();
+                if (k == "retCode") {
+                    field.value().get(retCode);
+                }
+                else if (k == "retMsg") {
+                    field.value().get(retMsg_sv);
+                }
+            }
+
+            if (retCode != 0) {
+                if (retCode == 170213) {
+                    rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+                }
+                else {
                     rcmd.body.orderResponse.orderStatus = OS_FAILED;
-                    rcmd.body.orderResponse.errorId = UnknownError;
-                    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                    PUSH_RCMD(rcmd)
-                    return;
                 }
 
+                rcmd.body.orderResponse.errorId = crypto::get_bybit_errorid(retCode);
+                crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, retMsg_sv);
 
-                auto doc_value = doc.get_object().value_unsafe();
-
-                int64_t retCode = 0;
-                std::string_view retMsg_sv;
-
-                for (auto field : doc_value) {
-                    std::string_view k = field.unescaped_key().value_unsafe();
-                    if (k == "retCode") {
-                        field.value().get(retCode);
-                    }
-                    else if (k == "retMsg") {
-                        field.value().get(retMsg_sv);
-                    }
-                }
-
-                if (retCode != 0) {
-                    if (retCode == 170213) {
-                        rcmd.body.orderResponse.orderStatus = OS_REJECTED;
-                    }
-                    else {
-                        rcmd.body.orderResponse.orderStatus = OS_FAILED;
-                    }
-
-                    rcmd.body.orderResponse.errorId = crypto::get_bybit_errorid(retCode);
-                    crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, retMsg_sv);
-
-                    rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
-                    PUSH_RCMD(rcmd)
-                }
-                else { // 正常的返回不推送，报单实际状态在ws推送中
-
-                }
+                rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
+                PUSH_RCMD(rcmd)
             }
-            catch (const std::exception& e) {
-                LOG_ERROR("TB {} Bybit cancel_order cb exc: {}", acc.accountId, e.what());
+            else { // 正常的返回不推送，报单实际状态在ws推送中
+                rcmd.body.orderResponse.orderStatus = OS_CANCELED;
+                rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
+                PUSH_RCMD(rcmd)
             }
-        });
+        }
+        catch (const std::exception& e) {
+            LOG_ERROR("TB {} Bybit cancel_order cb exc: {}", acc.accountId, e.what());
+        }
+    });
 }
 
 

@@ -24,14 +24,13 @@
 //   query_balance / query_position / query_order 走 REST (HMAC 签名)。
 //
 #include "base/BaseTrade.h"
-
 #include <simdjson.h>
-
 #include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <tbb/concurrent_hash_map.h>
 
 
 class BybitWsTradeUnit : public BaseTradeUnit {
@@ -43,85 +42,62 @@ public:
     // 覆盖 subWebsocekt: 自己起 **两条** WsClient, 不走 BaseTradeUnit::subWebsocketWithConfig
     virtual void subWebsocekt() override;
 
-    // 这里的 onWebsocketMsg 只处理 trade WS (BaseTradeUnit 的默认 hook 走 pWsClient),
-    // private WS 单独有 onPrivateWsMsg。
     virtual void onWebsocketMsg(const uint8_t* data, size_t len, bool isBinary, int64_t recv_ns) override;
     virtual void onOpen() override;
-    virtual void onCloseMsg(int code, const std::string& reason) override;
 
-    virtual void query_account (const pubsub::TCommand& tcmd) override;
-    virtual void query_balance (const pubsub::TCommand& tcmd) override;
+    virtual void query_account(const pubsub::TCommand& tcmd) override;
+    virtual void query_balance(const pubsub::TCommand& tcmd) override;
     virtual void query_position(const pubsub::TCommand& tcmd) override;
-    virtual void add_new_order (const pubsub::TCommand& tcmd) override;
-    virtual void cancel_order  (const pubsub::TCommand& tcmd) override;
-    virtual void query_order   (const pubsub::TCommand& tcmd) override;
+    virtual void add_new_order(const pubsub::TCommand& tcmd) override;
+    virtual void cancel_order(const pubsub::TCommand& tcmd) override;
+    virtual void query_order(const pubsub::TCommand& tcmd) override;
 
 private:
-    enum class WsReqType : uint8_t { NEW_ORDER, CANCEL_ORDER };
+    // ---- 请求类型 (pending map 里记类型分派响应) ----
     struct WsPending {
-        pubsub::RCommand   rcmd;
-        WsReqType          type;
-        int64_t            ts_ms;
-        md::InstrumentInfo info;
+        pubsub::CommandType type;
+        pubsub::RCommand rcmd;
+        int64_t ts_ms;
     };
 
     // Bybit reqId 是字符串, 我们用 "1"/"2"/"100"+ 递增
     static constexpr int kTradeAuthId = 1;
-    static constexpr int kUserAuthId  = 1;   // 两条连接各自独立, id 空间不冲突
-    static constexpr int kUserSubId   = 2;
-
-    // ---- Bybit 签名 (WS auth) ----
-    // sign = hex(HMAC-SHA256(secret, "GET/realtime" + expires_ms))
-    std::string bybitWsAuthSign(long expires_ms) const;
-
-    // REST 签名 (跟 BybitTradeUnit 一样, 复用逻辑)
-    std::string bybitRestSign(const std::string& timestamp, const std::string& payload) const;
-    std::vector<std::pair<std::string, std::string>> bybitRestHeaders(const std::string& payload) const;
-
-    static const char* categoryOf(InstType t);
+    static constexpr int kUserAuthId = 1;   // 两条连接各自独立, id 空间不冲突
+    static constexpr int kUserSubId = 2;
 
     // ---- WS JSON builders (trade endpoint) ----
-    std::string buildTradeAuthJson(long expires_ms) const;
-    std::string buildOrderPlaceJson(int reqId,
-                                     const pubsub::TCommand& tcmd,
-                                     const md::InstrumentInfo& info,
-                                     const char* category,
-                                     const char* side, const char* orderType,
-                                     const char* tif,
-                                     const std::string& qty,
-                                     const std::string& price) const;
-    std::string buildOrderCancelJson(int reqId,
-                                      const pubsub::TCommand& tcmd,
-                                      const md::InstrumentInfo& info,
-                                      const char* category) const;
+    std::string buildTradeAuthJson() const;
 
     // ---- WS JSON builders (private endpoint) ----
-    std::string buildPrivateAuthJson(long expires_ms) const;
+    std::string buildPrivateAuthJson() const;
     std::string buildPrivateSubscribeJson() const;
 
+    std::string buildOrderPlaceJson(int reqId,
+                    const pubsub::TCommand& tcmd,
+                    const md::InstrumentInfo& info,
+                    const char* category,
+                    const char* side, const char* orderType,
+                    const char* tif,
+                    const std::string& qty,
+                    const std::string& price) const;
+                    
+    std::string buildOrderCancelJson(int reqId, const pubsub::TCommand& tcmd, const md::InstrumentInfo& info, const char* category) const;
+
     // ---- pending map ----
-    void recordPending(int id, WsReqType type,
-                       const pubsub::RCommand& rcmd,
-                       const md::InstrumentInfo& info);
+    void recordPending(int id, pubsub::CommandType type, const pubsub::RCommand& rcmd);
     bool takePending(int id, WsPending& out);
     void clearPending();
-    void gcPendingLocked(int64_t now_ms);
 
     // ---- trade WS 分派 ----
     // 有 "op":"pong" 是 ping response
     // 有 "op":"auth" + retCode=0 是 auth ack
     // 有 "op":"order.create"/"order.cancel" 是订单响应
-    void handleTradeWsMsg(simdjson::ondemand::document& doc);
+    void onWsTradeMsg(const uint8_t* data, size_t len, bool isBinary, int64_t recv_ns);
 
-    // ---- private WS 分派 ----
-    // 有 "op":"auth" 是 auth ack
-    // 有 "op":"subscribe" 是 subscribe ack
-    // 有 "topic":"order"/"wallet"/"position" 是订阅推送
-    void onPrivateWsMsg(const uint8_t* data, size_t len, bool isBinary, int64_t recv_ns);
-    void handlePrivateAuthAck  (simdjson::ondemand::document& doc);
-    void handleOrdersUpdate    (simdjson::ondemand::value& data);
-    void handleWalletUpdate    (simdjson::ondemand::value& data);
-    void handlePositionUpdate  (simdjson::ondemand::value& data);
+    // ---- WS msg 分派 ----
+    void handleOrdersUpdate(simdjson::ondemand::array& dataArr);
+    void handleWalletUpdate(simdjson::ondemand::array& dataArr);
+    void handlePositionUpdate(simdjson::ondemand::array& dataArr);
 
     // ---- 订单响应处理 ----
     void onOrderPlaceResponse  (WsPending& pending, int retCode,
@@ -131,32 +107,23 @@ private:
                                  std::string_view retMsg,
                                  simdjson::ondemand::document& doc);
 
-    bool lookupInstrument(const std::string& originInstId, const std::string& category,
-                          md::InstrumentInfo& info, InstType& out) const;
-
 private:
-    // Trade WS state
-    std::atomic<bool>  tradeWsAuthed_{false};
-    // Private WS state
-    std::atomic<bool>  privateWsAuthed_{false};
-    // 独立 io 连接
-    std::shared_ptr<::net::WsClient> pPrivateWs_;
+
+    std::shared_ptr<net::WsClient> pWsTradeClient;
+    std::atomic<bool> isTradeConnected{false};
+    std::atomic<bool> tradeWsAuthed_{false};
 
     std::atomic<int>   nextWsId_{100};
 
-    std::mutex                                   pendingMtx_;
-    std::unordered_map<int, WsPending>           pendingMap_;
-    std::atomic<int64_t>                         pendingLastGcMs_{0};
-
-    // URL 路径 (acc.wsUrl 传 "wss://stream.bybit.com" 之类的基地址)
-    std::string tradeWsPath_   = "/v5/trade";
-    std::string privateWsPath_ = "/v5/private";
+    tbb::concurrent_hash_map<int, WsPending> pendingMap_;
+    std::atomic<int64_t> pendingLastGcMs_{0};
 
     // REST 端点
-    std::string balanceUrl    = "/v5/account/wallet-balance";
-    std::string positionUrl   = "/v5/position/list";
+    std::string balanceUrl = "/v5/account/wallet-balance";
+    std::string positionUrl = "/v5/position/list";
     std::string queryOrderUrl = "/v5/order/realtime";
 
-    // recv_window 字符串, 5000ms 默认
-    std::string recvWindow_ = "5000";
+    int64_t kPendingTtlMs = 30 * 1000;
+    size_t kPendingHardMax = 10000;
+    int64_t kGcIntervalMs = 5000;
 };
