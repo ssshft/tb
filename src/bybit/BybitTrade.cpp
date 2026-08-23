@@ -523,7 +523,7 @@ void BybitTradeUnit::query_balance(const pubsub::TCommand&) {
                         else if (k == "coin") {
                             field.value().get(coin_arr);
                             for (auto c_val : coin_arr) {
-                                auto b_res = c_val.get_object();
+                                auto c_res = c_val.get_object();
                                 if (c_res.error()) {
                                     continue;
                                 }
@@ -533,7 +533,6 @@ void BybitTradeUnit::query_balance(const pubsub::TCommand&) {
                                 std::string_view eq_sv;
                                 std::string_view wal_sv;
                                 std::string_view avail_sv;
-                                std::string_view upl_sv;
                                 for (auto f : c) {
                                     std::string_view ck = f.unescaped_key().value_unsafe();
                                     if (ck == "coin") {
@@ -548,9 +547,6 @@ void BybitTradeUnit::query_balance(const pubsub::TCommand&) {
                                     else if (ck == "availableToWithdraw") {
                                         f.value().get(avail_sv);
                                     }
-                                    else if (ck == "unrealisedPnl") {
-                                        f.value().get(upl_sv);
-                                    }
                                 }
 
                                 pubsub::RCommand rcmd;
@@ -563,7 +559,6 @@ void BybitTradeUnit::query_balance(const pubsub::TCommand&) {
                                 crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(ccy_sv)));
                                 rcmd.body.balance.available = crypto::fast_atod(avail_sv);
                                 rcmd.body.balance.total = crypto::fast_atod(eq_sv.empty() ? wal_sv : eq_sv);
-                                rcmd.body.balance.unrealizedPnl = crypto::fast_atod(upl_sv);
                                 rcmd.body.balance.updateTime = crypto::getCurrentTime();
                                 rcmd.body.balance.apiSourceEnum = AS_REST;
                                 pending.emplace_back(rcmd);
@@ -875,13 +870,13 @@ void BybitTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     if (tcmd.body.newOrder.orderType == OT_MARKET) {
         body = fmt::format(
             R"({{"category":"{}","symbol":"{}","side":"{}","orderType":"{}","qty":"{}","timeInForce":"{}","orderLinkId":"{}","reduceOnly":{}}})",
-            cat, info.originInstId, side, ordType, qty_str, tif,
+            category, info.originInstId, side, ordType, qty_str, tif,
             escape_json(tcmd.body.newOrder.orderSysId),
             tcmd.body.newOrder.reduceOnly ? "true" : "false");
     } else {
         body = fmt::format(
             R"({{"category":"{}","symbol":"{}","side":"{}","orderType":"{}","qty":"{}","price":"{}","timeInForce":"{}","orderLinkId":"{}","reduceOnly":{}}})",
-            cat, info.originInstId, side, ordType, qty_str, price_str, tif,
+            category, info.originInstId, side, ordType, qty_str, price_str, tif,
             escape_json(tcmd.body.newOrder.orderSysId),
             tcmd.body.newOrder.reduceOnly ? "true" : "false");
     }
