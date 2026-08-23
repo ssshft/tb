@@ -4,7 +4,7 @@
 #include "bybit/BybitWsTrade.h"
 
 
-class BybitTradeClient : public TradingClientBase{
+class BybitTradeClient : public BaseTradeClient{
 
 public:
     BybitTradeClient(rapidjson::Value &accountConfig, sm::SecurityManager *smc);
