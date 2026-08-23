@@ -1,4 +1,4 @@
-#include "Bybit/BybitTrade.h"
+#include "bybit/BybitTrade.h"
 #include <cmath>
 #include <fmt/format.h>
 #include <simdjson.h>
