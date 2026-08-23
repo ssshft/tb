@@ -425,7 +425,7 @@ void BybitTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& dataArr) {
             }
         }
 
-        if (status_sv[0] == 'N' && status_sv[2] == 'e' || status_sv[0] == 'C') {
+        if ((status_sv[0] == 'N' && status_sv[2] == 'e') || status_sv[0] == 'C') {
             rcmd.body.orderResponse.orderStatus = OS_NEW;
         }
         else if (status_sv[0] == 'P') {
@@ -439,7 +439,7 @@ void BybitTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& dataArr) {
         else if (status_sv[0] == 'F') {
             rcmd.body.orderResponse.orderStatus = OS_FILLED;
         }
-        else if (status_sv[0] == 'C' && status_sv[0] == 'n') {
+        else if (status_sv[0] == 'C' && status_sv[2] == 'n') {
             rcmd.body.orderResponse.orderStatus = OS_CANCELED;
         }
         else {
@@ -1002,9 +1002,9 @@ void BybitTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
 
     std::string body;
     if (!crypto::str_cmp(tcmd.body.cancelOrder.orderId, "")) {
-        body = fmt::format(R"({{"category":"{}","symbol":"{}","orderId":"{}"}})", cat, info.originInstId, tcmd.body.cancelOrder.orderId);
+        body = fmt::format(R"({{"category":"{}","symbol":"{}","orderId":"{}"}})", category, info.originInstId, tcmd.body.cancelOrder.orderId);
     } else if (!crypto::str_cmp(tcmd.body.cancelOrder.orderSysId, "")) {
-        body = fmt::format(R"({{"category":"{}","symbol":"{}","orderLinkId":"{}"}})", cat, info.originInstId, escape_json(tcmd.body.cancelOrder.orderSysId));
+        body = fmt::format(R"({{"category":"{}","symbol":"{}","orderLinkId":"{}"}})", category, info.originInstId, escape_json(tcmd.body.cancelOrder.orderSysId));
     } else {
         rcmd.body.orderResponse.orderStatus = OS_FAILED;
         rcmd.body.orderResponse.errorId = OrderIdError;
