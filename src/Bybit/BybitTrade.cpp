@@ -1,8 +1,7 @@
-#include "bybit/BybitTrade.h"
 #include <cmath>
 #include <fmt/format.h>
 #include <simdjson.h>
-
+#include "bybit/BybitTrade.h"
 
 BybitTradeUnit::BybitTradeUnit(AccountCfg& a, sm::SecurityManager* s) : BaseTradeUnit(a, s) {
 
