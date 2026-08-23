@@ -577,7 +577,6 @@ void BybitWsTradeUnit::handleWalletUpdate(simdjson::ondemand::value& dataArr) {
                 crypto::copy_sv_to_char_array(rcmd.body.balance.currency,   crypto::to_upper(std::string(ccy_sv)));
                 rcmd.body.balance.available     = crypto::fast_atod(avail_sv);
                 rcmd.body.balance.total         = crypto::fast_atod(eq_sv.empty() ? wal_sv : eq_sv);
-                rcmd.body.balance.unrealizedPnl = crypto::fast_atod(upl_sv);
                 rcmd.body.balance.updateTime    = crypto::getCurrentTime();
                 rcmd.body.balance.apiSourceEnum = AS_WEBSOCKET;
                 pending.emplace_back(rcmd);
