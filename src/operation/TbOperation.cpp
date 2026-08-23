@@ -76,15 +76,15 @@ bool TbOperation::preStart(Config* config) {
                mTradeClient[exchIdAccountKey] = trade;
             }
             else if(crypto::str_cmp(exchId.c_str(), "GATEIO") == true){
-                BaseTradeClient *client = new GateioTradeClient(accountConfig, smc);
+                BaseTradeClient* client = new GateioTradeClient(accountConfig, smc);
                 mTradeClient[exchIdAccountKey] = client;
             }
             else if(crypto::str_cmp(exchId.c_str(), "OKX") == true){
-                BaseTradeClient *client = new OkxTradeClient(accountConfig, smc);
+                BaseTradeClient* client = new OkxTradeClient(accountConfig, smc);
                 mTradeClient[exchIdAccountKey] = client;
             }
             else if(crypto::str_cmp(exchId.c_str(), "BYBIT") == true){
-                BaseTradeClient *client = new BybitTradeClient(accountConfig , smc);
+                BaseTradeClient* client = new BybitTradeClient(accountConfig, smc);
                 mTradeClient[exchIdAccountKey] = client;
             }    
             else {
