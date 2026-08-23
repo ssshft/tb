@@ -60,33 +60,6 @@ void BybitTradeUnit::onOpen() {
 // ============================================================================
 void BybitTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, int64_t) {
     try {
-        simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
-        auto doc = g_parser.iterate(padded);
-        if (doc.error()) return;
-
-        // auth/subscribe ack: {"success":true,"op":"auth","conn_id":"..."}
-        std::string_view op_sv;
-        if (doc["op"].get(op_sv) == simdjson::SUCCESS) {
-            bool success = false;
-            doc["success"].get(success);
-            LOG_INFO("TB {} Bybit ws op={} success={}", acc.accountId, op_sv, success);
-            return;
-        }
-
-        // channel message: {"topic":"order|wallet|position","data":[...]}
-        std::string_view topic_sv;
-        if (doc["topic"].get(topic_sv) != simdjson::SUCCESS) return;
-        simdjson::ondemand::value data_val;
-        if (doc["data"].get(data_val) != simdjson::SUCCESS) return;
-
-        if      (topic_sv == "order")    handleOrdersUpdate(data_val);
-        else if (topic_sv == "wallet")   handleWalletUpdate(data_val);
-        else if (topic_sv == "position") handlePositionUpdate(data_val);
-
-
-
-
-
         std::string msg(reinterpret_cast<const char*>(data), len);
         std::cout << "onWebsocketMsg: " << msg << std::endl;
 
