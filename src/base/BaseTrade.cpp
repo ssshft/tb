@@ -114,7 +114,8 @@ BaseTradeClient::BaseTradeClient(rapidjson::Value& accCfg, sm::SecurityManager* 
 
     std::string exchId = accCfg["exchId"].GetString();
     std::string strategyId = accCfg["strategyId"].GetString();
-    std::string accountId = accCfg["accountId"].GetString();
+    int accountId = std::stoi(accCfg["accountId"].GetString());
+    std::string accountName = accCfg["accountName"].GetString();
     for (rapidjson::SizeType i = 0; i < accCfg["accounts"].Size(); ++i) {
         rapidjson::Value& account = accCfg["accounts"][i];
 
@@ -122,6 +123,7 @@ BaseTradeClient::BaseTradeClient(rapidjson::Value& accCfg, sm::SecurityManager* 
         acc.exchangeTypeEnum = ExchangeTypeStr2EnumMap[exchId];
         acc.instTypeEnum = InstTypeStr2EnumMap[account["instType"].GetString()];
         acc.accountId = accountId;
+        acc.accountName = accountName;
         acc.strategyId = strategyId;
         acc.apiKey = account["apiKey"].GetString();
         acc.secretKey = account["secretKey"].GetString();
