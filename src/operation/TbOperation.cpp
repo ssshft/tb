@@ -69,7 +69,6 @@ bool TbOperation::preStart(Config* config) {
             std::string strategyId = accountConfig["strategyId"].GetString();
             std::string exchIdAccountKey = crypto::get_tradeclient_key(exchId.c_str(), strategyId.c_str());
 
-            std::cout << exchId << " " << strategyId << " " << exchIdAccountKey << std::endl;
 
             if (crypto::str_cmp(exchId.c_str(), "BINANCE")) {
                BaseTradeClient* trade = new BinanceTradeClient(accountConfig, smc);
