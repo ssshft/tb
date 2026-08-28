@@ -11,13 +11,13 @@ RcmdInnerQueue rcmdInnerQueue;
     rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE; \
     rcmd.body.orderResponse.exchangeTypeEnum = tcmd.body.newOrder.exchangeTypeEnum; \
     rcmd.body.orderResponse.instTypeEnum = tcmd.body.newOrder.instTypeEnum; \
-    strncpy(rcmd.body.orderResponse.accountName, tcmd.body.newOrder.accountName, ACCOUNTID_SIZE); \
-    strncpy(rcmd.body.orderResponse.strategyId, tcmd.body.newOrder.strategyId, STRATEGYID_SIZE); \
-    strncpy(rcmd.body.orderResponse.instId, tcmd.body.newOrder.instId, INSTID_SIZE); \
+    strncpy(rcmd.body.orderResponse.accountName, tcmd.body.newOrder.accountName, 32); \
+    strncpy(rcmd.body.orderResponse.strategyId, tcmd.body.newOrder.strategyId, 32); \
+    strncpy(rcmd.body.orderResponse.instId, tcmd.body.newOrder.instId, 32); \
     rcmd.body.orderResponse.clientOrderId = tcmd.body.newOrder.clientOrderId; \
     const std::string& orderSysId = getOrderSysId(tcmd.body.newOrder.exchangeTypeEnum, tcmd.body.newOrder.strategyId); \
-    strncpy(rcmd.body.orderResponse.orderSysId, orderSysId.c_str(), ORDER_SIZE); \
-    strncpy(rcmd.body.orderResponse.strategyRef, tcmd.body.newOrder.strategyRef, ORDER_SIZE); \
+    strncpy(rcmd.body.orderResponse.orderSysId, orderSysId.c_str(), 64); \
+    strncpy(rcmd.body.orderResponse.strategyRef, tcmd.body.newOrder.strategyRef, 64); \
     rcmd.body.orderResponse.offsetFlag = tcmd.body.newOrder.offsetFlag; \
     rcmd.body.orderResponse.direction = tcmd.body.newOrder.direction; \
     rcmd.body.orderResponse.orderType = tcmd.body.newOrder.orderType; \
@@ -254,47 +254,31 @@ bool om::OrderManager::onOrderUpdate(pubsub::RCommand& rcmd) {
         }
 
         if (rcmd.body.orderResponse.volumeTraded > op.body.orderResponse.volumeTraded) {
+            op.body.orderResponse.tradeDiff = rcmd.body.orderResponse.volumeTraded - op.body.orderResponse.volumeTraded;
+            op.body.orderResponse.fillPrice = 0.0;
+            
+            if (rcmd.body.orderResponse.instTypeEnum == C_SWAP || rcmd.body.orderResponse.instTypeEnum == C_FUTURES) {
+                if (op.body.orderResponse.volumeTraded > ZERO_NUM) {
+                    op.body.orderResponse.fillPrice = op.body.orderResponse.tradeDiff / (rcmd.body.orderResponse.volumeTraded / rcmd.body.orderResponse.tradePrice - op.body.orderResponse.volumeTraded / op.body.orderResponse.tradePrice);
+                }
+                else {
+                    op.body.orderResponse.fillPrice = rcmd.body.orderResponse.tradePrice;
+                }
+            }
+            else {
+                op.body.orderResponse.fillPrice = (rcmd.body.orderResponse.volumeTraded * rcmd.body.orderResponse.tradePrice - op.body.orderResponse.volumeTraded * op.body.orderResponse.tradePrice) / op.body.orderResponse.tradeDiff;
+
+            }
+
             op.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTraded;
             op.body.orderResponse.tradePrice = rcmd.body.orderResponse.tradePrice;
-
-            op.body.orderResponse.tradeDiff = rcmd.body.orderResponse.volumeTraded - op.body.orderResponse.volumeTraded;
-
-            
-            op.body.orderResponse.fillPrice = rcmd.body.orderResponse.fillPrice;
             op.body.orderResponse.updateTime = crypto::getCurrentTime();
-
             volumeIncreased = true;
         }
-
-                    lastTotalPriceOnOrder = totalPriceOnOrder;
-                    lastTotalVolumeOnOrder = totalVolumeOnOrder;
-                    lastTotalAmountOnOrder = lastTotalPriceOnOrder * lastTotalVolumeOnOrder * info.multiple;
-                    totalVolumeOnOrder = tdOrder.totalVolumeOnOrder;
-                    totalPriceOnOrder = -1.0;
-                    if (totalVolumeOnOrder > stra::MIN_FLOAT) {
-                        totalPriceOnOrder = tdOrder.avgPrice;
-                    }
-                    totalAmountOnOrder = totalVolumeOnOrder * totalPriceOnOrder * info.multiple;
-                    lastExecutedVolumeOnOrder = tdOrder.lastExecutedVolumeOnOrder;
-                    lastExecutedPriceOnOrder = tdOrder.lastExecutedPriceOnOrder;
-                    lastExecutedAmountOnOrder = lastExecutedVolumeOnOrder * lastExecutedPriceOnOrder * info.multiple;
-                    tradeVolume = totalVolumeOnOrder - lastTotalVolumeOnOrder;
-		    //LOG_INFO("QuantOrder updateOrder totalVolumeOnOrder:%f lastTotalVolumeOnOrder:%f", totalVolumeOnOrder, lastTotalVolumeOnOrder);
-                    tradeAmount = totalAmountOnOrder - lastTotalAmountOnOrder;
-                    tradePrice = -1.0;
-                    if (tradeVolume > stra::MIN_FLOAT) {
-                        tradePrice = tradeAmount / (tradeVolume * info.multiple);
-                    }
-
-
-
-
-
-
-
-
-
-
+        else { // 如果没有新的成交，本次成交量和成交价设为0
+            op.body.orderResponse.tradeDiff = 0.0;
+            op.body.orderResponse.fillPrice = 0.0;
+        }
 
         if (!crypto::isFinalOrderStatus(op.body.orderResponse.orderStatus)) {
             int oldP = crypto::getOrderStatusPriority(op.body.orderResponse.orderStatus);
