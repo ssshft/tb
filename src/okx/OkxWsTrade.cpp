@@ -157,14 +157,14 @@ void OkxWsTradeUnit::subWebsocekt() {
     cfg.client_ping_text = "ping";   // OKX 用原始文本 "ping" 不是 JSON
     cfg.auto_reconnect = true;
     cfg.idle_timeout_sec = 60;
-    LOG_INFO("TB {} OKX ws {} rest {}", acc.accountId, cfg.url, restHost);
+    LOG_INFO("TB {} OKX ws {} rest {}", acc.accountName, cfg.url, restHost);
     subWebsocketWithConfig(std::move(cfg));
 }
 
 void OkxWsTradeUnit::onOpen() {
     BaseTradeUnit::onOpen();
     wsLoggedIn_.store(false);
-    LOG_INFO("TB {} OKX ws send op:login", acc.accountId);
+    LOG_INFO("TB {} OKX ws send op:login", acc.accountName);
     pWsClient->send_text(buildLoginJson());
 }
 
@@ -260,13 +260,13 @@ void OkxWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /*isBi
             if (event_sv == "login") {
                 if (ef.code_sv == "0") {
                     wsLoggedIn_.store(true);
-                    LOG_INFO("TB {} OKX login OK, will subscribe channels", acc.accountId);
+                    LOG_INFO("TB {} OKX login OK, will subscribe channels", acc.accountName);
                     if (pWsClient) {
                         pWsClient->send_text(buildSubscribeJson());
                     }
                 } else {
                     wsLoggedIn_.store(false);
-                    LOG_ERROR("TB {} OKX login FAILED code={} msg={}", acc.accountId, ef.code_sv, ef.msg_sv);
+                    LOG_ERROR("TB {} OKX login FAILED code={} msg={}", acc.accountName, ef.code_sv, ef.msg_sv);
                 } 
             }
 
@@ -287,7 +287,7 @@ void OkxWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /*isBi
         }
     }
     catch (const std::exception& e) {
-        LOG_ERROR("TB {} OKX ws exc: {}", acc.accountId, e.what());
+        LOG_ERROR("TB {} OKX ws exc: {}", acc.accountName, e.what());
     }
 }
 
@@ -304,7 +304,7 @@ void OkxWsTradeUnit::handleWsApiResponse(WsPending& pending, const OrderResultFi
  
     md::InstrumentInfo info;
     if (!smc->get_instrument_info(rcmd.body.orderResponse.exchangeTypeEnum, rcmd.body.orderResponse.instTypeEnum, rcmd.body.orderResponse.instId, info)) {
-        LOG_ERROR("TB {} exec report smc miss: {}", acc.accountId, rcmd.body.orderResponse.instId);
+        LOG_ERROR("TB {} exec report smc miss: {}", acc.accountName, rcmd.body.orderResponse.instId);
         return;
     }
 
@@ -428,7 +428,7 @@ void OkxWsTradeUnit::handleAccountUpdate(simdjson::ondemand::array& arr) {
                         rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                         rcmd.body.balance.exchangeTypeEnum = OKX;
                         rcmd.body.balance.instTypeEnum = SPOT;
-                        crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
+                        crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
                         crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                         crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(ccy_sv)));
                         rcmd.body.balance.available = crypto::fast_atod(avail_sv);
@@ -447,7 +447,7 @@ void OkxWsTradeUnit::handleAccountUpdate(simdjson::ondemand::array& arr) {
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_TOTAL_ACCOUNT;
         rcmd.body.totalAccount.exchangeTypeEnum = OKX;
         rcmd.body.totalAccount.instTypeEnum = SPOT;
-        crypto::copy_sv_to_char_array(rcmd.body.totalAccount.accountId, acc.accountId);
+        crypto::copy_sv_to_char_array(rcmd.body.totalAccount.accountName, acc.accountName);
         crypto::copy_sv_to_char_array(rcmd.body.totalAccount.strategyId, acc.strategyId);
         rcmd.body.totalAccount.totalEquity = crypto::fast_atod(teq_sv);
         rcmd.body.totalAccount.adjEquity = crypto::fast_atod(aeq_sv);
@@ -545,7 +545,7 @@ void OkxWsTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
         rcmd.body.position.exchangeTypeEnum = OKX;
         rcmd.body.position.instTypeEnum = instType;
-        crypto::copy_sv_to_char_array(rcmd.body.position.accountId, acc.accountId);
+        crypto::copy_sv_to_char_array(rcmd.body.position.accountName, acc.accountName);
         crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
         crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
         rcmd.body.position.direction = positionAmt > 0 ? DT_LONG : DT_SHORT;
@@ -658,7 +658,7 @@ void OkxWsTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
             rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
             rcmd.body.orderResponse.exchangeTypeEnum = OKX;
             rcmd.body.orderResponse.instTypeEnum = instType;
-            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountId, acc.accountId);
+            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountName, acc.accountName);
             crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
             crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
             crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, ordId_sv);
@@ -760,7 +760,7 @@ void OkxWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
 
     asyncRequest(boost::beast::http::verb::get, balanceUrl, "", "", std::move(headers), [this](boost::system::error_code ec, net::HttpResponse resp) {
         if (ec) { 
-            LOG_ERROR("TB {} OKX query_balance ec: {}", acc.accountId, ec.message()); 
+            LOG_ERROR("TB {} OKX query_balance ec: {}", acc.accountName, ec.message()); 
             return; 
         }
 
@@ -839,7 +839,7 @@ void OkxWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                                     rcmd.body.balance.exchangeTypeEnum = OKX;
                                     rcmd.body.balance.instTypeEnum = SPOT;
-                                    crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
+                                    crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
                                     crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                                     crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(ccy_sv)));
                                     rcmd.body.balance.available = crypto::fast_atod(avail_sv);
@@ -863,7 +863,7 @@ void OkxWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_TOTAL_ACCOUNT;
                     rcmd.body.totalAccount.exchangeTypeEnum = OKX;
                     rcmd.body.totalAccount.instTypeEnum = SPOT;
-                    crypto::copy_sv_to_char_array(rcmd.body.totalAccount.accountId, acc.accountId);
+                    crypto::copy_sv_to_char_array(rcmd.body.totalAccount.accountName, acc.accountName);
                     crypto::copy_sv_to_char_array(rcmd.body.totalAccount.strategyId, acc.strategyId);
                     rcmd.body.totalAccount.totalEquity = crypto::fast_atod(teq_sv);
                     rcmd.body.totalAccount.adjEquity = crypto::fast_atod(aeq_sv);
@@ -875,7 +875,7 @@ void OkxWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                 }
             }
         } catch (const std::exception& e) {
-            LOG_ERROR("TB {} OKX query_balance cb exc: {}", acc.accountId, e.what());
+            LOG_ERROR("TB {} OKX query_balance cb exc: {}", acc.accountName, e.what());
         }
     });
 }
@@ -887,7 +887,7 @@ void OkxWsTradeUnit::query_position(const pubsub::TCommand&) {
 
     asyncRequest(boost::beast::http::verb::get, positionUrl, "", "", std::move(headers), [this](boost::system::error_code ec, net::HttpResponse resp) {
         if (ec) { 
-            LOG_ERROR("TB {} OKX query_position ec: {}", acc.accountId, ec.message()); 
+            LOG_ERROR("TB {} OKX query_position ec: {}", acc.accountName, ec.message()); 
             return; 
         }    
         
@@ -984,7 +984,7 @@ void OkxWsTradeUnit::query_position(const pubsub::TCommand&) {
                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
                     rcmd.body.position.exchangeTypeEnum = OKX;
                     rcmd.body.position.instTypeEnum = instType;
-                    crypto::copy_sv_to_char_array(rcmd.body.position.accountId, acc.accountId);
+                    crypto::copy_sv_to_char_array(rcmd.body.position.accountName, acc.accountName);
                     crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
                     crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
                     rcmd.body.position.direction = positionAmt > 0 ? DT_LONG : DT_SHORT;
@@ -1006,7 +1006,7 @@ void OkxWsTradeUnit::query_position(const pubsub::TCommand&) {
                 }
             }
         } catch (const std::exception& e) {
-            LOG_ERROR("TB {} OKX query_position cb exc: {}", acc.accountId, e.what());
+            LOG_ERROR("TB {} OKX query_position cb exc: {}", acc.accountName, e.what());
         }
     });
 }
@@ -1019,7 +1019,7 @@ void OkxWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
 
     md::InstrumentInfo info;
     if (!smc->get_instrument_info(tcmd.body.queryOrder.exchangeTypeEnum, tcmd.body.queryOrder.instTypeEnum, tcmd.body.queryOrder.instId, info)) {
-        LOG_INFO("TB {} OKX query_order smc miss: {}", acc.accountId, tcmd.body.queryOrder.instId);
+        LOG_INFO("TB {} OKX query_order smc miss: {}", acc.accountName, tcmd.body.queryOrder.instId);
         return;
     }
 
@@ -1040,11 +1040,11 @@ void OkxWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     std::string sign = crypto::getOkxSignatureRest(acc.secretKey, ts, "GET", fullPath, "");
     std::vector<std::pair<std::string, std::string>> headers = {{"OK-ACCESS-KEY", acc.apiKey}, {"OK-ACCESS-TIMESTAMP", ts}, {"OK-ACCESS-SIGN", sign}, {"OK-ACCESS-PASSPHRASE", acc.password}};
 
-    LOG_INFO("TB {} OKX query_order: {}", acc.accountId, fullPath);
+    LOG_INFO("TB {} OKX query_order: {}", acc.accountName, fullPath);
 
     asyncRequest(boost::beast::http::verb::get, std::move(fullPath), "", "", std::move(headers), [this, rcmd, info](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
         if (ec) {
-            LOG_ERROR("TB {} query_order ec: {}", acc.accountId, ec.message());
+            LOG_ERROR("TB {} query_order ec: {}", acc.accountName, ec.message());
             return;
         }
 
@@ -1167,7 +1167,7 @@ void OkxWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
             PUSH_RCMD(rcmd)
         }
         catch (const std::exception& e) {
-            LOG_ERROR("TB {} OKX query_order cb exc: {}", acc.accountId, e.what());
+            LOG_ERROR("TB {} OKX query_order cb exc: {}", acc.accountName, e.what());
         }
     });
 }
@@ -1254,7 +1254,7 @@ void OkxWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     std::string msg = buildOrderPlaceJson(reqId, tcmd, info, price_str, sz_str, side, ordType);
 
     recordPending(reqId, pubsub::CMD_NEW_ORDER, rcmd);
-    LOG_INFO("TB {} OKX ws op:order id={} msg={}", acc.accountId, reqId, msg);
+    LOG_INFO("TB {} OKX ws op:order id={} msg={}", acc.accountName, reqId, msg);
     pWsClient->send_text(std::move(msg));
 }
 
@@ -1294,6 +1294,6 @@ void OkxWsTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     std::string msg = buildOrderCancelJson(reqId, tcmd, info);
 
     recordPending(reqId, pubsub::CMD_CANCEL_ORDER, rcmd);
-    LOG_INFO("TB {} OKX ws op:cancel-order id={} msg={}", acc.accountId, reqId, msg);
+    LOG_INFO("TB {} OKX ws op:cancel-order id={} msg={}", acc.accountName, reqId, msg);
     pWsClient->send_text(std::move(msg));
 }

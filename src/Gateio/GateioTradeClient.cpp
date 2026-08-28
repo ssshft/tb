@@ -5,7 +5,7 @@ GateioTradeClient::GateioTradeClient(rapidjson::Value& accCfg, sm::SecurityManag
     for (size_t i = 0; i < vAccount.size(); ++i) {
         auto& acc = vAccount[i];        
         if (acc.instTypeEnum == SPOT) {
-            std::cout << "----------spot created-------" << acc.accountId << " " << acc.strategyId << std::endl;
+            std::cout << "----------spot created-------" << acc.accountName << " " << acc.strategyId << std::endl;
             if (acc.apiMode == AM_REST) {
                 spotTradeUnit = new GateioSpotTradeUnit(acc, smc);
             }

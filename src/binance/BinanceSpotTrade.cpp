@@ -54,7 +54,7 @@ std::string BinanceSpotTradeUnit::buildWsSigPayload(std::vector<std::pair<std::s
     return out;
 }
 
-std::string BinanceSpotTradeUnit::buildSubscribeJson(long ts_ms, const std::string& signature) const {
+std::string BinanceSpotTradeUnit::buildSubscribeJson(int64_t ts_ms, const std::string& signature) const {
     // 手拼 JSON, 免拉 rapidjson。 apiKey / signature 需要 JSON 转义 (虽然通常都是 [A-Za-z0-9])。
     return fmt::format(
         R"({{"id":"{}","method":"userDataStream.subscribe.signature",)"
@@ -81,7 +81,7 @@ void BinanceSpotTradeUnit::subWebsocekt() {
     // subscribe 不能塞进 cfg.subscribe_messages —— timestamp 5s 内失效, 重连必 stale。
     // 我们在 onOpen 里当场签发。
 
-    LOG_INFO("TB {} spot ws {} rest {}", acc.accountId, acc.wsUrl, restHost);
+    LOG_INFO("TB {} spot ws {} rest {}", acc.accountName, acc.wsUrl, restHost);
     subWebsocketWithConfig(std::move(cfg));
 }
 
@@ -92,7 +92,7 @@ void BinanceSpotTradeUnit::subWebsocekt() {
 void BinanceSpotTradeUnit::onOpen() {
     BaseTradeUnit::onOpen();  // 更新 isConnected + log
 
-    long ts = crypto::getCurrentTimeMilli();
+    int64_t ts = crypto::getCurrentTimeMilli();
     std::string payload = buildWsSigPayload({
         {"apiKey", acc.apiKey},
         {"recvWindow", "5000"},
@@ -101,7 +101,7 @@ void BinanceSpotTradeUnit::onOpen() {
     std::string signature = crypto::getBinanceSignatureRest(acc.secretKey, payload);
     std::string msg = buildSubscribeJson(ts, signature);
 
-    LOG_INFO("TB {} ws subscribe: {}", acc.accountId, msg);
+    LOG_INFO("TB {} ws subscribe: {}", acc.accountName, msg);
     if (pWsClient) {
         pWsClient->send_text(std::move(msg));
     }
@@ -119,7 +119,7 @@ void BinanceSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
         auto doc = g_parser.iterate(padded);
         if (doc.error()) {
-            LOG_DEBUG("TB {} ws parse err: {}", acc.accountId, simdjson::error_message(doc.error()));
+            LOG_DEBUG("TB {} ws parse err: {}", acc.accountName, simdjson::error_message(doc.error()));
             return;
         }
 
@@ -251,7 +251,7 @@ void BinanceSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                 rcmd.body.balance.exchangeTypeEnum = BINANCE;
                 rcmd.body.balance.instTypeEnum = SPOT;
-                crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
+                crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(a_sv)));
                 rcmd.body.balance.available = crypto::fast_atod(f_sv);
@@ -270,7 +270,7 @@ void BinanceSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
             md::InstrumentInfo info;
             std::string originInstId(s_sv);
             if (!smc->get_instrument_info(BINANCE, SPOT, originInstId.c_str(), info)) {
-                LOG_ERROR("TB {} exec report smc miss: {}", acc.accountId, originInstId);
+                LOG_ERROR("TB {} exec report smc miss: {}", acc.accountName, originInstId);
                 return;
             }
 
@@ -279,7 +279,7 @@ void BinanceSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
             rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
             rcmd.body.orderResponse.exchangeTypeEnum = BINANCE;
             rcmd.body.orderResponse.instTypeEnum = SPOT;
-            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountId, acc.accountId);
+            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountName, acc.accountName);
             crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
             crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
 
@@ -343,7 +343,7 @@ void BinanceSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
      
     }
     catch (const std::exception& e) {
-        LOG_ERROR("TB {} ws msg exception: {}", acc.accountId, e.what());
+        LOG_ERROR("TB {} ws msg exception: {}", acc.accountName, e.what());
     }
 }
 
@@ -362,7 +362,7 @@ void BinanceSpotTradeUnit::query_position(const pubsub::TCommand& tcmd) {
 // ---- GET /api/v3/account?recvWindow=5000&timestamp=...&signature=... ----
 void BinanceSpotTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
     if (!pRestClient) {
-        LOG_ERROR("TB {} query_balance: rest not ready", acc.accountId);
+        LOG_ERROR("TB {} query_balance: rest not ready", acc.accountName);
         return;
     }
     std::vector<std::pair<std::string, std::string>> kvs = {
@@ -373,7 +373,7 @@ void BinanceSpotTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
 
     asyncRequest(boost::beast::http::verb::get, std::move(path), /*body=*/"", /*ct=*/"", [this](boost::system::error_code ec, ::net::HttpResponse resp) {
         if (ec) {
-            LOG_ERROR("TB {} query_balance ec: {}", acc.accountId, ec.message());
+            LOG_ERROR("TB {} query_balance ec: {}", acc.accountName, ec.message());
             return;
         }
         try {
@@ -381,13 +381,13 @@ void BinanceSpotTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
-                LOG_ERROR("TB {} query_balance parse err: {}", acc.accountId, simdjson::error_message(doc.error()));
+                LOG_ERROR("TB {} query_balance parse err: {}", acc.accountName, simdjson::error_message(doc.error()));
                 return;
             }
 
             simdjson::ondemand::array balances;
             if (doc["balances"].get(balances) != simdjson::SUCCESS) {
-                LOG_ERROR("TB {} query_balance no 'balances': {}", acc.accountId, resp.body);
+                LOG_ERROR("TB {} query_balance no 'balances': {}", acc.accountName, resp.body);
                 return;
             }
 
@@ -427,7 +427,7 @@ void BinanceSpotTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                 rcmd.body.balance.exchangeTypeEnum = BINANCE;
                 rcmd.body.balance.instTypeEnum = SPOT;
-                crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
+                crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(a_sv)));
                 rcmd.body.balance.available = crypto::fast_atod(f_sv);
@@ -439,13 +439,13 @@ void BinanceSpotTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
             }
 
             if (pending.empty()) {
-                LOG_INFO("TB {} no balance, push USDT=0", acc.accountId);
+                LOG_INFO("TB {} no balance, push USDT=0", acc.accountName);
                 pubsub::RCommand rcmd;
                 memset(&rcmd, 0, sizeof(pubsub::RCommand));
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                 rcmd.body.balance.exchangeTypeEnum = BINANCE;
                 rcmd.body.balance.instTypeEnum = SPOT;
-                crypto::copy_sv_to_char_array(rcmd.body.balance.accountId,  acc.accountId);
+                crypto::copy_sv_to_char_array(rcmd.body.balance.accountName,  acc.accountName);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.currency,   std::string("USDT"));
                 rcmd.body.balance.updateTime = crypto::getCurrentTime();
@@ -461,7 +461,7 @@ void BinanceSpotTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
             }
         }
         catch (const std::exception& e) {
-            LOG_ERROR("TB {} query_balance exception: {}", acc.accountId, e.what());
+            LOG_ERROR("TB {} query_balance exception: {}", acc.accountName, e.what());
         }
     });
 }
@@ -567,11 +567,11 @@ void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     }
 
     const std::string& path = buildSignedPath(newOrderUrl, kvs);
-    LOG_INFO("TB {} add_new_order: {}", acc.accountId, path);
+    LOG_INFO("TB {} add_new_order: {}", acc.accountName, path);
 
     asyncRequest(boost::beast::http::verb::post, std::move(path), "", "", [this, rcmd, info](boost::system::error_code ec, net::HttpResponse resp) mutable {
         if (ec) {
-            LOG_ERROR("TB {} add_new_order ec: {}", acc.accountId, ec.message());
+            LOG_ERROR("TB {} add_new_order ec: {}", acc.accountName, ec.message());
 
             if (ec == boost::system::errc::no_stream_resources || ec == boost::system::errc::no_buffer_space || ec == boost::system::errc::not_connected) {
                 rcmd.body.orderResponse.orderStatus = OS_REJECTED;
@@ -596,7 +596,7 @@ void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
-                LOG_ERROR("TB {} add_new_order parse err: {}", acc.accountId, resp.body);
+                LOG_ERROR("TB {} add_new_order parse err: {}", acc.accountName, resp.body);
                 rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
                 rcmd.body.orderResponse.errorId = UnknownError;
                 rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
@@ -674,11 +674,13 @@ void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
                     }
                 }
                 rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-                PUSH_RCMD(rcmd)      
+                if (rcmd.body.orderResponse.orderStatus != OS_PARTFILLED && rcmd.body.orderResponse.orderStatus != OS_FILLED) { // 有成交的订单不应推送，已经没有成交均价的字段
+                    PUSH_RCMD(rcmd)  
+                } 
             }
         }
         catch (const std::exception& e) {
-            LOG_ERROR("TB {} add_new_order cb exception: {}", acc.accountId, e.what());
+            LOG_ERROR("TB {} add_new_order cb exception: {}", acc.accountName, e.what());
             rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
             rcmd.body.orderResponse.errorId = NetworkError;
             crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, std::string_view(e.what()));
@@ -721,7 +723,7 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     } else if (!crypto::str_cmp(tcmd.body.cancelOrder.orderSysId, "")) {
         kvs.emplace_back("origClientOrderId", tcmd.body.cancelOrder.orderSysId);
     } else {
-        LOG_ERROR("TB {} cancel_order need orderId or orderSysId", acc.accountId);
+        LOG_ERROR("TB {} cancel_order need orderId or orderSysId", acc.accountName);
         rcmd.body.orderResponse.orderStatus = OS_FAILED;
         rcmd.body.orderResponse.errorId = OrderIdError;
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, std::string_view("need orderId or clientOrderId"));
@@ -731,11 +733,11 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     }
 
     const std::string& path = buildSignedPath(cancelOrderUrl, kvs);
-    LOG_INFO("TB {} cancel_order: {}", acc.accountId, path);
+    LOG_INFO("TB {} cancel_order: {}", acc.accountName, path);
 
     asyncRequest(boost::beast::http::verb::delete_, std::move(path), "", "", [this, rcmd, info](boost::system::error_code ec, net::HttpResponse resp) mutable {
         if (ec) {
-            LOG_ERROR("TB {} cancel_order ec: {}", acc.accountId, ec.message());
+            LOG_ERROR("TB {} cancel_order ec: {}", acc.accountName, ec.message());
             rcmd.body.orderResponse.orderStatus = OS_FAILED;
             rcmd.body.orderResponse.errorId = NetworkError;
             crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, ec.message());
@@ -748,7 +750,7 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
-                LOG_ERROR("TB {} cancel_order parse err: {}", acc.accountId, resp.body);
+                LOG_ERROR("TB {} cancel_order parse err: {}", acc.accountName, resp.body);
                 return;
             }
 
@@ -809,7 +811,7 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
             }
         }
         catch (const std::exception& e) {
-            LOG_ERROR("TB {} cancel_order cb exception: {}", acc.accountId, e.what());
+            LOG_ERROR("TB {} cancel_order cb exception: {}", acc.accountName, e.what());
         }
     });
 }
@@ -821,7 +823,7 @@ void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
 
     md::InstrumentInfo info;
     if (!smc->get_instrument_info(tcmd.body.queryOrder.exchangeTypeEnum, tcmd.body.queryOrder.instTypeEnum, tcmd.body.queryOrder.instId, info)) {
-        LOG_INFO("TB {} query_order smc miss: {}", acc.accountId, tcmd.body.queryOrder.instId);
+        LOG_INFO("TB {} query_order smc miss: {}", acc.accountName, tcmd.body.queryOrder.instId);
         return;
     }
 
@@ -836,16 +838,16 @@ void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     } else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
         kvs.emplace_back("origClientOrderId", tcmd.body.queryOrder.orderSysId);
     } else {
-        LOG_ERROR("TB {} query_order need orderId or orderSysId, {}", acc.accountId, tcmd.body.queryOrder.instId);
+        LOG_ERROR("TB {} query_order need orderId or orderSysId, {}", acc.accountName, tcmd.body.queryOrder.instId);
         return;
     }
 
     const std::string& path = buildSignedPath(queryOrderUrl, kvs);
-    LOG_INFO("TB {} query_order: {}", acc.accountId, path);
+    LOG_INFO("TB {} query_order: {}", acc.accountName, path);
 
     asyncRequest(boost::beast::http::verb::get, std::move(path), "", "", [this, rcmd, info](boost::system::error_code ec, net::HttpResponse resp) mutable {
         if (ec) {
-            LOG_ERROR("TB {} query_order ec: {}", acc.accountId, ec.message());
+            LOG_ERROR("TB {} query_order ec: {}", acc.accountName, ec.message());
             return;
         }
         try {
@@ -853,7 +855,7 @@ void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
-                LOG_ERROR("TB {} query_order parse err: {}", acc.accountId, resp.body);
+                LOG_ERROR("TB {} query_order parse err: {}", acc.accountName, resp.body);
                 return;
             }
 
@@ -897,7 +899,7 @@ void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
             }
 
             if (has_code) {
-                long now = crypto::getCurrentTime();
+                int64_t now = crypto::getCurrentTime();
                 if (rcmd.body.orderResponse.clientOrderId > 0 && now - rcmd.body.orderResponse.clientOrderId > ORDER_REJECTED_TIME_OUT) {
                     rcmd.body.orderResponse.orderStatus = OS_REJECTED;
                     rcmd.body.orderResponse.errorId = crypto::get_binance_errorid(static_cast<int>(code));
@@ -935,7 +937,7 @@ void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
             }
         }
         catch (const std::exception& e) {
-            LOG_ERROR("TB {} query_order cb exception: {}", acc.accountId, e.what());
+            LOG_ERROR("TB {} query_order cb exception: {}", acc.accountName, e.what());
         }
     });
 }

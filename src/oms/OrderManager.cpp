@@ -11,7 +11,7 @@ RcmdInnerQueue rcmdInnerQueue;
     rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE; \
     rcmd.body.orderResponse.exchangeTypeEnum = tcmd.body.newOrder.exchangeTypeEnum; \
     rcmd.body.orderResponse.instTypeEnum = tcmd.body.newOrder.instTypeEnum; \
-    strncpy(rcmd.body.orderResponse.accountId, tcmd.body.newOrder.accountId, ACCOUNTID_SIZE); \
+    strncpy(rcmd.body.orderResponse.accountName, tcmd.body.newOrder.accountName, ACCOUNTID_SIZE); \
     strncpy(rcmd.body.orderResponse.strategyId, tcmd.body.newOrder.strategyId, STRATEGYID_SIZE); \
     strncpy(rcmd.body.orderResponse.instId, tcmd.body.newOrder.instId, INSTID_SIZE); \
     rcmd.body.orderResponse.clientOrderId = tcmd.body.newOrder.clientOrderId; \
@@ -97,7 +97,7 @@ bool om::OrderManager::processTcmd(pubsub::TCommand& tcmd) {
                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
                     rcmd.body.orderResponse.exchangeTypeEnum = tcmd.body.cancelOrder.exchangeTypeEnum;
                     rcmd.body.orderResponse.instTypeEnum = tcmd.body.cancelOrder.instTypeEnum;
-                    strncpy(rcmd.body.orderResponse.accountId, tcmd.body.cancelOrder.accountId, ACCOUNTID_SIZE);
+                    strncpy(rcmd.body.orderResponse.accountName, tcmd.body.cancelOrder.accountName, ACCOUNTID_SIZE);
                     strncpy(rcmd.body.orderResponse.strategyId, tcmd.body.cancelOrder.strategyId, STRATEGYID_SIZE);
                     strncpy(rcmd.body.orderResponse.instId, tcmd.body.cancelOrder.instId, INSTID_SIZE);
                     rcmd.body.orderResponse.clientOrderId = tcmd.body.cancelOrder.clientOrderId;
@@ -117,7 +117,7 @@ bool om::OrderManager::processTcmd(pubsub::TCommand& tcmd) {
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
                 rcmd.body.orderResponse.exchangeTypeEnum = tcmd.body.cancelOrder.exchangeTypeEnum;
                 rcmd.body.orderResponse.instTypeEnum = tcmd.body.cancelOrder.instTypeEnum;
-                strncpy(rcmd.body.orderResponse.accountId, tcmd.body.cancelOrder.accountId, ACCOUNTID_SIZE);
+                strncpy(rcmd.body.orderResponse.accountName, tcmd.body.cancelOrder.accountName, ACCOUNTID_SIZE);
                 strncpy(rcmd.body.orderResponse.strategyId, tcmd.body.cancelOrder.strategyId, STRATEGYID_SIZE);
                 strncpy(rcmd.body.orderResponse.instId, tcmd.body.cancelOrder.instId, INSTID_SIZE);
                 rcmd.body.orderResponse.clientOrderId = tcmd.body.cancelOrder.clientOrderId;
@@ -164,7 +164,7 @@ bool om::OrderManager::processTcmd(pubsub::TCommand& tcmd) {
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
                 rcmd.body.orderResponse.exchangeTypeEnum = tcmd.body.queryOrder.exchangeTypeEnum;
                 rcmd.body.orderResponse.instTypeEnum = tcmd.body.queryOrder.instTypeEnum;
-                strncpy(rcmd.body.orderResponse.accountId, tcmd.body.queryOrder.accountId, ACCOUNTID_SIZE);
+                strncpy(rcmd.body.orderResponse.accountName, tcmd.body.queryOrder.accountName, ACCOUNTID_SIZE);
                 strncpy(rcmd.body.orderResponse.strategyId, tcmd.body.queryOrder.strategyId, STRATEGYID_SIZE);
                 strncpy(rcmd.body.orderResponse.instId, tcmd.body.queryOrder.instId, INSTID_SIZE);
                 rcmd.body.orderResponse.clientOrderId = tcmd.body.queryOrder.clientOrderId;
@@ -245,13 +245,6 @@ bool om::OrderManager::onOrderUpdate(pubsub::RCommand& rcmd) {
             LOG_ERROR("Overfilled order! orderSysId: {} volumeTraded: {} volumeTotal: {}", op.body.orderResponse.orderSysId, rcmd.body.orderResponse.volumeTraded, op.body.orderResponse.volumeTotal);
         }
 
-        // binance得rest有成交得回报不推送(返回字段中去掉了成交均价)
-        if (rcmd.body.orderResponse.orderStatus == OS_PARTFILLED || rcmd.body.orderResponse.orderStatus == OS_FILLED) { 
-            if (rcmd.body.orderResponse.apiSourceEnum == AS_ADD_NEW_ORDER && rcmd.body.orderResponse.exchangeTypeEnum == BINANCE) {
-                return false;
-            }
-        }
-
         if (rcmd.body.orderResponse.orderStatus == OS_CANCELED) {
             if (rcmd.body.orderResponse.apiSourceEnum == AS_CANCEL_ORDER && rcmd.body.orderResponse.exchangeTypeEnum == BINANCE) {
                 if (op.body.orderResponse.volumeTraded < rcmd.body.orderResponse.volumeTraded) {
@@ -261,14 +254,47 @@ bool om::OrderManager::onOrderUpdate(pubsub::RCommand& rcmd) {
         }
 
         if (rcmd.body.orderResponse.volumeTraded > op.body.orderResponse.volumeTraded) {
-            op.body.orderResponse.tradeDiff = rcmd.body.orderResponse.volumeTraded - op.body.orderResponse.volumeTraded;
             op.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTraded;
             op.body.orderResponse.tradePrice = rcmd.body.orderResponse.tradePrice;
+
+            op.body.orderResponse.tradeDiff = rcmd.body.orderResponse.volumeTraded - op.body.orderResponse.volumeTraded;
+
+            
             op.body.orderResponse.fillPrice = rcmd.body.orderResponse.fillPrice;
             op.body.orderResponse.updateTime = crypto::getCurrentTime();
 
             volumeIncreased = true;
         }
+
+                    lastTotalPriceOnOrder = totalPriceOnOrder;
+                    lastTotalVolumeOnOrder = totalVolumeOnOrder;
+                    lastTotalAmountOnOrder = lastTotalPriceOnOrder * lastTotalVolumeOnOrder * info.multiple;
+                    totalVolumeOnOrder = tdOrder.totalVolumeOnOrder;
+                    totalPriceOnOrder = -1.0;
+                    if (totalVolumeOnOrder > stra::MIN_FLOAT) {
+                        totalPriceOnOrder = tdOrder.avgPrice;
+                    }
+                    totalAmountOnOrder = totalVolumeOnOrder * totalPriceOnOrder * info.multiple;
+                    lastExecutedVolumeOnOrder = tdOrder.lastExecutedVolumeOnOrder;
+                    lastExecutedPriceOnOrder = tdOrder.lastExecutedPriceOnOrder;
+                    lastExecutedAmountOnOrder = lastExecutedVolumeOnOrder * lastExecutedPriceOnOrder * info.multiple;
+                    tradeVolume = totalVolumeOnOrder - lastTotalVolumeOnOrder;
+		    //LOG_INFO("QuantOrder updateOrder totalVolumeOnOrder:%f lastTotalVolumeOnOrder:%f", totalVolumeOnOrder, lastTotalVolumeOnOrder);
+                    tradeAmount = totalAmountOnOrder - lastTotalAmountOnOrder;
+                    tradePrice = -1.0;
+                    if (tradeVolume > stra::MIN_FLOAT) {
+                        tradePrice = tradeAmount / (tradeVolume * info.multiple);
+                    }
+
+
+
+
+
+
+
+
+
+
 
         if (!crypto::isFinalOrderStatus(op.body.orderResponse.orderStatus)) {
             int oldP = crypto::getOrderStatusPriority(op.body.orderResponse.orderStatus);
@@ -308,6 +334,9 @@ bool om::OrderManager::onOrderUpdate(pubsub::RCommand& rcmd) {
         op.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
         memcpy(&rcmd, &op, sizeof(pubsub::RCommand));
         return true;
+    }
+    else { // 没有缓存的报单是否应该推给策略，比如adl类型的订单
+
     }
     return false;
 }

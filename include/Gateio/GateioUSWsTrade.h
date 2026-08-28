@@ -46,7 +46,7 @@ private:
     static constexpr int kBalancesSubId = 3;
     static constexpr int kPositionsSubId = 4;
 
-    std::string buildLoginJson(long ts) const;
+    std::string buildLoginJson(int64_t ts) const;
     std::string buildSubscribeJson(int reqId, const char* channel) const;
     std::string buildOrderPlaceJson(int reqId, const pubsub::TCommand& tcmd,
                                      const md::InstrumentInfo& info,

@@ -6,9 +6,9 @@
 
 BinanceSpotWsTradeUnit::BinanceSpotWsTradeUnit(AccountCfg& a, sm::SecurityManager* s) : BaseTradeUnit(a, s) {
     if (!signer_.init_from_pem(acc.secretKey)) {
-        LOG_ERROR("TB {} Ed25519 PEM init FAILED. All orders will be rejected.", acc.accountId);
+        LOG_ERROR("TB {} Ed25519 PEM init FAILED. All orders will be rejected.", acc.accountName);
     } else {
-        LOG_INFO("TB {} Ed25519 signer ready.", acc.accountId);
+        LOG_INFO("TB {} Ed25519 signer ready.", acc.accountName);
     }
 }
 
@@ -48,7 +48,7 @@ std::string BinanceSpotWsTradeUnit::buildRestSignedPath(std::string_view basePat
 // WS JSON builders
 // ============================================================================
 std::string BinanceSpotWsTradeUnit::buildLogonJson() {
-    long ts = crypto::getCurrentTimeMilli();
+    int64_t ts = crypto::getCurrentTimeMilli();
     // Ed25519 payload: 字母序 → "apiKey=X&timestamp=T"
     std::string payload = fmt::format("apiKey={}&timestamp={}", acc.apiKey, ts);
     std::string sig = signer_.sign_base64(payload);   // 放 JSON body, 不 URL-encode
@@ -188,7 +188,7 @@ void BinanceSpotWsTradeUnit::subWebsocekt() {
     cfg.ping_mode = net::WsConfig::PingMode::ServerOnly;
     cfg.auto_reconnect = true;
     cfg.idle_timeout_sec = 60;
-    LOG_INFO("TB {} spot ws-api {} rest {}", acc.accountId, cfg.url, restHost);
+    LOG_INFO("TB {} spot ws-api {} rest {}", acc.accountName, cfg.url, restHost);
     subWebsocketWithConfig(std::move(cfg));
 }
 
@@ -201,11 +201,11 @@ void BinanceSpotWsTradeUnit::onOpen() {
     wsLoggedIn_.store(false);
 
     if (!signer_.valid() || !pWsClient) {
-        LOG_ERROR("TB {} onOpen: signer invalid or pWsClient null, cannot logon", acc.accountId);
+        LOG_ERROR("TB {} onOpen: signer invalid or pWsClient null, cannot logon", acc.accountName);
         return;
     }
     std::string logon = buildLogonJson();
-    LOG_INFO("TB {} spot ws send session.logon", acc.accountId);
+    LOG_INFO("TB {} spot ws send session.logon", acc.accountName);
     pWsClient->send_text(std::move(logon));
 }
 
@@ -273,7 +273,7 @@ void BinanceSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, boo
             if (id == kSessionLogonId) {
                 if (status == 200) {
                     wsLoggedIn_.store(true);
-                    LOG_INFO("TB {} spot session.logon OK, will subscribe userDataStream", acc.accountId);
+                    LOG_INFO("TB {} spot session.logon OK, will subscribe userDataStream", acc.accountName);
                     if (pWsClient) {
                         pWsClient->send_text(buildUserSubscribeJson());
                     }
@@ -282,15 +282,15 @@ void BinanceSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, boo
                     if (has_error) {
                         std::string_view msg_sv;
                         error["msg"].get(msg_sv);
-                        LOG_ERROR("TB {} spot session.logon FAILED status={} msg={}", acc.accountId, status, msg_sv);
+                        LOG_ERROR("TB {} spot session.logon FAILED status={} msg={}", acc.accountName, status, msg_sv);
                     }
                 }
             }
             else if (id == kUserStreamSubId) {
                 if (status == 200) {
-                    LOG_INFO("TB {} spot userDataStream.subscribe OK", acc.accountId);
+                    LOG_INFO("TB {} spot userDataStream.subscribe OK", acc.accountName);
                 } else {
-                    LOG_ERROR("TB {} spot userDataStream.subscribe FAILED status={}", acc.accountId, status);
+                    LOG_ERROR("TB {} spot userDataStream.subscribe FAILED status={}", acc.accountName, status);
                 }
             }
             else {
@@ -312,7 +312,7 @@ void BinanceSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, boo
             handleUserDataEvent(ev);
         }
     } catch (const std::exception& e) {
-        LOG_ERROR("TB {} ws msg exc: {}", acc.accountId, e.what());
+        LOG_ERROR("TB {} ws msg exc: {}", acc.accountName, e.what());
     }
 }
 
@@ -330,7 +330,7 @@ void BinanceSpotWsTradeUnit::handleWsApiResponse(WsPending& pending, simdjson::o
  
     md::InstrumentInfo info;
     if (!smc->get_instrument_info(rcmd.body.orderResponse.exchangeTypeEnum, rcmd.body.orderResponse.instTypeEnum, rcmd.body.orderResponse.instId, info)) {
-        LOG_ERROR("TB {} exec report smc miss: {}", acc.accountId, rcmd.body.orderResponse.instId);
+        LOG_ERROR("TB {} exec report smc miss: {}", acc.accountName, rcmd.body.orderResponse.instId);
         return;
     }
 
@@ -535,7 +535,7 @@ void BinanceSpotWsTradeUnit::handleUserDataEvent(simdjson::ondemand::object& ev)
             rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
             rcmd.body.balance.exchangeTypeEnum = BINANCE;
             rcmd.body.balance.instTypeEnum = SPOT;
-            crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
+            crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
             crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
             crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(a_sv)));
             rcmd.body.balance.available = crypto::fast_atod(f_sv);
@@ -555,7 +555,7 @@ void BinanceSpotWsTradeUnit::handleUserDataEvent(simdjson::ondemand::object& ev)
         md::InstrumentInfo info;
         std::string originInstId(s_sv);
         if (!smc->get_instrument_info(BINANCE, SPOT, originInstId.c_str(), info)) {
-            LOG_ERROR("TB {} exec report smc miss: {}", acc.accountId, originInstId);
+            LOG_ERROR("TB {} exec report smc miss: {}", acc.accountName, originInstId);
             return;
         }
 
@@ -564,7 +564,7 @@ void BinanceSpotWsTradeUnit::handleUserDataEvent(simdjson::ondemand::object& ev)
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
         rcmd.body.orderResponse.exchangeTypeEnum = BINANCE;
         rcmd.body.orderResponse.instTypeEnum = SPOT;
-        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountId, acc.accountId);
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountName, acc.accountName);
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
 
@@ -645,7 +645,7 @@ void BinanceSpotWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
     std::string path = buildRestSignedPath(balanceUrl, kvs);
     asyncRequest(boost::beast::http::verb::get, std::move(path), "", "", [this](boost::system::error_code ec, net::HttpResponse resp) {
         if (ec) {
-            LOG_ERROR("TB {} query_balance ec: {}", acc.accountId, ec.message());
+            LOG_ERROR("TB {} query_balance ec: {}", acc.accountName, ec.message());
             return;
         }
         try {
@@ -653,13 +653,13 @@ void BinanceSpotWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
-                LOG_ERROR("TB {} query_balance parse err: {}", acc.accountId, simdjson::error_message(doc.error()));
+                LOG_ERROR("TB {} query_balance parse err: {}", acc.accountName, simdjson::error_message(doc.error()));
                 return;
             }
 
             simdjson::ondemand::array balances;
             if (doc["balances"].get(balances) != simdjson::SUCCESS) {
-                LOG_ERROR("TB {} query_balance no 'balances': {}", acc.accountId, resp.body);
+                LOG_ERROR("TB {} query_balance no 'balances': {}", acc.accountName, resp.body);
                 return;
             }
 
@@ -699,7 +699,7 @@ void BinanceSpotWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                 rcmd.body.balance.exchangeTypeEnum = BINANCE;
                 rcmd.body.balance.instTypeEnum = SPOT;
-                crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
+                crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(a_sv)));
                 rcmd.body.balance.available = crypto::fast_atod(f_sv);
@@ -711,13 +711,13 @@ void BinanceSpotWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
             }
 
             if (pending.empty()) {
-                LOG_INFO("TB {} no balance, push USDT=0", acc.accountId);
+                LOG_INFO("TB {} no balance, push USDT=0", acc.accountName);
                 pubsub::RCommand rcmd;
                 memset(&rcmd, 0, sizeof(pubsub::RCommand));
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                 rcmd.body.balance.exchangeTypeEnum = BINANCE;
                 rcmd.body.balance.instTypeEnum = SPOT;
-                crypto::copy_sv_to_char_array(rcmd.body.balance.accountId,  acc.accountId);
+                crypto::copy_sv_to_char_array(rcmd.body.balance.accountName,  acc.accountName);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.currency,   std::string("USDT"));
                 rcmd.body.balance.updateTime = crypto::getCurrentTime();
@@ -733,7 +733,7 @@ void BinanceSpotWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
             }
         }
         catch (const std::exception& e) {
-            LOG_ERROR("TB {} query_balance exception: {}", acc.accountId, e.what());
+            LOG_ERROR("TB {} query_balance exception: {}", acc.accountName, e.what());
         }
     });
 }
@@ -743,7 +743,7 @@ void BinanceSpotWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
 
     md::InstrumentInfo info;
     if (!smc->get_instrument_info(tcmd.body.queryOrder.exchangeTypeEnum, tcmd.body.queryOrder.instTypeEnum, tcmd.body.queryOrder.instId, info)) {
-        LOG_INFO("TB {} query_order smc miss: {}", acc.accountId, tcmd.body.queryOrder.instId);
+        LOG_INFO("TB {} query_order smc miss: {}", acc.accountName, tcmd.body.queryOrder.instId);
         return;
     }
     std::vector<std::pair<std::string, std::string>> kvs;
@@ -762,7 +762,7 @@ void BinanceSpotWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     asyncRequest(boost::beast::http::verb::get, std::move(path), "", "",
         [this, rcmd, info](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
             if (ec) {
-                LOG_ERROR("TB {} query_order ec: {}", acc.accountId, ec.message());
+                LOG_ERROR("TB {} query_order ec: {}", acc.accountName, ec.message());
                 return;
             }
             try {
@@ -770,7 +770,7 @@ void BinanceSpotWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
                 simdjson::padded_string padded(resp.body);
                 auto doc = g_parser.iterate(padded);
                 if (doc.error()) {
-                    LOG_ERROR("TB {} query_order parse err: {}", acc.accountId, resp.body);
+                    LOG_ERROR("TB {} query_order parse err: {}", acc.accountName, resp.body);
                     return;
                 }
 
@@ -814,7 +814,7 @@ void BinanceSpotWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
                 }
 
                 if (has_code) {
-                    long now = crypto::getCurrentTime();
+                    int64_t now = crypto::getCurrentTime();
                     if (rcmd.body.orderResponse.clientOrderId > 0 && now - rcmd.body.orderResponse.clientOrderId > ORDER_REJECTED_TIME_OUT) {
                         rcmd.body.orderResponse.orderStatus = OS_REJECTED;
                         rcmd.body.orderResponse.errorId = crypto::get_binance_errorid(static_cast<int>(code));
@@ -852,7 +852,7 @@ void BinanceSpotWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
                 }
             }
             catch (const std::exception& e) {
-                LOG_ERROR("TB {} query_order cb exception: {}", acc.accountId, e.what());
+                LOG_ERROR("TB {} query_order cb exception: {}", acc.accountName, e.what());
             }
         });
 }
@@ -952,7 +952,7 @@ void BinanceSpotWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
 
     // 先记 pending, 再发 msg —— 反过来的话回执可能先到达 lookup miss
     recordPending(wsId, pubsub::CMD_NEW_ORDER, rcmd);
-    LOG_INFO("TB {} spot ws order.place id={} msg={}", acc.accountId, wsId, msg);
+    LOG_INFO("TB {} spot ws order.place id={} msg={}", acc.accountName, wsId, msg);
     pWsClient->send_text(std::move(msg));
 }
 
@@ -992,6 +992,6 @@ void BinanceSpotWsTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     std::string msg = buildOrderCancelJson(wsId, tcmd, info);
 
     recordPending(wsId, pubsub::CMD_CANCEL_ORDER, rcmd);
-    LOG_INFO("TB {} spot ws order.cancel id={} msg={}", acc.accountId, wsId, msg);
+    LOG_INFO("TB {} spot ws order.cancel id={} msg={}", acc.accountName, wsId, msg);
     pWsClient->send_text(std::move(msg));
 }

@@ -28,7 +28,7 @@ void GateioUSTradeUnit::subWebsocekt() {
     cfg.auto_reconnect = true;
     cfg.idle_timeout_sec = 60;
 
-    LOG_INFO("TB {} Gate US ws {} rest {}", acc.accountId, cfg.url, restHost);
+    LOG_INFO("TB {} Gate US ws {} rest {}", acc.accountName, cfg.url, restHost);
     subWebsocketWithConfig(std::move(cfg));
 }
 
@@ -47,7 +47,7 @@ void GateioUSTradeUnit::onOpen() {
 
 // ---- subscribe JSON builders ----
 std::string GateioUSTradeUnit::buildOrdersSubscribeJson() const {
-    long ts = crypto::getCurrentTimeSeconds();
+    int64_t ts = crypto::getCurrentTimeSeconds();
     std::string time_str = std::to_string(ts);
     std::string channel = "futures.orders";
     std::string sign = crypto::getGateioSignatureWs(channel, "subscribe", time_str, acc.secretKey);
@@ -59,7 +59,7 @@ std::string GateioUSTradeUnit::buildOrdersSubscribeJson() const {
 }
 
 std::string GateioUSTradeUnit::buildBalancesSubscribeJson() const {
-    long ts = crypto::getCurrentTimeSeconds();
+    int64_t ts = crypto::getCurrentTimeSeconds();
     std::string time_str = std::to_string(ts);
     std::string channel = "futures.balances";
     std::string sign = crypto::getGateioSignatureWs(channel, "subscribe", time_str, acc.secretKey);
@@ -71,7 +71,7 @@ std::string GateioUSTradeUnit::buildBalancesSubscribeJson() const {
 }
 
 std::string GateioUSTradeUnit::buildPositionsSubscribeJson() const {
-    long ts = crypto::getCurrentTimeSeconds();
+    int64_t ts = crypto::getCurrentTimeSeconds();
     std::string time_str = std::to_string(ts);
     std::string channel = "futures.positions";
     std::string sign = crypto::getGateioSignatureWs(channel, "subscribe", time_str, acc.secretKey);
@@ -143,7 +143,7 @@ void GateioUSTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, in
         }
     }
     catch (const std::exception& e) {
-        LOG_ERROR("TB {} Gate spot ws exc: {}", acc.accountId, e.what());
+        LOG_ERROR("TB {} Gate spot ws exc: {}", acc.accountName, e.what());
     }
 }
 
@@ -208,7 +208,7 @@ void GateioUSTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
         std::string originInstId(contract_sv);
         md::InstrumentInfo info;
         if (!smc->get_instrument_info(GATEIO, USDT_SWAP, originInstId.c_str(), info)) { 
-            LOG_ERROR("TB {} not found GATEIO.USDT_SWAP.{} smc info", acc.accountId, originInstId);
+            LOG_ERROR("TB {} not found GATEIO.USDT_SWAP.{} smc info", acc.accountName, originInstId);
             continue;
         }
 
@@ -217,7 +217,7 @@ void GateioUSTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
         rcmd.body.orderResponse.exchangeTypeEnum = GATEIO;
         rcmd.body.orderResponse.instTypeEnum = USDT_SWAP;
-        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountId, acc.accountId);
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountName, acc.accountName);
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
         fmt::format_to(rcmd.body.orderResponse.orderId, "{}", id);
@@ -311,7 +311,7 @@ void GateioUSTradeUnit::handleBalancesUpdate(simdjson::ondemand::array& arr) {
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
         rcmd.body.balance.exchangeTypeEnum = GATEIO;
         rcmd.body.balance.instTypeEnum = USDT_SWAP;
-        crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
+        crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
         crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
         crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(cur_sv)));
         rcmd.body.balance.total = bal;
@@ -379,7 +379,7 @@ void GateioUSTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
         rcmd.body.position.exchangeTypeEnum = GATEIO;
         rcmd.body.position.instTypeEnum = USDT_SWAP;
-        crypto::copy_sv_to_char_array(rcmd.body.position.accountId, acc.accountId);
+        crypto::copy_sv_to_char_array(rcmd.body.position.accountName, acc.accountName);
         crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
         crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
         rcmd.body.position.direction = size >= 0 ? DT_LONG : DT_SHORT;
@@ -432,7 +432,7 @@ void GateioUSTradeUnit::query_balance(const pubsub::TCommand&) {
 
     asyncRequest(boost::beast::http::verb::get, balanceUrl, "", "application/json", std::move(headers), [this](boost::system::error_code ec, ::net::HttpResponse resp) {
         if (ec) { 
-            LOG_ERROR("TB {} Gate US query_balance ec: {}", acc.accountId, ec.message()); 
+            LOG_ERROR("TB {} Gate US query_balance ec: {}", acc.accountName, ec.message()); 
             return; 
         }
 
@@ -440,7 +440,7 @@ void GateioUSTradeUnit::query_balance(const pubsub::TCommand&) {
            simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
-                LOG_ERROR("TB {} query_order parse err: {}", acc.accountId, resp.body);
+                LOG_ERROR("TB {} query_order parse err: {}", acc.accountName, resp.body);
                 return;
             }
 
@@ -476,7 +476,7 @@ void GateioUSTradeUnit::query_balance(const pubsub::TCommand&) {
             rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
             rcmd.body.balance.exchangeTypeEnum = GATEIO;
             rcmd.body.balance.instTypeEnum = USDT_SWAP;
-            crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
+            crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
             crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
             crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(cur_sv)));
             rcmd.body.balance.available = crypto::fast_atod(avail_sv);
@@ -492,7 +492,7 @@ void GateioUSTradeUnit::query_balance(const pubsub::TCommand&) {
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                 rcmd.body.balance.exchangeTypeEnum = GATEIO;
                 rcmd.body.balance.instTypeEnum = USDT_SWAP;
-                crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
+                crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.currency, std::string("USDT"));
                 rcmd.body.balance.updateTime = crypto::getCurrentTime();
@@ -507,7 +507,7 @@ void GateioUSTradeUnit::query_balance(const pubsub::TCommand&) {
             }
         }
         catch (const std::exception& e) {
-            LOG_ERROR("TB {} Gate US query_balance cb exc: {}", acc.accountId, e.what());
+            LOG_ERROR("TB {} Gate US query_balance cb exc: {}", acc.accountName, e.what());
         }
     });
 }
@@ -523,7 +523,7 @@ void GateioUSTradeUnit::query_position(const pubsub::TCommand&) {
 
     asyncRequest(boost::beast::http::verb::get, positionUrl, "", "application/json", std::move(headers), [this](boost::system::error_code ec, ::net::HttpResponse resp) {
         if (ec) { 
-            LOG_ERROR("TB {} Gate US query_position ec: {}", acc.accountId, ec.message()); 
+            LOG_ERROR("TB {} Gate US query_position ec: {}", acc.accountName, ec.message()); 
             return; 
         }
 
@@ -595,7 +595,7 @@ void GateioUSTradeUnit::query_position(const pubsub::TCommand&) {
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
                 rcmd.body.position.exchangeTypeEnum = GATEIO;
                 rcmd.body.position.instTypeEnum = USDT_SWAP;
-                crypto::copy_sv_to_char_array(rcmd.body.position.accountId, acc.accountId);
+                crypto::copy_sv_to_char_array(rcmd.body.position.accountName, acc.accountName);
                 crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
                 rcmd.body.position.direction = size >= 0 ? DT_LONG : DT_SHORT;
@@ -635,7 +635,7 @@ void GateioUSTradeUnit::query_position(const pubsub::TCommand&) {
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
                 rcmd.body.position.exchangeTypeEnum = GATEIO;
                 rcmd.body.position.instTypeEnum = USDT_SWAP;
-                crypto::copy_sv_to_char_array(rcmd.body.position.accountId, acc.accountId);
+                crypto::copy_sv_to_char_array(rcmd.body.position.accountName, acc.accountName);
                 crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view("BTC-USDT"));
                 rcmd.body.position.updateTime = crypto::getCurrentTime();
@@ -650,7 +650,7 @@ void GateioUSTradeUnit::query_position(const pubsub::TCommand&) {
             }
         }
         catch (const std::exception& e) {
-            LOG_ERROR("TB {} Gate US query_position cb exc: {}", acc.accountId, e.what());
+            LOG_ERROR("TB {} Gate US query_position cb exc: {}", acc.accountName, e.what());
         }
     });
 }
@@ -755,7 +755,7 @@ void GateioUSTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     std::string sign = crypto::getGateioSignatureRest("POST", newOrderUrl, time_str, "", body, acc.secretKey);
     std::vector<std::pair<std::string, std::string>> headers = {{"KEY", acc.apiKey}, {"Timestamp", time_str}, {"SIGN", sign}};
 
-    LOG_INFO("TB {} Gate US add_new_order body={}", acc.accountId, body);
+    LOG_INFO("TB {} Gate US add_new_order body={}", acc.accountName, body);
 
     asyncRequest(boost::beast::http::verb::post, newOrderUrl, std::move(body), "application/json", std::move(headers), [this, rcmd, info](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
         std::cout << "add new order: " << resp.body << std::endl;
@@ -864,7 +864,7 @@ void GateioUSTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             }
         }
         catch (const std::exception& e) {
-            LOG_ERROR("TB {} Gate US add_new_order cb exc: {}", acc.accountId, e.what());
+            LOG_ERROR("TB {} Gate US add_new_order cb exc: {}", acc.accountName, e.what());
             rcmd.body.orderResponse.orderStatus = OS_REJECTED;
             rcmd.body.orderResponse.errorId = NetworkError;
             rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
@@ -915,11 +915,11 @@ void GateioUSTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     std::string sign = crypto::getGateioSignatureRest("DELETE", pathBase, time_str, "", "", acc.secretKey);
     std::vector<std::pair<std::string, std::string>> headers = {{"KEY", acc.apiKey}, {"Timestamp", time_str}, {"SIGN", sign}};
 
-    LOG_INFO("TB {} Gate US cancel_order: {}", acc.accountId, pathBase);
+    LOG_INFO("TB {} Gate US cancel_order: {}", acc.accountName, pathBase);
 
     asyncRequest(boost::beast::http::verb::delete_, pathBase, "", "application/json", std::move(headers), [this, rcmd, info](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
         if (ec) {
-            LOG_ERROR("TB {} cancel_order ec: {}", acc.accountId, ec.message());
+            LOG_ERROR("TB {} cancel_order ec: {}", acc.accountName, ec.message());
             rcmd.body.orderResponse.orderStatus = OS_FAILED;
             rcmd.body.orderResponse.errorId = NetworkError;
             crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, ec.message());
@@ -1001,7 +1001,7 @@ void GateioUSTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
             }
         }
         catch (const std::exception& e) {
-            LOG_ERROR("TB {} Gate US cancel_order cb exc: {}", acc.accountId, e.what());
+            LOG_ERROR("TB {} Gate US cancel_order cb exc: {}", acc.accountName, e.what());
         }
     });
 }
@@ -1015,7 +1015,7 @@ void GateioUSTradeUnit::query_order(const pubsub::TCommand& tcmd) {
 
     md::InstrumentInfo info;
     if (!smc->get_instrument_info(tcmd.body.queryOrder.exchangeTypeEnum, tcmd.body.queryOrder.instTypeEnum, tcmd.body.queryOrder.instId, info)) {
-        LOG_INFO("TB {} Gate US query_order smc miss: {}", acc.accountId, tcmd.body.queryOrder.instId);
+        LOG_INFO("TB {} Gate US query_order smc miss: {}", acc.accountName, tcmd.body.queryOrder.instId);
         return;
     }
 
@@ -1033,11 +1033,11 @@ void GateioUSTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     std::string sign = crypto::getGateioSignatureRest("GET", pathBase, time_str, "", "", acc.secretKey);
     std::vector<std::pair<std::string, std::string>> headers = {{"KEY", acc.apiKey}, {"Timestamp", time_str}, {"SIGN", sign}};
 
-    LOG_INFO("TB {} Gate US query_order: {}", acc.accountId, pathBase);
+    LOG_INFO("TB {} Gate US query_order: {}", acc.accountName, pathBase);
 
     asyncRequest(boost::beast::http::verb::get, pathBase, "", "application/json", std::move(headers), [this, rcmd, info](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
         if (ec) {
-            LOG_ERROR("TB {} query_order ec: {}", acc.accountId, ec.message());
+            LOG_ERROR("TB {} query_order ec: {}", acc.accountName, ec.message());
             return;
         }
 
@@ -1046,7 +1046,7 @@ void GateioUSTradeUnit::query_order(const pubsub::TCommand& tcmd) {
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
-                LOG_ERROR("TB {} query_order parse err: {}", acc.accountId, resp.body);
+                LOG_ERROR("TB {} query_order parse err: {}", acc.accountName, resp.body);
                 return;
             }
 
@@ -1127,7 +1127,7 @@ void GateioUSTradeUnit::query_order(const pubsub::TCommand& tcmd) {
             }
         }
         catch (const std::exception& e) {
-            LOG_ERROR("TB {} Gate US query_order cb exc: {}", acc.accountId, e.what());
+            LOG_ERROR("TB {} Gate US query_order cb exc: {}", acc.accountName, e.what());
         }
     });
 }

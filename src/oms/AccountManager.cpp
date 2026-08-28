@@ -22,7 +22,7 @@ void am::AccountManager::preStop() {
 
 bool am::AccountManager::processRcmd(pubsub::RCommand& rcmd) {
     if (rcmd.cmdTypeEnum == pubsub::CMD_RPT_BALANCE) {
-        const std::string& key = crypto::get_account_balance_key(rcmd.body.balance.exchangeTypeEnum, rcmd.body.balance.instTypeEnum, rcmd.body.balance.strategyId, rcmd.body.balance.accountId, rcmd.body.balance.currency);
+        const std::string& key = crypto::get_account_balance_key(rcmd.body.balance.exchangeTypeEnum, rcmd.body.balance.instTypeEnum, rcmd.body.balance.strategyId, rcmd.body.balance.accountName, rcmd.body.balance.currency);
         auto found = balanceMap.find(key);
         if (found != balanceMap.end()) {
             pubsub::RCommand& oldRcmd = found->second;
@@ -83,11 +83,11 @@ bool am::AccountManager::processRcmd(pubsub::RCommand& rcmd) {
         }
     }
     else if (rcmd.cmdTypeEnum == pubsub::CMD_RPT_POSITION) {
-        const std::string& key = crypto::get_account_position_key(rcmd.body.position.exchangeTypeEnum, rcmd.body.position.instTypeEnum, rcmd.body.position.strategyId, rcmd.body.position.accountId, rcmd.body.position.direction, rcmd.body.position.instId);
+        const std::string& key = crypto::get_account_position_key(rcmd.body.position.exchangeTypeEnum, rcmd.body.position.instTypeEnum, rcmd.body.position.strategyId, rcmd.body.position.accountName, rcmd.body.position.direction, rcmd.body.position.instId);
         if (rcmd.body.position.apiSourceEnum == AS_REST) {
             positionMap[key] = rcmd; // rest的返回字段是全的，直接覆盖（如不全，则需要单独处理）
 
-            const std::string& positionKey = crypto::get_exch_position_key(rcmd.body.position.exchangeTypeEnum, rcmd.body.position.instTypeEnum, rcmd.body.position.accountId);
+            const std::string& positionKey = crypto::get_exch_position_key(rcmd.body.position.exchangeTypeEnum, rcmd.body.position.instTypeEnum, rcmd.body.position.accountName);
             auto foundPositionMap = currentPositionMap.find(positionKey);
             if (foundPositionMap != currentPositionMap.end()) {
                 auto& positionMap = foundPositionMap->second;
@@ -105,17 +105,17 @@ bool am::AccountManager::processRcmd(pubsub::RCommand& rcmd) {
             }
 
             if (rcmd.body.position.isLast) {
-                long currentTime = crypto::getCurrentTimeSeconds();
-                long& lastPubZeroPositionTime = lastPubZeroPositionMap[positionKey];
+                int64_t currentTime = crypto::getCurrentTimeSeconds();
+                int64_t& lastPubZeroPositionTime = lastPubZeroPositionMap[positionKey];
                 auto& positionMap = currentPositionMap[positionKey];
                 if (currentTime - lastPubZeroPositionTime > kPushZeroPositionSeconds) {
                     for (auto it = positionMap.begin(); it != positionMap.end(); ++it) {
                         auto& rc = it->second;
-                        if (rc.body.position.exchangeTypeEnum == rcmd.body.position.exchangeTypeEnum && crypto::str_cmp(rc.body.position.accountId, rcmd.body.position.accountId)) {
+                        if (rc.body.position.exchangeTypeEnum == rcmd.body.position.exchangeTypeEnum && crypto::str_cmp(rc.body.position.accountName, rcmd.body.position.accountName)) {
                             Direction d = DT_LONG;
-                            const std::string& keyLong = crypto::get_account_position_key(rc.body.position.exchangeTypeEnum, rc.body.position.instTypeEnum, rc.body.position.strategyId, rc.body.position.accountId, d, rc.body.position.instId);
+                            const std::string& keyLong = crypto::get_account_position_key(rc.body.position.exchangeTypeEnum, rc.body.position.instTypeEnum, rc.body.position.strategyId, rc.body.position.accountName, d, rc.body.position.instId);
                             d = DT_SHORT;
-                            const std::string& keyShort = crypto::get_account_position_key(rc.body.position.exchangeTypeEnum, rc.body.position.instTypeEnum, rc.body.position.strategyId, rc.body.position.accountId, d, rc.body.position.instId);
+                            const std::string& keyShort = crypto::get_account_position_key(rc.body.position.exchangeTypeEnum, rc.body.position.instTypeEnum, rc.body.position.strategyId, rc.body.position.accountName, d, rc.body.position.instId);
 
                             auto foundLong = positionMap.find(keyLong);
                             auto foundShort = positionMap.find(keyShort);
@@ -171,7 +171,7 @@ void am::AccountManager::load_data(){
     //     rcmd.header.exchangeTypeEnum = ExchangeTypeStr2EnumMap[balance.exchangeTypeEnum];
     //     rcmd.header.instTypeEnum = InstTypeStr2EnumMap[balance.instTypeEnum];
     //     rcmd.header.cmdTime = balance.updateTime;
-    //     strcpy(rcmd.header.accountId, balance.accountId.c_str());
+    //     strcpy(rcmd.header.accountName, balance.accountName.c_str());
     //     strcpy(rcmd.header.strategyId, balance.strategyId.c_str());
     //     strcpy(rcmd.body.balance.currency, balance.currency.c_str());
 
@@ -189,7 +189,7 @@ void am::AccountManager::load_data(){
     //     rcmd.header.exchangeTypeEnum = ExchangeTypeStr2EnumMap[position.exchangeTypeEnum];
     //     rcmd.header.instTypeEnum = InstTypeStr2EnumMap[position.instTypeEnum];
     //     rcmd.header.cmdTime = position.updateTime;
-    //     strcpy(rcmd.header.accountId, position.accountId.c_str());
+    //     strcpy(rcmd.header.accountName, position.accountName.c_str());
     //     strcpy(rcmd.header.strategyId, position.strategyId.c_str());
 
     //     strcpy(rcmd.body.position.instId, position.instId.c_str());

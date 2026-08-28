@@ -65,7 +65,7 @@ private:
 
     // ---- WS RPC msg builders ----
     // spot.login 需要签名, 其他 (post-login) 无 auth 字段
-    std::string buildLoginJson(long ts) const;
+    std::string buildLoginJson(int64_t ts) const;
     std::string buildSubscribeJson(int reqId, const char* channel, const char* payload_first, const char* payload_second) const;
     std::string buildOrderPlaceJson(int reqId, const pubsub::TCommand& tcmd,
                                      const md::InstrumentInfo& info,

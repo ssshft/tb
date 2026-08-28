@@ -62,9 +62,9 @@ bool TbOperation::preStart(Config* config) {
 
     const rapidjson::Value &tbAccounts = configValue["tb_accounts"].GetArray();
     for(rapidjson::SizeType i = 0; i < tbAccounts.Size(); i++){
-        std::string accountId = tbAccounts[i].GetString();
-        if(tradeConfig["TB"]["tb_accounts"].HasMember(accountId.c_str())){
-            rapidjson::Value &accountConfig = tradeConfig["TB"]["tb_accounts"][accountId.c_str()][0];
+        std::string accountName = tbAccounts[i].GetString();
+        if(tradeConfig["TB"]["tb_accounts"].HasMember(accountName.c_str())){
+            rapidjson::Value &accountConfig = tradeConfig["TB"]["tb_accounts"][accountName.c_str()][0];
             std::string exchId = accountConfig["exchId"].GetString();
             std::string strategyId = accountConfig["strategyId"].GetString();
             std::string exchIdAccountKey = crypto::get_tradeclient_key(exchId.c_str(), strategyId.c_str());
@@ -91,7 +91,7 @@ bool TbOperation::preStart(Config* config) {
             }
         }
         else {
-            LOG_ERROR("not found accountId: {} configuration in trade_config.json. please add it first", accountId);
+            LOG_ERROR("not found accountName: {} configuration in trade_config.json. please add it first", accountName);
         }
     }
 

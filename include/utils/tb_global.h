@@ -16,7 +16,7 @@ constexpr auto ORDER_REJECTED_TIME_OUT = 30 * 1e6;
     rcmd.cmdTypeEnum = pubsub::CMD_RPT_NEW_ORDER; \
     rcmd.body.orderResponse.exchangeTypeEnum = tcmd.body.newOrder.exchangeTypeEnum; \
     rcmd.body.orderResponse.instTypeEnum = tcmd.body.newOrder.instTypeEnum; \
-    strncpy(rcmd.body.orderResponse.accountId, tcmd.body.newOrder.accountId, ACCOUNTID_SIZE); \
+    strncpy(rcmd.body.orderResponse.accountName, tcmd.body.newOrder.accountName, ACCOUNTID_SIZE); \
     strncpy(rcmd.body.orderResponse.strategyId, tcmd.body.newOrder.strategyId, STRATEGYID_SIZE); \
     strncpy(rcmd.body.orderResponse.instId, tcmd.body.newOrder.instId, INSTID_SIZE); \
     rcmd.body.orderResponse.clientOrderId = tcmd.body.newOrder.clientOrderId; \
@@ -37,7 +37,7 @@ constexpr auto ORDER_REJECTED_TIME_OUT = 30 * 1e6;
     rcmd.cmdTypeEnum = pubsub::CMD_RPT_CANCEL_ORDER; \
     rcmd.body.orderResponse.exchangeTypeEnum = tcmd.body.cancelOrder.exchangeTypeEnum; \
     rcmd.body.orderResponse.instTypeEnum = tcmd.body.cancelOrder.instTypeEnum; \
-    strncpy(rcmd.body.orderResponse.accountId, tcmd.body.cancelOrder.accountId, ACCOUNTID_SIZE); \
+    strncpy(rcmd.body.orderResponse.accountName, tcmd.body.cancelOrder.accountName, ACCOUNTID_SIZE); \
     strncpy(rcmd.body.orderResponse.strategyId, tcmd.body.cancelOrder.strategyId, STRATEGYID_SIZE); \
     strncpy(rcmd.body.orderResponse.instId, tcmd.body.cancelOrder.instId, INSTID_SIZE); \
     rcmd.body.orderResponse.clientOrderId = tcmd.body.cancelOrder.clientOrderId; \
@@ -52,7 +52,7 @@ constexpr auto ORDER_REJECTED_TIME_OUT = 30 * 1e6;
     rcmd.cmdTypeEnum = pubsub::CMD_RPT_QUERY_ORDER; \
     rcmd.body.orderResponse.exchangeTypeEnum = tcmd.body.queryOrder.exchangeTypeEnum; \
     rcmd.body.orderResponse.instTypeEnum = tcmd.body.queryOrder.instTypeEnum; \
-    strncpy(rcmd.body.orderResponse.accountId, tcmd.body.queryOrder.accountId, ACCOUNTID_SIZE); \
+    strncpy(rcmd.body.orderResponse.accountName, tcmd.body.queryOrder.accountName, ACCOUNTID_SIZE); \
     strncpy(rcmd.body.orderResponse.strategyId, tcmd.body.queryOrder.strategyId, STRATEGYID_SIZE); \
     strncpy(rcmd.body.orderResponse.instId, tcmd.body.queryOrder.instId, INSTID_SIZE); \
     rcmd.body.orderResponse.clientOrderId = tcmd.body.queryOrder.clientOrderId; \

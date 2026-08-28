@@ -10,7 +10,7 @@ BinanceTradeClient::BinanceTradeClient(rapidjson::Value& accCfg, sm::SecurityMan
     #else
         
         if (acc.instTypeEnum == SPOT) {
-            std::cout << "----------spot created-------" << acc.accountId << " " << acc.strategyId << std::endl;
+            std::cout << "----------spot created-------" << acc.accountName << " " << acc.strategyId << std::endl;
             if (acc.apiMode == AM_REST) {
                 spotTradeUnit = new BinanceSpotTradeUnit(acc, smc);
             }

@@ -21,17 +21,17 @@ void BaseTradeUnit::start() {
 
 void BaseTradeUnit::onOpen() {
     isConnected.store(true);
-    LOG_INFO("TB {}.{}.{} ws opened", ExchangeTypeEnum2StrMap[acc.exchangeTypeEnum], InstTypeEnum2StrMap[acc.instTypeEnum], acc.accountId);
+    LOG_INFO("TB {}.{}.{} ws opened", ExchangeTypeEnum2StrMap[acc.exchangeTypeEnum], InstTypeEnum2StrMap[acc.instTypeEnum], acc.accountName);
 }
 
 void BaseTradeUnit::onCloseMsg(int code, const std::string& reason) {
     isConnected.store(false);
-    LOG_ERROR("TB {} ws closed: code={} reason={} (BeastWsClient will auto-reconnect)", acc.accountId, code, reason);
+    LOG_ERROR("TB {} ws closed: code={} reason={} (BeastWsClient will auto-reconnect)", acc.accountName, code, reason);
 }
 
 void BaseTradeUnit::onError(const std::string& reason) {
     isConnected.store(false);
-    LOG_ERROR("TB {} ws error: {}", acc.accountId, reason);
+    LOG_ERROR("TB {} ws error: {}", acc.accountName, reason);
 }
 
 void BaseTradeUnit::initRestClient(const std::string& host, std::vector<std::pair<std::string, std::string>> default_headers, size_t max_connections) {
@@ -54,17 +54,17 @@ void BaseTradeUnit::initRestClient(const std::string& host, std::vector<std::pai
             pRestClient->set_default_header(kv.first, kv.second);
         }
 
-        LOG_INFO("Tb {} rest client to {} ready ({} conns)", acc.accountId, host, max_connections);
+        LOG_INFO("Tb {} rest client to {} ready ({} conns)", acc.accountName, host, max_connections);
     }
     catch(const std::exception& e) {
-        LOG_ERROR("TB {} initRestClient({}) failed: {}", acc.accountId, host, e.what());
+        LOG_ERROR("TB {} initRestClient({}) failed: {}", acc.accountName, host, e.what());
         pRestClient.reset();
     }
 }
 
 void BaseTradeUnit::asyncRequest(boost::beast::http::verb method, std::string path, std::string body, std::string content_type, net::HttpCallback cb) {
     if (!pRestClient) {
-        LOG_ERROR("TB {} asyncRequest: pRestClient not initialized (call initRestClient first)", acc.accountId);
+        LOG_ERROR("TB {} asyncRequest: pRestClient not initialized (call initRestClient first)", acc.accountName);
         if (cb) {
             boost::system::error_code ec(static_cast<int>(std::errc::not_connected), boost::system::system_category());
             cb(ec, net::HttpResponse());
@@ -76,7 +76,7 @@ void BaseTradeUnit::asyncRequest(boost::beast::http::verb method, std::string pa
 
 void BaseTradeUnit::asyncRequest(boost::beast::http::verb method, std::string path, std::string body, std::string content_type, std::vector<std::pair<std::string, std::string>> extra_headers, net::HttpCallback cb) {
     if (!pRestClient) {
-        LOG_ERROR("TB {} asyncRequest: pRestClient not initialized (call initRestClient first)", acc.accountId);
+        LOG_ERROR("TB {} asyncRequest: pRestClient not initialized (call initRestClient first)", acc.accountName);
         if (cb) {
             boost::system::error_code ec(static_cast<int>(std::errc::not_connected), boost::system::system_category());
             cb(ec, net::HttpResponse());

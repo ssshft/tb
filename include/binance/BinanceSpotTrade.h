@@ -45,7 +45,7 @@ private:
     std::string buildWsSigPayload(std::vector<std::pair<std::string, std::string>> kvs) const;
 
     // 拼 JSON body {"id":"...","method":"...","params":{...}}, 手拼避免拉 rapidjson。
-    std::string buildSubscribeJson(long ts_ms, const std::string& signature) const;
+    std::string buildSubscribeJson(int64_t ts_ms, const std::string& signature) const;
 
 private:
     // REST 相对路径

@@ -41,7 +41,7 @@ void BybitTradeUnit::subWebsocekt() {
     cfg.client_ping_text = R"({"op":"ping"})";
     cfg.auto_reconnect = true;
     cfg.idle_timeout_sec = 60;
-    LOG_INFO("TB {} Bybit ws {} rest {}", acc.accountId, cfg.url, restHost);
+    LOG_INFO("TB {} Bybit ws {} rest {}", acc.accountName, cfg.url, restHost);
     subWebsocketWithConfig(std::move(cfg));
 }
 
@@ -94,7 +94,7 @@ void BybitTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, int64
         }
     }
     catch (const std::exception& e) {
-        LOG_ERROR("TB {} Bybit ws exc: {}", acc.accountId, e.what());
+        LOG_ERROR("TB {} Bybit ws exc: {}", acc.accountName, e.what());
     }
 }
 
@@ -160,7 +160,7 @@ void BybitTradeUnit::handleWalletUpdate(simdjson::ondemand::array& dataArr) {
                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                     rcmd.body.balance.exchangeTypeEnum = BYBIT;
                     rcmd.body.balance.instTypeEnum = SPOT;
-                    crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
+                    crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
                     crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                     crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(ccy_sv)));
                     rcmd.body.balance.available = crypto::fast_atod(avail_sv);
@@ -178,7 +178,7 @@ void BybitTradeUnit::handleWalletUpdate(simdjson::ondemand::array& dataArr) {
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_TOTAL_ACCOUNT;
         rcmd.body.totalAccount.exchangeTypeEnum = BYBIT;
         rcmd.body.totalAccount.instTypeEnum = SPOT;
-        crypto::copy_sv_to_char_array(rcmd.body.totalAccount.accountId, acc.accountId);
+        crypto::copy_sv_to_char_array(rcmd.body.totalAccount.accountName, acc.accountName);
         crypto::copy_sv_to_char_array(rcmd.body.totalAccount.strategyId, acc.strategyId);
         rcmd.body.totalAccount.totalEquity = crypto::fast_atod(totalEq_sv);
         rcmd.body.totalAccount.adjEquity = crypto::fast_atod(adjEq_sv);
@@ -269,7 +269,7 @@ void BybitTradeUnit::handlePositionUpdate(simdjson::ondemand::array& dataArr) {
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
         rcmd.body.position.exchangeTypeEnum = BYBIT;
         rcmd.body.position.instTypeEnum = instType;
-        crypto::copy_sv_to_char_array(rcmd.body.position.accountId, acc.accountId);
+        crypto::copy_sv_to_char_array(rcmd.body.position.accountName, acc.accountName);
         crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
         crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
         rcmd.body.position.direction = (!side_sv.empty() && side_sv[0] == 'B') ? DT_LONG : DT_SHORT;
@@ -479,7 +479,7 @@ void BybitTradeUnit::query_balance(const pubsub::TCommand&) {
 
     asyncRequest(boost::beast::http::verb::get, std::move(fullPath), "", "", std::move(headers), [this](boost::system::error_code ec, ::net::HttpResponse resp) {
         if (ec) { 
-            LOG_ERROR("TB {} Bybit query_balance ec: {}", acc.accountId, ec.message()); 
+            LOG_ERROR("TB {} Bybit query_balance ec: {}", acc.accountName, ec.message()); 
             return; 
         }
         
@@ -554,7 +554,7 @@ void BybitTradeUnit::query_balance(const pubsub::TCommand&) {
                                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                                 rcmd.body.balance.exchangeTypeEnum = BYBIT;
                                 rcmd.body.balance.instTypeEnum = SPOT;
-                                crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
+                                crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
                                 crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                                 crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(ccy_sv)));
                                 rcmd.body.balance.available = crypto::fast_atod(avail_sv);
@@ -572,7 +572,7 @@ void BybitTradeUnit::query_balance(const pubsub::TCommand&) {
                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_TOTAL_ACCOUNT;
                     rcmd.body.totalAccount.exchangeTypeEnum = BYBIT;
                     rcmd.body.totalAccount.instTypeEnum = SPOT;
-                    crypto::copy_sv_to_char_array(rcmd.body.totalAccount.accountId, acc.accountId);
+                    crypto::copy_sv_to_char_array(rcmd.body.totalAccount.accountName, acc.accountName);
                     crypto::copy_sv_to_char_array(rcmd.body.totalAccount.strategyId, acc.strategyId);
                     rcmd.body.totalAccount.totalEquity = crypto::fast_atod(totalEq_sv);
                     rcmd.body.totalAccount.adjEquity = crypto::fast_atod(adjEq_sv);
@@ -591,7 +591,7 @@ void BybitTradeUnit::query_balance(const pubsub::TCommand&) {
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                 rcmd.body.balance.exchangeTypeEnum = BYBIT;
                 rcmd.body.balance.instTypeEnum = SPOT;
-                crypto::copy_sv_to_char_array(rcmd.body.balance.accountId, acc.accountId);
+                crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.currency, std::string("USDT"));
                 rcmd.body.balance.updateTime = crypto::getCurrentTime();
@@ -605,7 +605,7 @@ void BybitTradeUnit::query_balance(const pubsub::TCommand&) {
                 PUSH_RCMD(pending[i]);
             }
         } catch (const std::exception& e) {
-            LOG_ERROR("TB {} Bybit query_balance cb exc: {}", acc.accountId, e.what());
+            LOG_ERROR("TB {} Bybit query_balance cb exc: {}", acc.accountName, e.what());
         }
     });
 }
@@ -632,7 +632,7 @@ void BybitTradeUnit::query_position(const pubsub::TCommand& tcmd) {
 
     asyncRequest(boost::beast::http::verb::get, std::move(fullPath), "", "", std::move(headers), [this](boost::system::error_code ec, ::net::HttpResponse resp) {
         if (ec) { 
-            LOG_ERROR("TB {} Bybit query_position ec: {}", acc.accountId, ec.message()); 
+            LOG_ERROR("TB {} Bybit query_position ec: {}", acc.accountName, ec.message()); 
             return; 
         }
 
@@ -721,7 +721,7 @@ void BybitTradeUnit::query_position(const pubsub::TCommand& tcmd) {
                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
                     rcmd.body.position.exchangeTypeEnum = BYBIT;
                     rcmd.body.position.instTypeEnum = instType;
-                    crypto::copy_sv_to_char_array(rcmd.body.position.accountId, acc.accountId);
+                    crypto::copy_sv_to_char_array(rcmd.body.position.accountName, acc.accountName);
                     crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
                     crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
                     rcmd.body.position.direction = (!side_sv.empty() && side_sv[0] == 'B') ? DT_LONG : DT_SHORT;
@@ -743,7 +743,7 @@ void BybitTradeUnit::query_position(const pubsub::TCommand& tcmd) {
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
                 rcmd.body.position.exchangeTypeEnum = BYBIT;
                 rcmd.body.position.instTypeEnum = USDT_SWAP;
-                crypto::copy_sv_to_char_array(rcmd.body.position.accountId, acc.accountId);
+                crypto::copy_sv_to_char_array(rcmd.body.position.accountName, acc.accountName);
                 crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view("BTC-USDT"));
                 rcmd.body.position.updateTime = crypto::getCurrentTime();
@@ -757,7 +757,7 @@ void BybitTradeUnit::query_position(const pubsub::TCommand& tcmd) {
                 PUSH_RCMD(pending[i])
             }
         } catch (const std::exception& e) {
-            LOG_ERROR("TB {} Bybit query_position cb exc: {}", acc.accountId, e.what());
+            LOG_ERROR("TB {} Bybit query_position cb exc: {}", acc.accountName, e.what());
         }
     });
 }
@@ -881,7 +881,7 @@ void BybitTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             tcmd.body.newOrder.reduceOnly ? "true" : "false");
     }
 
-    LOG_INFO("TB {} Bybit add_new_order body={}", acc.accountId, body);
+    LOG_INFO("TB {} Bybit add_new_order body={}", acc.accountName, body);
 
     std::string ts = std::to_string(crypto::getCurrentTimeMilli());
     std::string sign = crypto::getBybitSignatureRest(acc.secretKey, ts, acc.apiKey, "5000", body);
@@ -960,7 +960,7 @@ void BybitTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
                 PUSH_RCMD(rcmd)
             }
             catch (const std::exception& e) {
-                LOG_ERROR("TB {} Bybit add_new_order cb exc: {}", acc.accountId, e.what());
+                LOG_ERROR("TB {} Bybit add_new_order cb exc: {}", acc.accountName, e.what());
             }
         });
 }
@@ -1013,7 +1013,7 @@ void BybitTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
         return;
     }
 
-    LOG_INFO("TB {} Bybit cancel_order body={}", acc.accountId, body);
+    LOG_INFO("TB {} Bybit cancel_order body={}", acc.accountName, body);
 
     std::string ts = std::to_string(crypto::getCurrentTimeMilli());
     std::string sign = crypto::getBybitSignatureRest(acc.secretKey, ts, acc.apiKey, "5000", body);
@@ -1077,7 +1077,7 @@ void BybitTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
             }
         }
         catch (const std::exception& e) {
-            LOG_ERROR("TB {} Bybit cancel_order cb exc: {}", acc.accountId, e.what());
+            LOG_ERROR("TB {} Bybit cancel_order cb exc: {}", acc.accountName, e.what());
         }
     });
 }
@@ -1115,7 +1115,7 @@ void BybitTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     }
     std::string fullPath = queryOrderUrl + "?" + query;
 
-    LOG_INFO("TB {} Bybit query_order: {}", acc.accountId, fullPath);
+    LOG_INFO("TB {} Bybit query_order: {}", acc.accountName, fullPath);
 
     std::string ts = std::to_string(crypto::getCurrentTimeMilli());
     std::string sign = crypto::getBybitSignatureRest(acc.secretKey, ts, acc.apiKey, "5000", query);
@@ -1123,7 +1123,7 @@ void BybitTradeUnit::query_order(const pubsub::TCommand& tcmd) {
 
     asyncRequest(boost::beast::http::verb::get, std::move(fullPath), "", "", std::move(headers), [this, rcmd, info](boost::system::error_code ec, net::HttpResponse resp) mutable {
         if (ec) {
-            LOG_ERROR("TB {} query_order ec: {}", acc.accountId, ec.message());
+            LOG_ERROR("TB {} query_order ec: {}", acc.accountName, ec.message());
             return;
         }
 
@@ -1131,7 +1131,7 @@ void BybitTradeUnit::query_order(const pubsub::TCommand& tcmd) {
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
-                LOG_ERROR("TB {} query_order parse err: {}", acc.accountId, resp.body);
+                LOG_ERROR("TB {} query_order parse err: {}", acc.accountName, resp.body);
               return;  
             }
 
@@ -1228,7 +1228,7 @@ void BybitTradeUnit::query_order(const pubsub::TCommand& tcmd) {
             }
         }
         catch (const std::exception& e) {
-            LOG_ERROR("TB {} Bybit query_order cb exc: {}", acc.accountId, e.what());
+            LOG_ERROR("TB {} Bybit query_order cb exc: {}", acc.accountName, e.what());
         }
     });
 }

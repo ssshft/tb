@@ -161,23 +161,6 @@ namespace crypto {
         return OS_UNKNOWN;
     }
 
-
-    /**
-     * @brief 判断oms中订单状态颠倒，比如，oms中状态是成交，部分成交，但是推送过来的状态是NEW,
-     * 这时候应该判断为ws推送落后于当前的oms，返回false
-     *
-     * @param ot
-     * @param rcmd
-     * @return true
-     * @return false
-     */
-    inline bool is_order_invert(const om::OrderTrade &ot, const pubsub::RCommand &rcmd){
-        if (rcmd.body.orderResponse.orderStatus <= OS_NEW && ot.orderStatus > OS_NEW){
-            return true;
-        }
-        return false;
-    }
-
     inline bool is_order_finished(const OrderStatus &orderStatus){
         if (orderStatus == OS_CANCELED || orderStatus == OS_FILLED || orderStatus == OS_REJECTED) {
             return true;

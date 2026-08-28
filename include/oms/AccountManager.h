@@ -32,7 +32,7 @@ namespace am {
         std::unordered_map<std::string, pubsub::RCommand> balanceMap;
         std::unordered_map<std::string, pubsub::RCommand> positionMap;
         std::unordered_map<std::string, std::unordered_map<std::string, pubsub::RCommand>> currentPositionMap;
-        std::unordered_map<std::string, long> lastPubZeroPositionMap;
+        std::unordered_map<std::string, int64_t> lastPubZeroPositionMap;
         
         // tb_sqlite::SqliteStorage *storage;
     };
