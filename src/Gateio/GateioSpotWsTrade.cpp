@@ -78,7 +78,7 @@ std::string GateioSpotWsTradeUnit::buildOrderPlaceJson( int reqId, const pubsub:
     j.push_back('"');
     j.append(R"(,"req_header":{},"req_param":{)");
     j.append(R"("text":")");                       
-    j.append(escape_json(tcmd.body.newOrder.orderSysId)); 
+    j.append(tcmd.body.newOrder.orderSysId); 
     j.push_back('"');
     j.append(R"(,"currency_pair":")");             
     j.append(info.originInstId);                       
@@ -126,7 +126,7 @@ std::string GateioSpotWsTradeUnit::buildOrderCancelJson(int reqId, const pubsub:
         j.push_back('"');
     } else {
         j.append(R"("order_id":")");               
-        j.append(escape_json(tcmd.body.cancelOrder.orderSysId)); 
+        j.append(tcmd.body.cancelOrder.orderSysId); 
         j.push_back('"');
     }
     j.append(R"(,"currency_pair":")");             
@@ -188,7 +188,7 @@ void GateioSpotWsTradeUnit::clearPending() {
 // subWebsocekt
 // ============================================================================
 void GateioSpotWsTradeUnit::subWebsocekt() {
-    std::string restHost = host_of(acc.restUrl);
+    std::string restHost = crypto::host_of(acc.restUrl);
     initRestClient(restHost, {}, 4);
 
     net::WsConfig cfg;

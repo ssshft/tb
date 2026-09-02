@@ -19,7 +19,7 @@ GateioSpotTradeUnit::~GateioSpotTradeUnit() {
 // ============================================================================
 void GateioSpotTradeUnit::subWebsocekt() {
     // REST
-    std::string restHost = host_of(acc.restUrl);
+    std::string restHost = crypto::host_of(acc.restUrl);
     initRestClient(restHost, {}, 4);
 
     // WS

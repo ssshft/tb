@@ -62,7 +62,7 @@ std::string OkxWsTradeUnit::buildOrderPlaceJson(int reqId,
         j.push_back('"');
     }
     j.append(R"(,"clOrdId":")"); 
-    j.append(escape_json(tcmd.body.newOrder.orderSysId));  
+    j.append(tcmd.body.newOrder.orderSysId);  
     j.push_back('"');
     j.append(R"(,"reduceOnly":)"); 
     j.append(tcmd.body.newOrder.reduceOnly ? "true" : "false");
@@ -86,7 +86,7 @@ std::string OkxWsTradeUnit::buildOrderCancelJson(int reqId, const pubsub::TComma
         j.push_back('"');
     } else {
         j.append(R"(,"clOrdId":")"); 
-        j.append(escape_json(tcmd.body.cancelOrder.orderSysId));  
+        j.append(tcmd.body.cancelOrder.orderSysId);  
         j.push_back('"');
     }
     j.append("}]}");
@@ -142,7 +142,7 @@ void OkxWsTradeUnit::clearPending() {
 // subWebsocekt / onOpen / onCloseMsg
 // ============================================================================
 void OkxWsTradeUnit::subWebsocekt() {
-    std::string restHost = host_of(acc.restUrl);
+    std::string restHost = crypto::host_of(acc.restUrl);
     std::vector<std::pair<std::string, std::string>> defaultHeaders;
     if (acc.isSimulated) {
         defaultHeaders.emplace_back("x-simulated-trading", "1");

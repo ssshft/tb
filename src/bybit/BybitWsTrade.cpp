@@ -85,7 +85,7 @@ std::string BybitWsTradeUnit::buildOrderPlaceJson(int reqId,
     }
 
     j.append(R"(,"orderLinkId":")"); 
-    j.append(escape_json(tcmd.body.newOrder.orderSysId));  
+    j.append(tcmd.body.newOrder.orderSysId);  
     j.push_back('"');
     j.append(R"(,"reduceOnly":)");   
     j.append(tcmd.body.newOrder.reduceOnly ? "true" : "false");
@@ -119,7 +119,7 @@ std::string BybitWsTradeUnit::buildOrderCancelJson(int reqId, const pubsub::TCom
         j.push_back('"');
     } else {
         j.append(R"(,"orderLinkId":")"); 
-        j.append(escape_json(tcmd.body.cancelOrder.orderSysId));  
+        j.append(tcmd.body.cancelOrder.orderSysId);  
         j.push_back('"');
     }
     j.append("}]}");
@@ -176,7 +176,7 @@ void BybitWsTradeUnit::clearPending() {
 // ============================================================================
 void BybitWsTradeUnit::subWebsocekt() {
     // REST
-    std::string restHost = host_of(acc.restUrl);
+    std::string restHost = crypto::host_of(acc.restUrl);
     initRestClient(restHost, {}, 4);
 
     // 1. Private WS (base 类的 pWsClient)
@@ -1228,7 +1228,7 @@ void BybitWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
                         rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
                     }
 
-                    if (status_sv[0] == 'N' && status_sv[2] == 'e' || status_sv[0] == 'C') {
+                    if ((status_sv[0] == 'N' && status_sv[2] == 'e') || status_sv[0] == 'C') {
                         rcmd.body.orderResponse.orderStatus = OS_NEW;
                     }
                     else if (status_sv[0] == 'P') {

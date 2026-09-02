@@ -163,7 +163,7 @@ void BinanceUnifiedTradeUnit::listenKeyRenewLoop() {
 // subWebsocekt
 // ============================================================================
 void BinanceUnifiedTradeUnit::subWebsocekt() {
-    std::string restHost = host_of(acc.restUrl);
+    std::string restHost = crypto::host_of(acc.restUrl);
     initRestClient(restHost, {{"X-MBX-APIKEY", acc.apiKey}}, 4);
 
     if (!generateListenKeySync()) {

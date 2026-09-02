@@ -74,7 +74,7 @@ std::string GateioUsWsTradeUnit::buildOrderPlaceJson(int reqId, const pubsub::TC
     j.push_back('"');
     j.append(R"(,"req_header":{},"req_param":{)");
     j.append(R"("text":")");                       
-    j.append(escape_json(tcmd.body.newOrder.orderSysId));  
+    j.append(tcmd.body.newOrder.orderSysId);  
     j.push_back('"');
     j.append(R"(,"contract":")");                  
     j.append(info.originInstId);                       
@@ -110,7 +110,7 @@ std::string GateioUsWsTradeUnit::buildOrderCancelJson(int reqId, const pubsub::T
         j.push_back('"');
     } else {
         j.append(R"("order_id":")");               
-        j.append(escape_json(tcmd.body.cancelOrder.orderSysId));  
+        j.append(tcmd.body.cancelOrder.orderSysId);  
         j.push_back('"');
     }
     // futures 的 order_cancel 不需要 contract, 但为了保险还是带上
@@ -170,7 +170,7 @@ void GateioUsWsTradeUnit::clearPending() {
 // subWebsocekt / onOpen / onCloseMsg
 // ============================================================================
 void GateioUsWsTradeUnit::subWebsocekt() {
-    std::string restHost = host_of(acc.restUrl);
+    std::string restHost = crypto::host_of(acc.restUrl);
     initRestClient(restHost, {}, 4);
 
     net::WsConfig cfg;

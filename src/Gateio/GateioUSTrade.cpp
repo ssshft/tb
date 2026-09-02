@@ -17,7 +17,7 @@ GateioUSTradeUnit::~GateioUSTradeUnit() {
 // subWebsocekt
 // ============================================================================
 void GateioUSTradeUnit::subWebsocekt() {
-    std::string restHost = host_of(acc.restUrl);
+    std::string restHost = crypto::host_of(acc.restUrl);
     initRestClient(restHost, {}, 4);
 
     net::WsConfig cfg;
@@ -748,7 +748,7 @@ void GateioUSTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
 
     std::string body = fmt::format(
         R"({{"text":"{}","contract":"{}","price":"{}","size":{},"tif":"{}","reduce_only":{}}})",
-        escape_json(tcmd.body.newOrder.orderSysId), info.originInstId, price_str, size_str, tif,
+        tcmd.body.newOrder.orderSysId, info.originInstId, price_str, size_str, tif,
         tcmd.body.newOrder.reduceOnly ? "true" : "false");
 
     std::string time_str = std::to_string(crypto::getCurrentTimeSeconds());

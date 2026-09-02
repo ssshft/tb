@@ -68,7 +68,7 @@ std::string BinanceSpotTradeUnit::buildSubscribeJson(int64_t ts_ms, const std::s
 // ============================================================================
 void BinanceSpotTradeUnit::subWebsocekt() {
     // ---- REST ----
-    std::string restHost = host_of(acc.restUrl);
+    std::string restHost = crypto::host_of(acc.restUrl);
     initRestClient(restHost, {{"X-MBX-APIKEY", acc.apiKey}}, 4);
 
     // ---- WS ----

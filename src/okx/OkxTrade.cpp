@@ -44,7 +44,7 @@ std::string OkxTradeUnit::buildSubscribeJson() const {
 // subWebsocekt
 // ============================================================================
 void OkxTradeUnit::subWebsocekt() {
-    std::string restHost = host_of(acc.restUrl);
+    std::string restHost = crypto::host_of(acc.restUrl);
 
     // OKX 有的仿真环境需要额外 header, 由 isSimulated 决定
     std::vector<std::pair<std::string, std::string>> defaultHeaders;
@@ -861,16 +861,12 @@ void OkxTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     if (tcmd.body.newOrder.orderType == OT_MARKET) {
         body = fmt::format(
             R"({{"instId":"{}","tdMode":"cross","side":"{}","ordType":"{}","sz":"{}","clOrdId":"{}","reduceOnly":{}}})",
-            info.originInstId, side, ordType, sz_str,
-            escape_json(tcmd.body.newOrder.orderSysId),
-            tcmd.body.newOrder.reduceOnly ? "true" : "false");
+            info.originInstId, side, ordType, sz_str, tcmd.body.newOrder.orderSysId, tcmd.body.newOrder.reduceOnly ? "true" : "false");
     } 
     else {
         body = fmt::format(
             R"({{"instId":"{}","tdMode":"cross","side":"{}","ordType":"{}","px":"{}","sz":"{}","clOrdId":"{}","reduceOnly":{}}})",
-            info.originInstId, side, ordType, price_str, sz_str,
-            escape_json(tcmd.body.newOrder.orderSysId),
-            tcmd.body.newOrder.reduceOnly ? "true" : "false");
+            info.originInstId, side, ordType, price_str, sz_str, tcmd.body.newOrder.orderSysId, tcmd.body.newOrder.reduceOnly ? "true" : "false");
     }
 
     std::string ts = crypto::getTimestampIso();
@@ -1010,7 +1006,7 @@ void OkxTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
         body = fmt::format(R"({{"instId":"{}","ordId":"{}"}})", info.originInstId, tcmd.body.cancelOrder.orderId);
     } 
     else if (!crypto::str_cmp(tcmd.body.cancelOrder.orderSysId, "")) {
-        body = fmt::format(R"({{"instId":"{}","clOrdId":"{}"}})", info.originInstId, escape_json(tcmd.body.cancelOrder.orderSysId));
+        body = fmt::format(R"({{"instId":"{}","clOrdId":"{}"}})", info.originInstId, tcmd.body.cancelOrder.orderSysId);
     } 
     else {
         rcmd.body.orderResponse.orderStatus = OS_FAILED;

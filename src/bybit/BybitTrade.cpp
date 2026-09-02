@@ -31,7 +31,7 @@ std::string BybitTradeUnit::buildSubscribeJson() const {
 // subWebsocekt
 // ============================================================================
 void BybitTradeUnit::subWebsocekt() {
-    std::string restHost = host_of(acc.restUrl);
+    std::string restHost = crypto::host_of(acc.restUrl);
     initRestClient(restHost, {}, 4);
 
     net::WsConfig cfg;
@@ -870,15 +870,11 @@ void BybitTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     if (tcmd.body.newOrder.orderType == OT_MARKET) {
         body = fmt::format(
             R"({{"category":"{}","symbol":"{}","side":"{}","orderType":"{}","qty":"{}","timeInForce":"{}","orderLinkId":"{}","reduceOnly":{}}})",
-            category, info.originInstId, side, ordType, qty_str, tif,
-            escape_json(tcmd.body.newOrder.orderSysId),
-            tcmd.body.newOrder.reduceOnly ? "true" : "false");
+            category, info.originInstId, side, ordType, qty_str, tif, tcmd.body.newOrder.orderSysId, tcmd.body.newOrder.reduceOnly ? "true" : "false");
     } else {
         body = fmt::format(
             R"({{"category":"{}","symbol":"{}","side":"{}","orderType":"{}","qty":"{}","price":"{}","timeInForce":"{}","orderLinkId":"{}","reduceOnly":{}}})",
-            category, info.originInstId, side, ordType, qty_str, price_str, tif,
-            escape_json(tcmd.body.newOrder.orderSysId),
-            tcmd.body.newOrder.reduceOnly ? "true" : "false");
+            category, info.originInstId, side, ordType, qty_str, price_str, tif, tcmd.body.newOrder.orderSysId, tcmd.body.newOrder.reduceOnly ? "true" : "false");
     }
 
     LOG_INFO("TB {} Bybit add_new_order body={}", acc.accountName, body);
@@ -1004,7 +1000,7 @@ void BybitTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     if (!crypto::str_cmp(tcmd.body.cancelOrder.orderId, "")) {
         body = fmt::format(R"({{"category":"{}","symbol":"{}","orderId":"{}"}})", category, info.originInstId, tcmd.body.cancelOrder.orderId);
     } else if (!crypto::str_cmp(tcmd.body.cancelOrder.orderSysId, "")) {
-        body = fmt::format(R"({{"category":"{}","symbol":"{}","orderLinkId":"{}"}})", category, info.originInstId, escape_json(tcmd.body.cancelOrder.orderSysId));
+        body = fmt::format(R"({{"category":"{}","symbol":"{}","orderLinkId":"{}"}})", category, info.originInstId, tcmd.body.cancelOrder.orderSysId);
     } else {
         rcmd.body.orderResponse.orderStatus = OS_FAILED;
         rcmd.body.orderResponse.errorId = OrderIdError;
@@ -1201,7 +1197,7 @@ void BybitTradeUnit::query_order(const pubsub::TCommand& tcmd) {
                         rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
                     }
 
-                    if (status_sv[0] == 'N' && status_sv[2] == 'e' || status_sv[0] == 'C') {
+                    if ((status_sv[0] == 'N' && status_sv[2] == 'e') || status_sv[0] == 'C') {
                         rcmd.body.orderResponse.orderStatus = OS_NEW;
                     }
                     else if (status_sv[0] == 'P') {

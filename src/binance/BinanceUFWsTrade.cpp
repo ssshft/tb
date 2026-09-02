@@ -57,7 +57,7 @@ std::string BinanceUFWsTradeUnit::buildLogonJson() {
     int64_t ts = crypto::getCurrentTimeMilli();
     std::string payload = fmt::format("apiKey={}&timestamp={}", acc.apiKey, ts);
     std::string sig = signer_.sign_base64(payload);
-    return fmt::format(R"({{"id":{},"method":"session.logon","params":{{"apiKey":"{}","timestamp":{},"signature":"{}"}}}})", kSessionLogonId, escape_json(acc.apiKey), ts, sig);
+    return fmt::format(R"({{"id":{},"method":"session.logon","params":{{"apiKey":"{}","timestamp":{},"signature":"{}"}}}})", kSessionLogonId, acc.apiKey, ts, sig);
 }
 
 std::string BinanceUFWsTradeUnit::buildOrderPlaceJson(
@@ -98,7 +98,7 @@ std::string BinanceUFWsTradeUnit::buildOrderPlaceJson(
     j.append(amount);                               
     j.push_back('"');
     j.append(R"(,"newClientOrderId":")");          
-    j.append(escape_json(tcmd.body.newOrder.orderSysId));  
+    j.append(tcmd.body.newOrder.orderSysId);  
     j.push_back('"');
     j.append(R"(,"newOrderRespType":")");          
     j.append(respType);                             
@@ -127,7 +127,7 @@ std::string BinanceUFWsTradeUnit::buildOrderCancelJson(int wsId, const pubsub::T
         j.append(tcmd.body.cancelOrder.orderId);
     } else {
         j.append(R"(,"origClientOrderId":")");  
-        j.append(escape_json(tcmd.body.cancelOrder.orderSysId));  
+        j.append(tcmd.body.cancelOrder.orderSysId);  
         j.push_back('"');
     }
     j.append("}}");
@@ -269,7 +269,7 @@ void BinanceUFWsTradeUnit::listenKeyRenewLoop() {
 // subWebsocekt
 // ============================================================================
 void BinanceUFWsTradeUnit::subWebsocekt() {
-    std::string restHost = host_of(acc.restUrl);
+    std::string restHost = crypto::host_of(acc.restUrl);
     initRestClient(restHost, {{"X-MBX-APIKEY", acc.apiKey}}, 4);
 
     // 2. listenKey (启动路径, 允许短暂 block ≤15s)
