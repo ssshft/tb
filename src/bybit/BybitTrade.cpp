@@ -425,7 +425,7 @@ void BybitTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& dataArr) {
             }
         }
 
-        if ((status_sv[0] == 'N' && status_sv[2] == 'e') || status_sv[0] == 'C') {
+        if ((status_sv[0] == 'C' && status_sv[2] == 'e') || status_sv[0] == 'N') { // Created/New
             rcmd.body.orderResponse.orderStatus = OS_NEW;
         }
         else if (status_sv[0] == 'P') {
@@ -439,7 +439,7 @@ void BybitTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& dataArr) {
         else if (status_sv[0] == 'F') {
             rcmd.body.orderResponse.orderStatus = OS_FILLED;
         }
-        else if (status_sv[0] == 'C' && status_sv[2] == 'n') {
+        else if (status_sv[0] == 'C' && status_sv[2] == 'n') { // Canceled
             rcmd.body.orderResponse.orderStatus = OS_CANCELED;
         }
         else {
@@ -1197,7 +1197,7 @@ void BybitTradeUnit::query_order(const pubsub::TCommand& tcmd) {
                         rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avg_sv);
                     }
 
-                    if ((status_sv[0] == 'N' && status_sv[2] == 'e') || status_sv[0] == 'C') {
+                    if ((status_sv[0] == 'C' && status_sv[2] == 'e') || status_sv[0] == 'N') {
                         rcmd.body.orderResponse.orderStatus = OS_NEW;
                     }
                     else if (status_sv[0] == 'P') {
