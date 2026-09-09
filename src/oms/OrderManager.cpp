@@ -256,7 +256,7 @@ bool om::OrderManager::onOrderUpdate(pubsub::RCommand& rcmd) {
         if (rcmd.body.orderResponse.volumeTraded > op.body.orderResponse.volumeTraded) {
             op.body.orderResponse.tradeDiff = rcmd.body.orderResponse.volumeTraded - op.body.orderResponse.volumeTraded;
             op.body.orderResponse.fillPrice = 0.0;
-            
+
             if (rcmd.body.orderResponse.instTypeEnum == C_SWAP || rcmd.body.orderResponse.instTypeEnum == C_FUTURES) {
                 if (op.body.orderResponse.volumeTraded > ZERO_NUM) {
                     op.body.orderResponse.fillPrice = op.body.orderResponse.tradeDiff / (rcmd.body.orderResponse.volumeTraded / rcmd.body.orderResponse.tradePrice - op.body.orderResponse.volumeTraded / op.body.orderResponse.tradePrice);
@@ -291,13 +291,13 @@ bool om::OrderManager::onOrderUpdate(pubsub::RCommand& rcmd) {
         }
 
         if (!crypto::str_cmp(rcmd.body.orderResponse.orderId, "")) {
-            strncpy(op.body.orderResponse.orderId, rcmd.body.orderResponse.orderId, ORDER_SIZE);
+            strncpy(op.body.orderResponse.orderId, rcmd.body.orderResponse.orderId, 64);
             orderId2OrderSysIdMap[op.body.orderResponse.orderId] = op.body.orderResponse.orderSysId;
         }
 
         if (rcmd.body.orderResponse.orderStatus == OS_REJECTED) {
             op.body.orderResponse.errorId = rcmd.body.orderResponse.errorId;
-            strncpy(op.body.orderResponse.originMsg, rcmd.body.orderResponse.originMsg, ORIGINMSG_SIZE); 
+            strncpy(op.body.orderResponse.originMsg, rcmd.body.orderResponse.originMsg, 128); 
         }
 
         if (rcmd.body.orderResponse.orderStatus == OS_FAILED) { // 撤单失败的状态要推送给策略
