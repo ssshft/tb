@@ -568,6 +568,8 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                 return;
             }
 
+            std::cout << " after parse " << std::endl;
+
             simdjson::ondemand::array arr;
             if (doc["data"].get(arr) != simdjson::SUCCESS) {
                 for (auto b_val : arr) {
