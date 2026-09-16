@@ -75,8 +75,10 @@ void OkxTradeUnit::onOpen() {
     // 先 login, 再直接 subscribe (server 按顺序处理, subscribe 会在 login ack 后被拒或通过)。
     // 更严格的做法是等 login "code":"0" 后再 subscribe, 但那个状态机成本大。
     // OKX 实测直接连发也可以 —— subscribe 会被 buffer, login 成功后 server 挨个响应。
-    pWsClient->send_text(buildLoginJson());
-    pWsClient->send_text(buildSubscribeJson());
+    std::string loginJson = buildLoginJson();
+    std::cout << "onOpen--- login: " << loginJson << std::endl;
+    pWsClient->send_text(loginJson);
+    //pWsClient->send_text(buildSubscribeJson());
 }
 
 // ============================================================================
