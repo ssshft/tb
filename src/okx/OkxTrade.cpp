@@ -652,6 +652,7 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
 
                     for (size_t i = 0; i < pending.size(); ++i) {
                         pending[i].body.balance.isLast = (i + 1 == pending.size());
+                        std::cout << "balance: " << pending[i].getString() << std::endl;
                         PUSH_RCMD(pending[i])
                     }
 
@@ -668,6 +669,7 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                     rcmd.body.totalAccount.mgnRatio = mgnR_sv.empty() ? 100.0 : crypto::fast_atod(mgnR_sv);
                     rcmd.body.totalAccount.updateTime = crypto::getCurrentTime();
                     rcmd.body.totalAccount.apiSourceEnum = AS_REST;
+                    std::cout << "totalaccount: " << rcmd.getString() << std::endl;
                     PUSH_RCMD(rcmd)
                 }
             }
