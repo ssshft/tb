@@ -552,11 +552,14 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
     std::string sign = crypto::getOkxSignatureRest(acc.secretKey, ts, "GET", balanceUrl, "");
     std::vector<std::pair<std::string, std::string>> headers = {{"OK-ACCESS-KEY", acc.apiKey}, {"OK-ACCESS-TIMESTAMP", ts}, {"OK-ACCESS-SIGN", sign}, {"OK-ACCESS-PASSPHRASE", acc.password}};
 
+    std::cout << "OkxTradeUnit query_balance" << std::endl;
     asyncRequest(boost::beast::http::verb::get, balanceUrl, "", "", std::move(headers), [this](boost::system::error_code ec, net::HttpResponse resp) {
         if (ec) { 
             LOG_ERROR("TB {} OKX query_balance ec: {}", acc.accountName, ec.message()); 
             return; 
         }
+
+        std::cout << "query_balance resp.body" << std::endl;
 
         try {
             simdjson::padded_string padded(resp.body);
