@@ -333,7 +333,11 @@ void OkxTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
             continue;
         }
 
-        double positionAmt = crypto::fast_atod(pos_sv);
+        double positionAmt = 0.0;
+        if (!pos_sv.empty()) {
+            positionAmt = crypto::fast_atod(pos_sv);
+        }
+        
         pubsub::RCommand rcmd;
         memset(&rcmd, 0, sizeof(pubsub::RCommand));
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
@@ -344,12 +348,31 @@ void OkxTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
         crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
         rcmd.body.position.direction = positionAmt > 0 ? DT_LONG : DT_SHORT;
         rcmd.body.position.volume = std::fabs(positionAmt);
-        rcmd.body.position.maintMargin = crypto::fast_atod(mmr_sv);
-        rcmd.body.position.avgPrice = crypto::fast_atod(avg_sv);
-        rcmd.body.position.unrealizedPnl = crypto::fast_atod(upl_sv);
-        rcmd.body.position.markPrice = crypto::fast_atod(mark_sv);
-        if (!liq_sv.empty()) rcmd.body.position.liquidPrice = crypto::fast_atod(liq_sv);
-        rcmd.body.position.adlQuantile = static_cast<int>(crypto::fast_atod(adl_sv));
+
+        if (!mmr_sv.empty()) {
+            rcmd.body.position.maintMargin = crypto::fast_atod(mmr_sv);
+        }
+        
+        if (!avg_sv.empty()) {
+            rcmd.body.position.avgPrice = crypto::fast_atod(avg_sv);
+        }
+
+        if (!upl_sv.empty()) {
+            rcmd.body.position.unrealizedPnl = crypto::fast_atod(upl_sv);
+        }
+        
+        if (!mark_sv.empty()) {
+            rcmd.body.position.markPrice = crypto::fast_atod(mark_sv);
+        }
+        
+        if (!liq_sv.empty()) {
+            rcmd.body.position.liquidPrice = crypto::fast_atod(liq_sv);
+        }
+
+        if (!adl_sv.empty()) {
+            rcmd.body.position.adlQuantile = static_cast<int>(crypto::fast_atod(adl_sv));
+        }
+
         rcmd.body.position.updateTime = crypto::getCurrentTime();
         rcmd.body.position.apiSourceEnum = AS_WEBSOCKET;
         PUSH_RCMD(rcmd);
@@ -382,6 +405,7 @@ void OkxTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
             std::string_view category_sv;
 
             std::string_view k = field.unescaped_key().value_unsafe();
+            std::cout << "---orders--- k: " << k << std::endl;
             if (k == "instType") {
                 field.value().get(iType_sv);
             }
@@ -568,8 +592,6 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                 return;
             }
 
-            std::cout << " after parse " << std::endl;
-
             simdjson::ondemand::array arr;
             if (doc["data"].get(arr) == simdjson::SUCCESS) {
                 for (auto b_val : arr) {
@@ -577,7 +599,7 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                     if (b_res.error()) {
                         continue;
                     }
-                    std::cout << "------1111" << std::endl;
+
                     auto& b = b_res.value_unsafe();
 
                     std::string_view teq_sv;
@@ -589,7 +611,6 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                     std::vector<pubsub::RCommand> pending;
                     for (auto field : b) {
                         std::string_view k = field.unescaped_key().value_unsafe();
-                        std::cout << "----k: " << k << std::endl;
                         if (k == "totalEq") {
                             field.value().get(teq_sv);
                         }
@@ -656,7 +677,6 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
 
                     for (size_t i = 0; i < pending.size(); ++i) {
                         pending[i].body.balance.isLast = (i + 1 == pending.size());
-                        std::cout << "balance: " << pending[i].getString() << std::endl;
                         PUSH_RCMD(pending[i])
                     }
 
@@ -673,7 +693,6 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                     rcmd.body.totalAccount.mgnRatio = mgnR_sv.empty() ? 100.0 : crypto::fast_atod(mgnR_sv);
                     rcmd.body.totalAccount.updateTime = crypto::getCurrentTime();
                     rcmd.body.totalAccount.apiSourceEnum = AS_REST;
-                    std::cout << "totalaccount: " << rcmd.getString() << std::endl;
                     PUSH_RCMD(rcmd)
                 }
             }
@@ -786,7 +805,11 @@ void OkxTradeUnit::query_position(const pubsub::TCommand&) {
                         continue;
                     }
 
-                    double positionAmt = crypto::fast_atod(pos_sv);
+                    double positionAmt = 0.0;
+                    if (!pos_sv.empty()) {
+                        positionAmt = crypto::fast_atod(pos_sv);
+                    }
+                    
                     pubsub::RCommand rcmd;
                     memset(&rcmd, 0, sizeof(pubsub::RCommand));
                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
@@ -796,13 +819,33 @@ void OkxTradeUnit::query_position(const pubsub::TCommand&) {
                     crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
                     crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
                     rcmd.body.position.direction = positionAmt > 0 ? DT_LONG : DT_SHORT;
+
                     rcmd.body.position.volume = std::fabs(positionAmt);
-                    rcmd.body.position.maintMargin = crypto::fast_atod(mmr_sv);
-                    rcmd.body.position.avgPrice = crypto::fast_atod(avg_sv);
-                    rcmd.body.position.unrealizedPnl = crypto::fast_atod(upl_sv);
-                    rcmd.body.position.markPrice = crypto::fast_atod(mark_sv);
-                    if (!liq_sv.empty()) rcmd.body.position.liquidPrice = crypto::fast_atod(liq_sv);
-                    rcmd.body.position.adlQuantile = static_cast<int>(crypto::fast_atod(adl_sv));
+
+                    if (!mmr_sv.empty()) {
+                        rcmd.body.position.maintMargin = crypto::fast_atod(mmr_sv);
+                    }
+                    
+                    if (!avg_sv.empty()) {
+                        rcmd.body.position.avgPrice = crypto::fast_atod(avg_sv);
+                    }
+                    
+                    if (!upl_sv.empty()) {
+                        rcmd.body.position.unrealizedPnl = crypto::fast_atod(upl_sv);
+                    }
+                    
+                    if (!mark_sv.empty()) {
+                        rcmd.body.position.markPrice = crypto::fast_atod(mark_sv);
+                    }
+                    
+                    if (!liq_sv.empty()) {
+                        rcmd.body.position.liquidPrice = crypto::fast_atod(liq_sv);
+                    }
+
+                    if (!adl_sv.empty()) {
+                        rcmd.body.position.adlQuantile = static_cast<int>(crypto::fast_atod(adl_sv));
+                    }
+                    
                     rcmd.body.position.updateTime = crypto::getCurrentTime();
                     rcmd.body.position.apiSourceEnum = AS_REST;
                     pending.emplace_back(rcmd);
