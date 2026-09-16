@@ -777,7 +777,7 @@ void OkxWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
             }
 
             simdjson::ondemand::array arr;
-            if (doc["data"].get(arr) != simdjson::SUCCESS) {
+            if (doc["data"].get(arr) == simdjson::SUCCESS) {
                 for (auto b_val : arr) {
                     auto b_res = b_val.get_object();
                     if (b_res.error()) {
@@ -904,7 +904,7 @@ void OkxWsTradeUnit::query_position(const pubsub::TCommand&) {
             }
 
             simdjson::ondemand::array arr;
-            if (doc["data"].get(arr) != simdjson::SUCCESS) {
+            if (doc["data"].get(arr) == simdjson::SUCCESS) {
                 std::vector<pubsub::RCommand> pending;
 
                 for (auto b_val : arr) {
