@@ -577,6 +577,7 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                     if (b_res.error()) {
                         continue;
                     }
+                    std::cout << "------1111" << std::endl;
                     auto& b = b_res.value_unsafe();
 
                     std::string_view teq_sv;
@@ -588,6 +589,7 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                     std::vector<pubsub::RCommand> pending;
                     for (auto field : b) {
                         std::string_view k = field.unescaped_key().value_unsafe();
+                        std::cout << "----k: " << k << std::endl;
                         if (k == "totalEq") {
                             field.value().get(teq_sv);
                         }
@@ -674,6 +676,9 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                     std::cout << "totalaccount: " << rcmd.getString() << std::endl;
                     PUSH_RCMD(rcmd)
                 }
+            }
+            else {
+                std::cout << "no data" << std::endl;
             }
         } catch (const std::exception& e) {
             LOG_ERROR("TB {} OKX query_balance cb exc: {}", acc.accountName, e.what());
