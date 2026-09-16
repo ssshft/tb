@@ -88,6 +88,11 @@ void OkxTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, int64_t
         std::string msg(reinterpret_cast<const char*>(data), len);
         std::cout << "onWebsocketMsg: " << msg << std::endl;
 
+        // 非 JSON 消息直接忽略（包括 pong、ping 等控制帧）
+        if (msg.empty() || msg[0] != '{') {
+            return;
+        }
+
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
         auto doc = g_parser.iterate(padded);
         if (doc.error()) {
