@@ -44,6 +44,11 @@ private:
     std::string buildLoginJson() const;
     std::string buildSubscribeJson() const;
 
+    struct ErrorFields {
+        std::string_view code_sv;
+        std::string_view msg_sv;
+    };
+
 private:
     std::string orderUrl = "/api/v5/trade/order";
     std::string cancelOrderUrl = "/api/v5/trade/cancel-order";

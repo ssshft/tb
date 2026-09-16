@@ -78,9 +78,6 @@ void OkxTradeUnit::onOpen() {
     std::string loginJson = buildLoginJson();
     std::cout << "onOpen--- login: " << loginJson << std::endl;
     pWsClient->send_text(loginJson);
-
-    std::this_thread::sleep_for(std::chrono::seconds(3));
-    pWsClient->send_text(buildSubscribeJson());
 }
 
 // ============================================================================
@@ -102,6 +99,8 @@ void OkxTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, int64_t
         simdjson::ondemand::object arg_obj;
         std::string_view channel_sv;
         simdjson::ondemand::array data_arr;
+        std::string_view event_sv;
+        ErrorFields ef;
 
         for (auto field : doc_value) {
             std::string_view k = field.unescaped_key().value_unsafe();
@@ -121,6 +120,26 @@ void OkxTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, int64_t
                     handleOrdersUpdate(data_arr);
                 }
             }
+           else if (k == "event") {
+                field.value().get(event_sv);
+            }
+            else if (k == "code") {
+                field.value().get(ef.code_sv);
+            }
+            else if (k == "msg") {
+                field.value().get(ef.msg_sv);
+            }
+        }
+
+        if (event_sv == "login") {
+            if (ef.code_sv == "0") {
+                LOG_INFO("TB {} OKX login OK, will subscribe channels", acc.accountName);
+                if (pWsClient) {
+                    pWsClient->send_text(buildSubscribeJson());
+                }
+            } else {
+                LOG_ERROR("TB {} OKX login FAILED code={} msg={}", acc.accountName, ef.code_sv, ef.msg_sv);
+            } 
         }
     }
     catch (const std::exception& e) {

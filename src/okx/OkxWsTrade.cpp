@@ -256,32 +256,32 @@ void OkxWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /*isBi
                     }
                 }
             }
+        }
 
-            if (event_sv == "login") {
-                if (ef.code_sv == "0") {
-                    wsLoggedIn_.store(true);
-                    LOG_INFO("TB {} OKX login OK, will subscribe channels", acc.accountName);
-                    if (pWsClient) {
-                        pWsClient->send_text(buildSubscribeJson());
-                    }
-                } else {
-                    wsLoggedIn_.store(false);
-                    LOG_ERROR("TB {} OKX login FAILED code={} msg={}", acc.accountName, ef.code_sv, ef.msg_sv);
-                } 
-            }
-
-            if (!id_sv.empty()) {
-                int id = crypto::fast_atol(id_sv);
-                WsPending pending;
-                if (ef.code_sv == "0") {
-                    if (takePending(id, pending)) {
-                        handleWsApiResponse(pending, orf);
-                    }
+        if (event_sv == "login") {
+            if (ef.code_sv == "0") {
+                wsLoggedIn_.store(true);
+                LOG_INFO("TB {} OKX login OK, will subscribe channels", acc.accountName);
+                if (pWsClient) {
+                    pWsClient->send_text(buildSubscribeJson());
                 }
-                else {
-                    if (takePending(id, pending)) {
-                        handleWsApiError(pending, ef);
-                    }
+            } else {
+                wsLoggedIn_.store(false);
+                LOG_ERROR("TB {} OKX login FAILED code={} msg={}", acc.accountName, ef.code_sv, ef.msg_sv);
+            } 
+        }
+
+        if (!id_sv.empty()) {
+            int id = crypto::fast_atol(id_sv);
+            WsPending pending;
+            if (ef.code_sv == "0") {
+                if (takePending(id, pending)) {
+                    handleWsApiResponse(pending, orf);
+                }
+            }
+            else {
+                if (takePending(id, pending)) {
+                    handleWsApiError(pending, ef);
                 }
             }
         }
