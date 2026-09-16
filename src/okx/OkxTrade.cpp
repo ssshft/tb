@@ -559,7 +559,7 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
             return; 
         }
 
-        std::cout << "query_balance resp.body" << std::endl;
+        std::cout << "query_balance: " << resp.body << std::endl;
 
         try {
             simdjson::padded_string padded(resp.body);
