@@ -78,7 +78,9 @@ void OkxTradeUnit::onOpen() {
     std::string loginJson = buildLoginJson();
     std::cout << "onOpen--- login: " << loginJson << std::endl;
     pWsClient->send_text(loginJson);
-    //pWsClient->send_text(buildSubscribeJson());
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    pWsClient->send_text(buildSubscribeJson());
 }
 
 // ============================================================================
