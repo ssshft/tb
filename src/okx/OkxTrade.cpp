@@ -468,8 +468,12 @@ void OkxTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
                     instType = c_swap;
                 }
             } else {
+                std::cout << "-----not smc info ---- " << std::endl;
                 continue;
             }
+
+            std::cout << "--------rcmd------set before" << std::endl;
+
 
             pubsub::RCommand rcmd;
             memset(&rcmd, 0, sizeof(pubsub::RCommand));
@@ -559,6 +563,7 @@ void OkxTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
 
             rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
             rcmd.body.orderResponse.apiSourceEnum = AS_WEBSOCKET;
+            std::cout << "orders update: " << rcmd.getString() << std::endl;
             PUSH_RCMD(rcmd)
         }
     }
