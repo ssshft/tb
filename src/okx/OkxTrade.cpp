@@ -390,20 +390,20 @@ void OkxTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
         }
         auto& b = b_res.value_unsafe();
 
-        for (auto field : b) {
-            std::string_view iType_sv;
-            std::string_view iId_sv;
-            std::string_view ordId_sv;
-            std::string_view clOrdId_sv;
-            std::string_view sz_sv;
-            std::string_view px_sv;
-            std::string_view side_sv;
-            std::string_view oType_sv;
-            std::string_view state_sv;
-            std::string_view accFill_sv;
-            std::string_view avgPx_sv;
-            std::string_view category_sv;
+        std::string_view iType_sv;
+        std::string_view iId_sv;
+        std::string_view ordId_sv;
+        std::string_view clOrdId_sv;
+        std::string_view sz_sv;
+        std::string_view px_sv;
+        std::string_view side_sv;
+        std::string_view oType_sv;
+        std::string_view state_sv;
+        std::string_view accFill_sv;
+        std::string_view avgPx_sv;
+        std::string_view category_sv;
 
+        for (auto field : b) {
             std::string_view k = field.unescaped_key().value_unsafe();
             std::cout << "---orders--- k: " << k << std::endl;
             if (k == "instType") {
@@ -442,130 +442,131 @@ void OkxTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
             else if (k == "category") {
                 field.value().get(category_sv);
             }
-
-            std::string originInstId(iId_sv);
-            md::InstrumentInfo info;
-            InstType instType;
-
-            if (iType_sv == "SPOT") {
-                if (smc->get_instrument_info(OKX, SPOT, originInstId.c_str(), info)) { 
-                    instType = SPOT; 
-                }
-            } else if (iType_sv == "MARGIN") {
-                if (smc->get_instrument_info(OKX, MARGIN, originInstId.c_str(), info)) { 
-                    instType = MARGIN;
-                }
-            } else if (iType_sv == "SWAP" || iType_sv == "FUTURES") {
-                // 依次试 USDT_* → C_* (根据 instId 是否含 -USDT- 大致预判也可, 但这么写更 robust)
-                InstType u_swap = (iType_sv == "SWAP") ? USDT_SWAP : USDT_FUTURES;
-                InstType c_swap = (iType_sv == "SWAP") ? C_SWAP : C_FUTURES;
-
-                if (smc->get_instrument_info(OKX, u_swap, originInstId.c_str(), info)) { 
-                    instType = u_swap;
-                }
-
-                if (smc->get_instrument_info(OKX, c_swap, originInstId.c_str(), info)) { 
-                    instType = c_swap;
-                }
-            } else {
-                std::cout << "-----not smc info ---- " << std::endl;
-                continue;
-            }
-
-            std::cout << "--------rcmd------set before" << std::endl;
-
-
-            pubsub::RCommand rcmd;
-            memset(&rcmd, 0, sizeof(pubsub::RCommand));
-            rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
-            rcmd.body.orderResponse.exchangeTypeEnum = OKX;
-            rcmd.body.orderResponse.instTypeEnum = instType;
-            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountName, acc.accountName);
-            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
-            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
-            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, ordId_sv);
-            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, clOrdId_sv);
-
-            rcmd.body.orderResponse.offsetFlag = OF_OPEN;
-            if (!side_sv.empty()) {
-                rcmd.body.orderResponse.direction = (side_sv[0] == 'b') ? DT_LONG : DT_SHORT;
-            }
-
-            if (!sz_sv.empty()) {
-                rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(sz_sv);
-            }
-
-            if (!px_sv.empty()) {
-                rcmd.body.orderResponse.limitPrice = crypto::fast_atod(px_sv);
-            }
-
-            if (!accFill_sv.empty()) {
-                rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(accFill_sv);
-            }
-
-            if (!avgPx_sv.empty()) {
-                rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avgPx_sv);
-            }
-
-            if (!oType_sv.empty()) {
-                switch (oType_sv[0]) {
-                    case 'l': 
-                        rcmd.body.orderResponse.orderType = OT_LIMIT;      
-                        break;
-                    case 'm': 
-                        rcmd.body.orderResponse.orderType = OT_MARKET;     
-                        break;
-                    case 'p': 
-                        rcmd.body.orderResponse.orderType = OT_POST_ONLY;  
-                        break;
-                    case 'f': 
-                        rcmd.body.orderResponse.orderType = OT_FOK;        
-                        break;
-                    case 'i': 
-                        rcmd.body.orderResponse.orderType = OT_IOC;        
-                        break;
-                    case 'o': 
-                        rcmd.body.orderResponse.orderType = OT_MARKET;     
-                        break;   // optimal_limit_ioc
-                    default:  
-                        break;
-                }
-            }
-
-            // state: live / partially_filled / filled / canceled / mmp_canceled
-            if (!state_sv.empty()) {
-                if (state_sv == "live") {
-                    rcmd.body.orderResponse.orderStatus = OS_NEW;
-                }         
-                else if (state_sv == "partially_filled") {
-                    rcmd.body.orderResponse.orderStatus = OS_PARTFILLED;
-                }
-                else if (state_sv == "filled") {
-                    rcmd.body.orderResponse.orderStatus = OS_FILLED;
-                }
-                else if (state_sv == "canceled" || state_sv == "mmp_canceled") {
-                    rcmd.body.orderResponse.orderStatus = OS_CANCELED;
-                }                                    
-                else {
-                    rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
-                }                                
-            }
-
-            if (category_sv == "adl") {
-                rcmd.body.orderResponse.errorId = ADLError;
-            }
-            else if (category_sv == "twap") {
-                rcmd.body.orderResponse.errorId = TwapError;
-            }
-            else if (category_sv == "full_liquidation") {
-                rcmd.body.orderResponse.errorId = LiquidationError;
-            }
-
-            rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-            rcmd.body.orderResponse.apiSourceEnum = AS_WEBSOCKET;
-            std::cout << "orders update: " << rcmd.getString() << std::endl;
-            PUSH_RCMD(rcmd)
         }
+
+        std::string originInstId(iId_sv);
+        md::InstrumentInfo info;
+        InstType instType;
+
+        if (iType_sv == "SPOT") {
+            if (smc->get_instrument_info(OKX, SPOT, originInstId.c_str(), info)) { 
+                instType = SPOT; 
+            }
+        } 
+        else if (iType_sv == "MARGIN") {
+            if (smc->get_instrument_info(OKX, MARGIN, originInstId.c_str(), info)) { 
+                instType = MARGIN;
+            }
+        } 
+        else if (iType_sv == "SWAP" || iType_sv == "FUTURES") {
+            // 依次试 USDT_* → C_* (根据 instId 是否含 -USDT- 大致预判也可, 但这么写更 robust)
+            InstType u_swap = (iType_sv == "SWAP") ? USDT_SWAP : USDT_FUTURES;
+            InstType c_swap = (iType_sv == "SWAP") ? C_SWAP : C_FUTURES;
+
+            if (smc->get_instrument_info(OKX, u_swap, originInstId.c_str(), info)) { 
+                instType = u_swap;
+            }
+
+            if (smc->get_instrument_info(OKX, c_swap, originInstId.c_str(), info)) { 
+                instType = c_swap;
+            }
+        } else {
+            std::cout << "-----not smc info ---- " << std::endl;
+            continue;
+        }
+
+        std::cout << "--------rcmd------set before" << std::endl;
+
+        pubsub::RCommand rcmd;
+        memset(&rcmd, 0, sizeof(pubsub::RCommand));
+        rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
+        rcmd.body.orderResponse.exchangeTypeEnum = OKX;
+        rcmd.body.orderResponse.instTypeEnum = instType;
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountName, acc.accountName);
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, ordId_sv);
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, clOrdId_sv);
+
+        rcmd.body.orderResponse.offsetFlag = OF_OPEN;
+        if (!side_sv.empty()) {
+            rcmd.body.orderResponse.direction = (side_sv[0] == 'b') ? DT_LONG : DT_SHORT;
+        }
+
+        if (!sz_sv.empty()) {
+            rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(sz_sv);
+        }
+
+        if (!px_sv.empty()) {
+            rcmd.body.orderResponse.limitPrice = crypto::fast_atod(px_sv);
+        }
+
+        if (!accFill_sv.empty()) {
+            rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(accFill_sv);
+        }
+
+        if (!avgPx_sv.empty()) {
+            rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avgPx_sv);
+        }
+
+        if (!oType_sv.empty()) {
+            switch (oType_sv[0]) {
+                case 'l': 
+                    rcmd.body.orderResponse.orderType = OT_LIMIT;      
+                    break;
+                case 'm': 
+                    rcmd.body.orderResponse.orderType = OT_MARKET;     
+                    break;
+                case 'p': 
+                    rcmd.body.orderResponse.orderType = OT_POST_ONLY;  
+                    break;
+                case 'f': 
+                    rcmd.body.orderResponse.orderType = OT_FOK;        
+                    break;
+                case 'i': 
+                    rcmd.body.orderResponse.orderType = OT_IOC;        
+                    break;
+                case 'o': 
+                    rcmd.body.orderResponse.orderType = OT_MARKET;     
+                    break;   // optimal_limit_ioc
+                default:  
+                    break;
+            }
+        }
+
+        // state: live / partially_filled / filled / canceled / mmp_canceled
+        if (!state_sv.empty()) {
+            if (state_sv == "live") {
+                rcmd.body.orderResponse.orderStatus = OS_NEW;
+            }         
+            else if (state_sv == "partially_filled") {
+                rcmd.body.orderResponse.orderStatus = OS_PARTFILLED;
+            }
+            else if (state_sv == "filled") {
+                rcmd.body.orderResponse.orderStatus = OS_FILLED;
+            }
+            else if (state_sv == "canceled" || state_sv == "mmp_canceled") {
+                rcmd.body.orderResponse.orderStatus = OS_CANCELED;
+            }                                    
+            else {
+                rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
+            }                                
+        }
+
+        if (category_sv == "adl") {
+            rcmd.body.orderResponse.errorId = ADLError;
+        }
+        else if (category_sv == "twap") {
+            rcmd.body.orderResponse.errorId = TwapError;
+        }
+        else if (category_sv == "full_liquidation") {
+            rcmd.body.orderResponse.errorId = LiquidationError;
+        }
+
+        rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+        rcmd.body.orderResponse.apiSourceEnum = AS_WEBSOCKET;
+        std::cout << "orders update: " << rcmd.getString() << std::endl;
+        PUSH_RCMD(rcmd)
     }
 }
 
