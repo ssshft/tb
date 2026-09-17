@@ -359,6 +359,8 @@ void OkxWsTradeUnit::handleWsApiError(WsPending& pending, const ErrorFields& fie
         }
     }
 
+    std::cout << "fields: " << fields.code_sv << " " << fields.msg_sv << std::endl;
+
     crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, fields.msg_sv);
     rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
     PUSH_RCMD(rcmd)
