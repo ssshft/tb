@@ -1105,7 +1105,7 @@ void OkxTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     }
 
     std::string ts = crypto::getTimestampIso();
-    std::string sign = crypto::getOkxSignatureRest(acc.secretKey, ts, "POST", cancelOrderUrl, "");
+    std::string sign = crypto::getOkxSignatureRest(acc.secretKey, ts, "POST", cancelOrderUrl, body);
     std::vector<std::pair<std::string, std::string>> headers = {{"OK-ACCESS-KEY", acc.apiKey}, {"OK-ACCESS-TIMESTAMP", ts}, {"OK-ACCESS-SIGN", sign}, {"OK-ACCESS-PASSPHRASE", acc.password}};
 
     LOG_INFO("TB {} OKX cancel_order body={}", acc.accountName, body);
@@ -1171,6 +1171,11 @@ void OkxTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
                     }
                 }
             }
+
+            std::cout << "sCode_sv: " << sCode_sv << std::endl;
+            std::cout << "sMsg_sv: " << sMsg_sv << std::endl;
+            std::cout << "code_sv: " << code_sv << std::endl;
+            std::cout << "msg_sv: " << msg_sv << std::endl;
 
             if (code_sv == "0") {
                 rcmd.body.orderResponse.orderStatus = OS_CANCELED;
@@ -1247,7 +1252,7 @@ void OkxTradeUnit::query_order(const pubsub::TCommand& tcmd) {
 
         try {
             std::cout << "query order: " << resp.body << std::endl;
-            
+
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
