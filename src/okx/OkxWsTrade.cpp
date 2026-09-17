@@ -47,6 +47,9 @@ std::string OkxWsTradeUnit::buildOrderPlaceJson(int reqId,
     j.append(R"("instId":")"); 
     j.append(info.originInstId);                    
     j.push_back('"');
+    j.append(R"("instIdCode":")"); 
+    j.append(fmt::format("{}", info.instIdCode));                    
+    j.push_back('"');
     j.append(R"(,"tdMode":"cross","side":")"); 
     j.append(side);                 
     j.push_back('"');
