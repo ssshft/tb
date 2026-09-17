@@ -1,6 +1,7 @@
 #pragma once
 #include "base/BaseTrade.h"
 #include "okx/OkxTrade.h"
+#include "okx/OkxWsTrade.h"
 
 
 class OkxTradeClient : public BaseTradeClient {

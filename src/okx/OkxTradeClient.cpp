@@ -8,7 +8,7 @@ OkxTradeClient::OkxTradeClient(rapidjson::Value& accCfg, sm::SecurityManager* s)
             tradeUnit = new OkxTradeUnit(vAccount[0], smc);
         }
         else if (vAccount[0].apiMode == AM_WS) {
-            tradeUnit = new OkxTradeUnit(vAccount[0], smc);
+            tradeUnit = new OkxWsTradeUnit(vAccount[0], smc);
         }
     }
 }
