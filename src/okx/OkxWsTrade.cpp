@@ -544,7 +544,11 @@ void OkxWsTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
             continue;
         }
 
-        double positionAmt = crypto::fast_atod(pos_sv);
+        double positionAmt = 0.0;
+        if (!pos_sv.empty()) {
+            positionAmt = crypto::fast_atod(pos_sv);
+        }
+        
         pubsub::RCommand rcmd;
         memset(&rcmd, 0, sizeof(pubsub::RCommand));
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
@@ -555,12 +559,31 @@ void OkxWsTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
         crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
         rcmd.body.position.direction = positionAmt > 0 ? DT_LONG : DT_SHORT;
         rcmd.body.position.volume = std::fabs(positionAmt);
-        rcmd.body.position.maintMargin = crypto::fast_atod(mmr_sv);
-        rcmd.body.position.avgPrice = crypto::fast_atod(avg_sv);
-        rcmd.body.position.unrealizedPnl = crypto::fast_atod(upl_sv);
-        rcmd.body.position.markPrice = crypto::fast_atod(mark_sv);
-        if (!liq_sv.empty()) rcmd.body.position.liquidPrice = crypto::fast_atod(liq_sv);
-        rcmd.body.position.adlQuantile = static_cast<int>(crypto::fast_atod(adl_sv));
+
+        if (!mmr_sv.empty()) {
+            rcmd.body.position.maintMargin = crypto::fast_atod(mmr_sv);
+        }
+        
+        if (!avg_sv.empty()) {
+            rcmd.body.position.avgPrice = crypto::fast_atod(avg_sv);
+        }
+
+        if (!upl_sv.empty()) {
+            rcmd.body.position.unrealizedPnl = crypto::fast_atod(upl_sv);
+        }
+        
+        if (!mark_sv.empty()) {
+            rcmd.body.position.markPrice = crypto::fast_atod(mark_sv);
+        }
+        
+        if (!liq_sv.empty()) {
+            rcmd.body.position.liquidPrice = crypto::fast_atod(liq_sv);
+        }
+
+        if (!adl_sv.empty()) {
+            rcmd.body.position.adlQuantile = static_cast<int>(crypto::fast_atod(adl_sv));
+        }
+
         rcmd.body.position.updateTime = crypto::getCurrentTime();
         rcmd.body.position.apiSourceEnum = AS_WEBSOCKET;
         PUSH_RCMD(rcmd);
@@ -578,20 +601,20 @@ void OkxWsTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
         }
         auto& b = b_res.value_unsafe();
 
-        for (auto field : b) {
-            std::string_view iType_sv;
-            std::string_view iId_sv;
-            std::string_view ordId_sv;
-            std::string_view clOrdId_sv;
-            std::string_view sz_sv;
-            std::string_view px_sv;
-            std::string_view side_sv;
-            std::string_view oType_sv;
-            std::string_view state_sv;
-            std::string_view accFill_sv;
-            std::string_view avgPx_sv;
-            std::string_view category_sv;
+        std::string_view iType_sv;
+        std::string_view iId_sv;
+        std::string_view ordId_sv;
+        std::string_view clOrdId_sv;
+        std::string_view sz_sv;
+        std::string_view px_sv;
+        std::string_view side_sv;
+        std::string_view oType_sv;
+        std::string_view state_sv;
+        std::string_view accFill_sv;
+        std::string_view avgPx_sv;
+        std::string_view category_sv;
 
+        for (auto field : b) {
             std::string_view k = field.unescaped_key().value_unsafe();
             if (k == "instType") {
                 field.value().get(iType_sv);
@@ -629,125 +652,127 @@ void OkxWsTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
             else if (k == "category") {
                 field.value().get(category_sv);
             }
-
-            std::string originInstId(iId_sv);
-            md::InstrumentInfo info;
-            InstType instType;
-
-            if (iType_sv == "SPOT") {
-                if (smc->get_instrument_info(OKX, SPOT, originInstId.c_str(), info)) { 
-                    instType = SPOT; 
-                }
-            } else if (iType_sv == "MARGIN") {
-                if (smc->get_instrument_info(OKX, MARGIN, originInstId.c_str(), info)) { 
-                    instType = MARGIN;
-                }
-            } else if (iType_sv == "SWAP" || iType_sv == "FUTURES") {
-                // 依次试 USDT_* → C_* (根据 instId 是否含 -USDT- 大致预判也可, 但这么写更 robust)
-                InstType u_swap = (iType_sv == "SWAP") ? USDT_SWAP : USDT_FUTURES;
-                InstType c_swap = (iType_sv == "SWAP") ? C_SWAP : C_FUTURES;
-
-                if (smc->get_instrument_info(OKX, u_swap, originInstId.c_str(), info)) { 
-                    instType = u_swap;
-                }
-
-                if (smc->get_instrument_info(OKX, c_swap, originInstId.c_str(), info)) { 
-                    instType = c_swap;
-                }
-            } else {
-                continue;
-            }
-
-            pubsub::RCommand rcmd;
-            memset(&rcmd, 0, sizeof(pubsub::RCommand));
-            rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
-            rcmd.body.orderResponse.exchangeTypeEnum = OKX;
-            rcmd.body.orderResponse.instTypeEnum = instType;
-            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountName, acc.accountName);
-            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
-            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
-            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, ordId_sv);
-            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, clOrdId_sv);
-
-            rcmd.body.orderResponse.offsetFlag = OF_OPEN;
-            if (!side_sv.empty()) {
-                rcmd.body.orderResponse.direction = (side_sv[0] == 'b') ? DT_LONG : DT_SHORT;
-            }
-
-            if (!sz_sv.empty()) {
-                rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(sz_sv);
-            }
-
-            if (!px_sv.empty()) {
-                rcmd.body.orderResponse.limitPrice = crypto::fast_atod(px_sv);
-            }
-
-            if (!accFill_sv.empty()) {
-                rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(accFill_sv);
-            }
-
-            if (!avgPx_sv.empty()) {
-                rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avgPx_sv);
-            }
-
-            if (!oType_sv.empty()) {
-                switch (oType_sv[0]) {
-                    case 'l': 
-                        rcmd.body.orderResponse.orderType = OT_LIMIT;      
-                        break;
-                    case 'm': 
-                        rcmd.body.orderResponse.orderType = OT_MARKET;     
-                        break;
-                    case 'p': 
-                        rcmd.body.orderResponse.orderType = OT_POST_ONLY;  
-                        break;
-                    case 'f': 
-                        rcmd.body.orderResponse.orderType = OT_FOK;        
-                        break;
-                    case 'i': 
-                        rcmd.body.orderResponse.orderType = OT_IOC;        
-                        break;
-                    case 'o': 
-                        rcmd.body.orderResponse.orderType = OT_MARKET;     
-                        break;   // optimal_limit_ioc
-                    default:  
-                        break;
-                }
-            }
-
-            // state: live / partially_filled / filled / canceled / mmp_canceled
-            if (!state_sv.empty()) {
-                if (state_sv == "live") {
-                    rcmd.body.orderResponse.orderStatus = OS_NEW;
-                }         
-                else if (state_sv == "partially_filled") {
-                    rcmd.body.orderResponse.orderStatus = OS_PARTFILLED;
-                }
-                else if (state_sv == "filled") {
-                    rcmd.body.orderResponse.orderStatus = OS_FILLED;
-                }
-                else if (state_sv == "canceled" || state_sv == "mmp_canceled") {
-                    rcmd.body.orderResponse.orderStatus = OS_CANCELED;
-                }                                    
-                else {
-                    rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
-                }                                
-            }
-
-            if (category_sv == "adl") {
-                rcmd.body.orderResponse.errorId = ADLError;
-            }
-            else if (category_sv == "twap") {
-                rcmd.body.orderResponse.errorId = TwapError;
-            }
-            else if (category_sv == "full_liquidation") {
-                rcmd.body.orderResponse.errorId = LiquidationError;
-            }
-
-            rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
-            rcmd.body.orderResponse.apiSourceEnum = AS_WEBSOCKET;
-            PUSH_RCMD(rcmd)
         }
+
+        std::string originInstId(iId_sv);
+        md::InstrumentInfo info;
+        InstType instType;
+
+        if (iType_sv == "SPOT") {
+            if (smc->get_instrument_info(OKX, SPOT, originInstId.c_str(), info)) { 
+                instType = SPOT; 
+            }
+        } 
+        else if (iType_sv == "MARGIN") {
+            if (smc->get_instrument_info(OKX, MARGIN, originInstId.c_str(), info)) { 
+                instType = MARGIN;
+            }
+        } 
+        else if (iType_sv == "SWAP" || iType_sv == "FUTURES") {
+            // 依次试 USDT_* → C_* (根据 instId 是否含 -USDT- 大致预判也可, 但这么写更 robust)
+            InstType u_swap = (iType_sv == "SWAP") ? USDT_SWAP : USDT_FUTURES;
+            InstType c_swap = (iType_sv == "SWAP") ? C_SWAP : C_FUTURES;
+
+            if (smc->get_instrument_info(OKX, u_swap, originInstId.c_str(), info)) { 
+                instType = u_swap;
+            }
+
+            if (smc->get_instrument_info(OKX, c_swap, originInstId.c_str(), info)) { 
+                instType = c_swap;
+            }
+        } else {
+            continue;
+        }
+
+        pubsub::RCommand rcmd;
+        memset(&rcmd, 0, sizeof(pubsub::RCommand));
+        rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
+        rcmd.body.orderResponse.exchangeTypeEnum = OKX;
+        rcmd.body.orderResponse.instTypeEnum = instType;
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountName, acc.accountName);
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, ordId_sv);
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, clOrdId_sv);
+
+        rcmd.body.orderResponse.offsetFlag = OF_OPEN;
+        if (!side_sv.empty()) {
+            rcmd.body.orderResponse.direction = (side_sv[0] == 'b') ? DT_LONG : DT_SHORT;
+        }
+
+        if (!sz_sv.empty()) {
+            rcmd.body.orderResponse.volumeTotal = crypto::fast_atod(sz_sv);
+        }
+
+        if (!px_sv.empty()) {
+            rcmd.body.orderResponse.limitPrice = crypto::fast_atod(px_sv);
+        }
+
+        if (!accFill_sv.empty()) {
+            rcmd.body.orderResponse.volumeTraded = crypto::fast_atod(accFill_sv);
+        }
+
+        if (!avgPx_sv.empty()) {
+            rcmd.body.orderResponse.tradePrice = crypto::fast_atod(avgPx_sv);
+        }
+
+        if (!oType_sv.empty()) {
+            switch (oType_sv[0]) {
+                case 'l': 
+                    rcmd.body.orderResponse.orderType = OT_LIMIT;      
+                    break;
+                case 'm': 
+                    rcmd.body.orderResponse.orderType = OT_MARKET;     
+                    break;
+                case 'p': 
+                    rcmd.body.orderResponse.orderType = OT_POST_ONLY;  
+                    break;
+                case 'f': 
+                    rcmd.body.orderResponse.orderType = OT_FOK;        
+                    break;
+                case 'i': 
+                    rcmd.body.orderResponse.orderType = OT_IOC;        
+                    break;
+                case 'o': 
+                    rcmd.body.orderResponse.orderType = OT_MARKET;     
+                    break;   // optimal_limit_ioc
+                default:  
+                    break;
+            }
+        }
+
+        // state: live / partially_filled / filled / canceled / mmp_canceled
+        if (!state_sv.empty()) {
+            if (state_sv == "live") {
+                rcmd.body.orderResponse.orderStatus = OS_NEW;
+            }         
+            else if (state_sv == "partially_filled") {
+                rcmd.body.orderResponse.orderStatus = OS_PARTFILLED;
+            }
+            else if (state_sv == "filled") {
+                rcmd.body.orderResponse.orderStatus = OS_FILLED;
+            }
+            else if (state_sv == "canceled" || state_sv == "mmp_canceled") {
+                rcmd.body.orderResponse.orderStatus = OS_CANCELED;
+            }                                    
+            else {
+                rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
+            }                                
+        }
+
+        if (category_sv == "adl") {
+            rcmd.body.orderResponse.errorId = ADLError;
+        }
+        else if (category_sv == "twap") {
+            rcmd.body.orderResponse.errorId = TwapError;
+        }
+        else if (category_sv == "full_liquidation") {
+            rcmd.body.orderResponse.errorId = LiquidationError;
+        }
+
+        rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+        rcmd.body.orderResponse.apiSourceEnum = AS_WEBSOCKET;
+        PUSH_RCMD(rcmd)
     }
 }
 
@@ -763,11 +788,14 @@ void OkxWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
     std::string sign = crypto::getOkxSignatureRest(acc.secretKey, ts, "GET", balanceUrl, "");
     std::vector<std::pair<std::string, std::string>> headers = {{"OK-ACCESS-KEY", acc.apiKey}, {"OK-ACCESS-TIMESTAMP", ts}, {"OK-ACCESS-SIGN", sign}, {"OK-ACCESS-PASSPHRASE", acc.password}};
 
+    std::cout << "OkxTradeUnit query_balance" << std::endl;
     asyncRequest(boost::beast::http::verb::get, balanceUrl, "", "", std::move(headers), [this](boost::system::error_code ec, net::HttpResponse resp) {
         if (ec) { 
             LOG_ERROR("TB {} OKX query_balance ec: {}", acc.accountName, ec.message()); 
             return; 
         }
+
+        std::cout << "query_balance: " << resp.body << std::endl;
 
         try {
             simdjson::padded_string padded(resp.body);
@@ -783,6 +811,7 @@ void OkxWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                     if (b_res.error()) {
                         continue;
                     }
+
                     auto& b = b_res.value_unsafe();
 
                     std::string_view teq_sv;
@@ -879,6 +908,9 @@ void OkxWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                     PUSH_RCMD(rcmd)
                 }
             }
+            else {
+                std::cout << "no data" << std::endl;
+            }
         } catch (const std::exception& e) {
             LOG_ERROR("TB {} OKX query_balance cb exc: {}", acc.accountName, e.what());
         }
@@ -897,6 +929,8 @@ void OkxWsTradeUnit::query_position(const pubsub::TCommand&) {
         }    
         
         try {
+            std::cout << "query position: " << resp.body << std::endl;
+
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -983,7 +1017,11 @@ void OkxWsTradeUnit::query_position(const pubsub::TCommand&) {
                         continue;
                     }
 
-                    double positionAmt = crypto::fast_atod(pos_sv);
+                    double positionAmt = 0.0;
+                    if (!pos_sv.empty()) {
+                        positionAmt = crypto::fast_atod(pos_sv);
+                    }
+                    
                     pubsub::RCommand rcmd;
                     memset(&rcmd, 0, sizeof(pubsub::RCommand));
                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
@@ -993,13 +1031,33 @@ void OkxWsTradeUnit::query_position(const pubsub::TCommand&) {
                     crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
                     crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
                     rcmd.body.position.direction = positionAmt > 0 ? DT_LONG : DT_SHORT;
+
                     rcmd.body.position.volume = std::fabs(positionAmt);
-                    rcmd.body.position.maintMargin = crypto::fast_atod(mmr_sv);
-                    rcmd.body.position.avgPrice = crypto::fast_atod(avg_sv);
-                    rcmd.body.position.unrealizedPnl = crypto::fast_atod(upl_sv);
-                    rcmd.body.position.markPrice = crypto::fast_atod(mark_sv);
-                    if (!liq_sv.empty()) rcmd.body.position.liquidPrice = crypto::fast_atod(liq_sv);
-                    rcmd.body.position.adlQuantile = static_cast<int>(crypto::fast_atod(adl_sv));
+
+                    if (!mmr_sv.empty()) {
+                        rcmd.body.position.maintMargin = crypto::fast_atod(mmr_sv);
+                    }
+                    
+                    if (!avg_sv.empty()) {
+                        rcmd.body.position.avgPrice = crypto::fast_atod(avg_sv);
+                    }
+                    
+                    if (!upl_sv.empty()) {
+                        rcmd.body.position.unrealizedPnl = crypto::fast_atod(upl_sv);
+                    }
+                    
+                    if (!mark_sv.empty()) {
+                        rcmd.body.position.markPrice = crypto::fast_atod(mark_sv);
+                    }
+                    
+                    if (!liq_sv.empty()) {
+                        rcmd.body.position.liquidPrice = crypto::fast_atod(liq_sv);
+                    }
+
+                    if (!adl_sv.empty()) {
+                        rcmd.body.position.adlQuantile = static_cast<int>(crypto::fast_atod(adl_sv));
+                    }
+                    
                     rcmd.body.position.updateTime = crypto::getCurrentTime();
                     rcmd.body.position.apiSourceEnum = AS_REST;
                     pending.emplace_back(rcmd);
