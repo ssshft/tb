@@ -405,7 +405,6 @@ void OkxTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
 
         for (auto field : b) {
             std::string_view k = field.unescaped_key().value_unsafe();
-            std::cout << "---orders--- k: " << k << std::endl;
             if (k == "instType") {
                 field.value().get(iType_sv);
             }
@@ -471,11 +470,8 @@ void OkxTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
                 instType = c_swap;
             }
         } else {
-            std::cout << "-----not smc info ---- " << std::endl;
             continue;
         }
-
-        std::cout << "--------rcmd------set before" << std::endl;
 
         pubsub::RCommand rcmd;
         memset(&rcmd, 0, sizeof(pubsub::RCommand));
@@ -565,7 +561,6 @@ void OkxTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
 
         rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
         rcmd.body.orderResponse.apiSourceEnum = AS_WEBSOCKET;
-        std::cout << "orders update: " << rcmd.getString() << std::endl;
         PUSH_RCMD(rcmd)
     }
 }
@@ -986,6 +981,8 @@ void OkxTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             return;
         }
 
+        std::cout << "add new order: " << resp.body << std::endl;
+
         try {
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
@@ -1123,6 +1120,8 @@ void OkxTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
             return;
         }
         try {
+            std::cout << "cancel order: " << resp.body << std::endl;
+
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -1247,6 +1246,8 @@ void OkxTradeUnit::query_order(const pubsub::TCommand& tcmd) {
         }
 
         try {
+            std::cout << "query order: " << resp.body << std::endl;
+            
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
