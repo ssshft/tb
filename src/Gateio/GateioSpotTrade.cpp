@@ -162,6 +162,7 @@ void GateioSpotTradeUnit::handleBalancesUpdate(simdjson::ondemand::array& arr) {
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
         rcmd.body.balance.exchangeTypeEnum = GATEIO;
         rcmd.body.balance.instTypeEnum = SPOT;
+        rcmd.body.balance.accountId = acc.accountId;
         crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
         crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
         crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(cur_sv)));
@@ -238,6 +239,7 @@ void GateioSpotTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
         rcmd.body.orderResponse.exchangeTypeEnum = GATEIO;
         rcmd.body.orderResponse.instTypeEnum = SPOT;
+        rcmd.body.orderResponse.accountId = acc.accountId;
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountName, acc.accountName);
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
@@ -363,6 +365,7 @@ void GateioSpotTradeUnit::query_account(const pubsub::TCommand&) {
                         rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                         rcmd.body.balance.exchangeTypeEnum = GATEIO;
                         rcmd.body.balance.instTypeEnum = SPOT;
+                        rcmd.body.balance.accountId = acc.accountId;
                         crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
                         crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                         crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(asset)));
@@ -399,6 +402,7 @@ void GateioSpotTradeUnit::query_account(const pubsub::TCommand&) {
             rcmd.cmdTypeEnum = pubsub::CMD_RPT_TOTAL_ACCOUNT;
             rcmd.body.totalAccount.exchangeTypeEnum = GATEIO;
             rcmd.body.totalAccount.instTypeEnum = SPOT;
+            rcmd.body.totalAccount.accountId = acc.accountId;
             crypto::copy_sv_to_char_array(rcmd.body.totalAccount.accountName, acc.accountName);
             crypto::copy_sv_to_char_array(rcmd.body.totalAccount.strategyId, acc.strategyId);
             rcmd.body.totalAccount.totalEquity = crypto::fast_atod(teq_sv);
@@ -471,6 +475,7 @@ void GateioSpotTradeUnit::query_balance(const pubsub::TCommand&) {
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                 rcmd.body.balance.exchangeTypeEnum = GATEIO;
                 rcmd.body.balance.instTypeEnum = SPOT;
+                rcmd.body.balance.accountId = acc.accountId;
                 crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(cur_sv)));
@@ -487,6 +492,7 @@ void GateioSpotTradeUnit::query_balance(const pubsub::TCommand&) {
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                 rcmd.body.balance.exchangeTypeEnum = GATEIO;
                 rcmd.body.balance.instTypeEnum = SPOT;
+                rcmd.body.balance.accountId = acc.accountId;
                 crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.currency, std::string("USDT"));

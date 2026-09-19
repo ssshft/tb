@@ -222,6 +222,7 @@ void OkxTradeUnit::handleAccountUpdate(simdjson::ondemand::array& arr) {
                         rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                         rcmd.body.balance.exchangeTypeEnum = OKX;
                         rcmd.body.balance.instTypeEnum = SPOT;
+                        rcmd.body.balance.accountId = acc.accountId;
                         crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
                         crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                         crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(ccy_sv)));
@@ -241,6 +242,7 @@ void OkxTradeUnit::handleAccountUpdate(simdjson::ondemand::array& arr) {
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_TOTAL_ACCOUNT;
         rcmd.body.totalAccount.exchangeTypeEnum = OKX;
         rcmd.body.totalAccount.instTypeEnum = SPOT;
+        rcmd.body.totalAccount.accountId = acc.accountId;
         crypto::copy_sv_to_char_array(rcmd.body.totalAccount.accountName, acc.accountName);
         crypto::copy_sv_to_char_array(rcmd.body.totalAccount.strategyId, acc.strategyId);
         rcmd.body.totalAccount.totalEquity = crypto::fast_atod(teq_sv);
@@ -343,6 +345,7 @@ void OkxTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
         rcmd.body.position.exchangeTypeEnum = OKX;
         rcmd.body.position.instTypeEnum = instType;
+        rcmd.body.position.accountId = acc.accountId;
         crypto::copy_sv_to_char_array(rcmd.body.position.accountName, acc.accountName);
         crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
         crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
@@ -478,6 +481,7 @@ void OkxTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
         rcmd.body.orderResponse.exchangeTypeEnum = OKX;
         rcmd.body.orderResponse.instTypeEnum = instType;
+        rcmd.body.orderResponse.accountId = acc.accountId;
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountName, acc.accountName);
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
@@ -662,6 +666,7 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                                     rcmd.body.balance.exchangeTypeEnum = OKX;
                                     rcmd.body.balance.instTypeEnum = SPOT;
+                                    rcmd.body.balance.accountId = acc.accountId;
                                     crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
                                     crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                                     crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(ccy_sv)));
@@ -686,6 +691,7 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_TOTAL_ACCOUNT;
                     rcmd.body.totalAccount.exchangeTypeEnum = OKX;
                     rcmd.body.totalAccount.instTypeEnum = SPOT;
+                    rcmd.body.totalAccount.accountId = acc.accountId;
                     crypto::copy_sv_to_char_array(rcmd.body.totalAccount.accountName, acc.accountName);
                     crypto::copy_sv_to_char_array(rcmd.body.totalAccount.strategyId, acc.strategyId);
                     rcmd.body.totalAccount.totalEquity = crypto::fast_atod(teq_sv);
@@ -816,6 +822,7 @@ void OkxTradeUnit::query_position(const pubsub::TCommand&) {
                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
                     rcmd.body.position.exchangeTypeEnum = OKX;
                     rcmd.body.position.instTypeEnum = instType;
+                    rcmd.body.position.accountId = acc.accountId;
                     crypto::copy_sv_to_char_array(rcmd.body.position.accountName, acc.accountName);
                     crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
                     crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));

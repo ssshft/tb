@@ -16,6 +16,7 @@ constexpr auto ORDER_REJECTED_TIME_OUT = 30 * 1e6;
     rcmd.cmdTypeEnum = pubsub::CMD_RPT_NEW_ORDER; \
     rcmd.body.orderResponse.exchangeTypeEnum = tcmd.body.newOrder.exchangeTypeEnum; \
     rcmd.body.orderResponse.instTypeEnum = tcmd.body.newOrder.instTypeEnum; \
+    rcmd.body.orderResponse.accountId = tcmd.body.newOrder.accountId; \
     strncpy(rcmd.body.orderResponse.accountName, tcmd.body.newOrder.accountName, 32); \
     strncpy(rcmd.body.orderResponse.strategyId, tcmd.body.newOrder.strategyId, 32); \
     strncpy(rcmd.body.orderResponse.instId, tcmd.body.newOrder.instId, 32); \
@@ -37,6 +38,7 @@ constexpr auto ORDER_REJECTED_TIME_OUT = 30 * 1e6;
     rcmd.cmdTypeEnum = pubsub::CMD_RPT_CANCEL_ORDER; \
     rcmd.body.orderResponse.exchangeTypeEnum = tcmd.body.cancelOrder.exchangeTypeEnum; \
     rcmd.body.orderResponse.instTypeEnum = tcmd.body.cancelOrder.instTypeEnum; \
+    rcmd.body.orderResponse.accountId = tcmd.body.cancelOrder.accountId; \
     strncpy(rcmd.body.orderResponse.accountName, tcmd.body.cancelOrder.accountName, 32); \
     strncpy(rcmd.body.orderResponse.strategyId, tcmd.body.cancelOrder.strategyId, 32); \
     strncpy(rcmd.body.orderResponse.instId, tcmd.body.cancelOrder.instId, 32); \
@@ -52,6 +54,7 @@ constexpr auto ORDER_REJECTED_TIME_OUT = 30 * 1e6;
     rcmd.cmdTypeEnum = pubsub::CMD_RPT_QUERY_ORDER; \
     rcmd.body.orderResponse.exchangeTypeEnum = tcmd.body.queryOrder.exchangeTypeEnum; \
     rcmd.body.orderResponse.instTypeEnum = tcmd.body.queryOrder.instTypeEnum; \
+    rcmd.body.orderResponse.accountId = tcmd.body.queryOrder.accountId; \
     strncpy(rcmd.body.orderResponse.accountName, tcmd.body.queryOrder.accountName, 32); \
     strncpy(rcmd.body.orderResponse.strategyId, tcmd.body.queryOrder.strategyId, 32); \
     strncpy(rcmd.body.orderResponse.instId, tcmd.body.queryOrder.instId, 32); \

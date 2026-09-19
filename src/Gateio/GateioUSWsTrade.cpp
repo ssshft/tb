@@ -527,6 +527,7 @@ void GateioUsWsTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
         rcmd.body.orderResponse.exchangeTypeEnum = GATEIO;
         rcmd.body.orderResponse.instTypeEnum = USDT_SWAP;
+        rcmd.body.orderResponse.accountId = acc.accountId;
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountName, acc.accountName);
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
@@ -621,6 +622,7 @@ void GateioUsWsTradeUnit::handleBalancesUpdate(simdjson::ondemand::array& arr) {
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
         rcmd.body.balance.exchangeTypeEnum = GATEIO;
         rcmd.body.balance.instTypeEnum = USDT_SWAP;
+        rcmd.body.balance.accountId = acc.accountId;
         crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
         crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
         crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(cur_sv)));
@@ -688,6 +690,7 @@ void GateioUsWsTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) 
         rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
         rcmd.body.position.exchangeTypeEnum = GATEIO;
         rcmd.body.position.instTypeEnum = USDT_SWAP;
+        rcmd.body.position.accountId = acc.accountId;
         crypto::copy_sv_to_char_array(rcmd.body.position.accountName, acc.accountName);
         crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
         crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
@@ -784,6 +787,7 @@ void GateioUsWsTradeUnit::query_balance(const pubsub::TCommand&) {
             rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
             rcmd.body.balance.exchangeTypeEnum = GATEIO;
             rcmd.body.balance.instTypeEnum = USDT_SWAP;
+            rcmd.body.balance.accountId = acc.accountId;
             crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
             crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
             crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(cur_sv)));
@@ -800,6 +804,7 @@ void GateioUsWsTradeUnit::query_balance(const pubsub::TCommand&) {
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                 rcmd.body.balance.exchangeTypeEnum = GATEIO;
                 rcmd.body.balance.instTypeEnum = USDT_SWAP;
+                rcmd.body.balance.accountId = acc.accountId;
                 crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.currency, std::string("USDT"));
@@ -902,6 +907,7 @@ void GateioUsWsTradeUnit::query_position(const pubsub::TCommand&) {
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
                 rcmd.body.position.exchangeTypeEnum = GATEIO;
                 rcmd.body.position.instTypeEnum = USDT_SWAP;
+                rcmd.body.position.accountId = acc.accountId;
                 crypto::copy_sv_to_char_array(rcmd.body.position.accountName, acc.accountName);
                 crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
@@ -942,6 +948,7 @@ void GateioUsWsTradeUnit::query_position(const pubsub::TCommand&) {
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
                 rcmd.body.position.exchangeTypeEnum = GATEIO;
                 rcmd.body.position.instTypeEnum = USDT_SWAP;
+                rcmd.body.position.accountId = acc.accountId;
                 crypto::copy_sv_to_char_array(rcmd.body.position.accountName, acc.accountName);
                 crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view("BTC-USDT"));

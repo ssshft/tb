@@ -327,6 +327,7 @@ void BinanceUnifiedTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bo
             rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
             rcmd.body.orderResponse.exchangeTypeEnum = BINANCE;
             rcmd.body.orderResponse.instTypeEnum = SPOT;
+            rcmd.body.orderResponse.accountId = acc.accountId;
             crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountName, acc.accountName);
             crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
             crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
@@ -469,6 +470,7 @@ void BinanceUnifiedTradeUnit::handleAccountUpdate(simdjson::ondemand::object& a)
                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
                     rcmd.body.position.exchangeTypeEnum = BINANCE;
                     rcmd.body.position.instTypeEnum = inst;
+                    rcmd.body.position.accountId = acc.accountId;
                     crypto::copy_sv_to_char_array(rcmd.body.position.accountName, acc.accountName);
                     crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
                     crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
@@ -575,6 +577,7 @@ void BinanceUnifiedTradeUnit::handleOrderUpdate(simdjson::ondemand::object& o) {
     rcmd.cmdTypeEnum = pubsub::CMD_RPT_NEW_ORDER;
     rcmd.body.orderResponse.exchangeTypeEnum = BINANCE;
     rcmd.body.orderResponse.instTypeEnum = inst;
+    rcmd.body.orderResponse.accountId = acc.accountId;
     crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountName, acc.accountName);
     crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
     crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
@@ -661,6 +664,7 @@ void BinanceUnifiedTradeUnit::query_account(const pubsub::TCommand&) {
             rcmd.cmdTypeEnum = pubsub::CMD_RPT_TOTAL_ACCOUNT;
             rcmd.body.totalAccount.exchangeTypeEnum = BINANCE;
             rcmd.body.totalAccount.instTypeEnum = SPOT;
+            rcmd.body.totalAccount.accountId = acc.accountId;
             crypto::copy_sv_to_char_array(rcmd.body.totalAccount.accountName, acc.accountName);
             crypto::copy_sv_to_char_array(rcmd.body.totalAccount.strategyId, acc.strategyId);
             rcmd.body.totalAccount.totalEquity = crypto::fast_atod(eq_sv);
@@ -735,6 +739,7 @@ void BinanceUnifiedTradeUnit::query_balance(const pubsub::TCommand&) {
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                 rcmd.body.balance.exchangeTypeEnum = BINANCE;
                 rcmd.body.balance.instTypeEnum = SPOT;
+                rcmd.body.balance.accountId = acc.accountId;
                 crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(asset_sv)));
@@ -751,6 +756,7 @@ void BinanceUnifiedTradeUnit::query_balance(const pubsub::TCommand&) {
                 rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
                 rcmd.body.balance.exchangeTypeEnum = BINANCE;
                 rcmd.body.balance.instTypeEnum = SPOT;
+                rcmd.body.balance.accountId = acc.accountId;
                 crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.currency, std::string("USDT"));
@@ -913,6 +919,7 @@ void BinanceUnifiedTradeUnit::query_position(const pubsub::TCommand& tcmd) {
                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
                     rcmd.body.position.exchangeTypeEnum = BINANCE;
                     rcmd.body.position.instTypeEnum = inst;
+                    rcmd.body.position.accountId = acc.accountId;
                     crypto::copy_sv_to_char_array(rcmd.body.position.accountName, acc.accountName);
                     crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
                     crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
@@ -938,6 +945,7 @@ void BinanceUnifiedTradeUnit::query_position(const pubsub::TCommand& tcmd) {
                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
                     rcmd.body.position.exchangeTypeEnum = BINANCE;
                     rcmd.body.position.instTypeEnum = USDT_SWAP;
+                    rcmd.body.position.accountId = acc.accountId;
                     crypto::copy_sv_to_char_array(rcmd.body.position.accountName, acc.accountName);
                     crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
                     crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view("BTC-USDT"));
