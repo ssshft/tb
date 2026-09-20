@@ -271,7 +271,7 @@ void BinanceUFTradeUnit::handleAccountUpdate(simdjson::ondemand::object& a) {
                     crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(a_sv)));
                     rcmd.body.balance.total = crypto::fast_atod(wb_sv);
                     rcmd.body.balance.available = crypto::fast_atod(cw_sv);
-                    rcmd.body.balance.frozen = crypto::fast_atod(bc_sv);
+                    rcmd.body.balance.frozen = rcmd.body.balance.total - rcmd.body.balance.available;
                     rcmd.body.balance.updateTime = crypto::getCurrentTime();
                     rcmd.body.balance.apiSourceEnum = AS_WEBSOCKET;
                     PUSH_RCMD(rcmd)
@@ -541,8 +541,8 @@ void BinanceUFTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                 crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(asset_sv)));
                 rcmd.body.balance.available = crypto::fast_atod(availableBalance_sv);
-                rcmd.body.balance.frozen = crypto::fast_atod(marginBalance_sv);
                 rcmd.body.balance.total = crypto::fast_atod(walletBalance_sv);
+                rcmd.body.balance.frozen = rcmd.body.balance.total - rcmd.body.balance.available;
                 rcmd.body.balance.updateTime = crypto::getCurrentTime();
                 rcmd.body.balance.apiSourceEnum = AS_REST;
                 pendingBalances.emplace_back(rcmd);

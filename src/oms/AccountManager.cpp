@@ -29,6 +29,7 @@ bool am::AccountManager::processRcmd(pubsub::RCommand& rcmd) {
             if (rcmd.body.balance.apiSourceEnum == AS_REST) {
                 switch (rcmd.body.balance.exchangeTypeEnum) {
                     case BINANCE:
+                    case GATEIO:
                     case OKX:
                     case BYBIT:
                     case HTX:
@@ -52,6 +53,7 @@ bool am::AccountManager::processRcmd(pubsub::RCommand& rcmd) {
             else if (rcmd.body.balance.apiSourceEnum == AS_WEBSOCKET) {
                 switch (rcmd.body.balance.exchangeTypeEnum) {
                     case BINANCE:
+                    case GATEIO:
                     case OKX:
                     case BYBIT:
                     case HTX:
