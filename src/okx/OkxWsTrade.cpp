@@ -1075,6 +1075,24 @@ void OkxWsTradeUnit::query_position(const pubsub::TCommand&) {
                     pending.emplace_back(rcmd);
                 }
 
+                if (pending.empty()) {
+                    pubsub::RCommand rcmd;
+                    memset(&rcmd, 0, sizeof(pubsub::RCommand));
+                    rcmd.cmdTypeEnum = pubsub::CMD_RPT_POSITION;
+                    rcmd.body.position.exchangeTypeEnum = OKX;
+                    rcmd.body.position.instTypeEnum = USDT_SWAP;
+                    rcmd.body.position.accountId = acc.accountId;
+                    crypto::copy_sv_to_char_array(rcmd.body.position.accountName, acc.accountName);
+                    crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
+                    crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view("BTC-USDT"));
+                    rcmd.body.position.direction = DT_LONG;
+                    rcmd.body.position.updateTime = crypto::getCurrentTime();
+                    rcmd.body.position.apiSourceEnum = AS_REST;
+                    rcmd.body.position.isLast = true;
+                    PUSH_RCMD(rcmd);
+                    return;
+                }
+
                 for (size_t i = 0; i < pending.size(); ++i) {
                     pending[i].body.position.isLast = (i + 1 == pending.size());
                     PUSH_RCMD(pending[i])

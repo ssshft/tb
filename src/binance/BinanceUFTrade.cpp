@@ -676,6 +676,7 @@ void BinanceUFTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                 crypto::copy_sv_to_char_array(rcmd.body.position.accountName, acc.accountName);
                 crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view("BTC-USDT"));
+                rcmd.body.position.direction = DT_LONG;
                 rcmd.body.position.updateTime = crypto::getCurrentTime();
                 rcmd.body.position.apiSourceEnum = AS_REST;
                 rcmd.body.position.isLast = true;
@@ -818,6 +819,7 @@ void BinanceUFTradeUnit::query_position(const pubsub::TCommand&) {
                 crypto::copy_sv_to_char_array(rcmd.body.position.accountName, acc.accountName);
                 crypto::copy_sv_to_char_array(rcmd.body.position.strategyId, acc.strategyId);
                 crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view("BTC-USDT"));
+                rcmd.body.position.direction = DT_LONG;
                 rcmd.body.position.updateTime = crypto::getCurrentTime();
                 rcmd.body.position.apiSourceEnum = AS_REST;
                 rcmd.body.position.isLast = true;
