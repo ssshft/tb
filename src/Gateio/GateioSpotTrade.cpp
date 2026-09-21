@@ -566,9 +566,6 @@ void GateioSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
         return;
     }
 
-    double price = crypto::getFixedPrecision(tcmd.body.newOrder.limitPrice * info.magnifyNumber, info.tickSize);
-    double volume = crypto::getFixedPrecision(tcmd.body.newOrder.volumeTotal * info.reduceNumber, info.lotSize);
-
     const char* tif = nullptr;
     bool priceZero = false;
     switch (tcmd.body.newOrder.orderType) {
@@ -613,17 +610,19 @@ void GateioSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     }
 #endif
 
-    std::string price_str = priceZero ? "0" : fmt::format("{}", price);
-    std::string amount_str = fmt::format("{}", volume);
+    double price  = crypto::quantize(tcmd.body.newOrder.limitPrice * info.magnifyNumber,  info.pricePow10, info.tickSizeInt);
+    double volume = crypto::quantize(tcmd.body.newOrder.volumeTotal * info.reduceNumber, info.sizePow10,  info.lotSizeInt);
+    std::string price_str = priceZero ? "0" : fmt::format("{:.{}f}", price, info.priceDigits);
+    std::string volume_str  = fmt::format("{:.{}f}", volume, info.sizeDigits);
 
 #ifdef USE_GATEIO_UNIFIED
     std::string body = fmt::format(
         R"({{"text":"{}","currency_pair":"{}","price":"{}","amount":"{}","side":"{}","time_in_force":"{}","account":"unified","auto_borrow":true,"auto_repay":true}})",
-        tcmd.body.newOrder.orderSysId, info.originInstId, price_str, amount_str, side, tif);
+        tcmd.body.newOrder.orderSysId, info.originInstId, price_str, volume_str, side, tif);
 #else
     std::string body = fmt::format(
         R"({{"text":"{}","currency_pair":"{}","price":"{}","amount":"{}","side":"{}","time_in_force":"{}","account":"{}"}})",
-        tcmd.body.newOrder.orderSysId, info.originInstId, price_str, amount_str, side, tif, account);
+        tcmd.body.newOrder.orderSysId, info.originInstId, price_str, volume_str, side, tif, account);
 #endif
 
     std::string time_str = std::to_string(crypto::getCurrentTimeSeconds());

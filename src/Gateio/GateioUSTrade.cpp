@@ -687,9 +687,6 @@ void GateioUSTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
         return;
     }
 
-    double price = crypto::getFixedPrecision(tcmd.body.newOrder.limitPrice * info.magnifyNumber, info.tickSize);
-    double volume = crypto::getFixedPrecision(tcmd.body.newOrder.volumeTotal * info.reduceNumber, info.lotSize);
-
     // Gate futures 用带正负号的 size (正=多, 负=空), tif 走 gtc/ioc/poc/fok
     const char* tif = nullptr;
     bool priceZero  = false;
@@ -717,6 +714,9 @@ void GateioUSTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             PUSH_RCMD(rcmd)
             return;
     }
+
+    double price  = crypto::quantize(tcmd.body.newOrder.limitPrice * info.magnifyNumber,  info.pricePow10, info.tickSizeInt);
+    double volume = crypto::quantize(tcmd.body.newOrder.volumeTotal * info.reduceNumber, info.sizePow10,  info.lotSizeInt);
 
     // size 正负规则:
     //   OPEN + LONG   → +vol   (买多)
@@ -748,15 +748,12 @@ void GateioUSTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
         return;
     }
 
-    int pricePrecision = static_cast<int>(std::llround(-std::log10(info.tickSize)));
-    int sizePrecision = static_cast<int>(std::llround(-std::log10(info.lotSize)));
- 
-    std::string price_str = priceZero ? "0" : fmt::format("{:.{}f}", price, pricePrecision);
-    std::string size_str = fmt::format("{:.{}f}", sizeSigned, sizePrecision);
+    std::string price_str = priceZero ? "0" : fmt::format("{:.{}f}", price, info.priceDigits);
+    std::string volume_str = fmt::format("{:.{}f}", sizeSigned, info.sizeDigits);
 
     std::string body = fmt::format(
         R"({{"text":"{}","contract":"{}","price":"{}","size":{},"tif":"{}","reduce_only":{}}})",
-        tcmd.body.newOrder.orderSysId, info.originInstId, price_str, size_str, tif,
+        tcmd.body.newOrder.orderSysId, info.originInstId, price_str, volume_str, tif,
         tcmd.body.newOrder.reduceOnly ? "true" : "false");
 
     std::string time_str = std::to_string(crypto::getCurrentTimeSeconds());

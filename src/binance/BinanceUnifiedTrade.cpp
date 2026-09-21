@@ -1023,8 +1023,10 @@ void BinanceUnifiedTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
         return;
     }
 
-    double price = crypto::getFixedPrecision(tcmd.body.newOrder.limitPrice  * info.magnifyNumber, info.tickSize);
-    double volume = crypto::getFixedPrecision(tcmd.body.newOrder.volumeTotal * info.reduceNumber, info.lotSize);
+    double price  = crypto::quantize(tcmd.body.newOrder.limitPrice * info.magnifyNumber,  info.pricePow10, info.tickSizeInt);
+    double volume = crypto::quantize(tcmd.body.newOrder.volumeTotal * info.reduceNumber, info.sizePow10,  info.lotSizeInt);
+    std::string price_str = fmt::format("{:.{}f}", price, info.priceDigits);
+    std::string volume_str  = fmt::format("{:.{}f}", volume, info.sizeDigits);
 
     std::vector<std::pair<std::string, std::string>> kvs;
     kvs.reserve(14);
@@ -1038,13 +1040,13 @@ void BinanceUnifiedTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
         case OT_LIMIT:
             kvs.emplace_back("type", "LIMIT");
             kvs.emplace_back("timeInForce", "GTC");
-            kvs.emplace_back("price", fmt::format("{}", price));
-            kvs.emplace_back("quantity", fmt::format("{}", volume));
+            kvs.emplace_back("price", price_str);
+            kvs.emplace_back("quantity", volume_str);
             kvs.emplace_back("newOrderRespType", "RESULT");
             break;
         case OT_MARKET:
             kvs.emplace_back("type", "MARKET");
-            kvs.emplace_back("quantity", fmt::format("{}", volume));
+            kvs.emplace_back("quantity", volume_str);
             kvs.emplace_back("newOrderRespType", "RESULT");
             break;
         case OT_POST_ONLY:
@@ -1054,22 +1056,22 @@ void BinanceUnifiedTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
                 kvs.emplace_back("type", "LIMIT");
                 kvs.emplace_back("timeInForce", "GTX");
             }
-            kvs.emplace_back("price", fmt::format("{}", price));
-            kvs.emplace_back("quantity", fmt::format("{}", volume));
+            kvs.emplace_back("price", price_str);
+            kvs.emplace_back("quantity", volume_str);
             kvs.emplace_back("newOrderRespType", "RESULT");
             break;
         case OT_FOK:
             kvs.emplace_back("type", "LIMIT");
             kvs.emplace_back("timeInForce", "FOK");
-            kvs.emplace_back("price", fmt::format("{}", price));
-            kvs.emplace_back("quantity", fmt::format("{}", volume));
+            kvs.emplace_back("price", price_str);
+            kvs.emplace_back("quantity", volume_str);
             kvs.emplace_back("newOrderRespType", "RESULT");
             break;
         case OT_IOC:
             kvs.emplace_back("type", "LIMIT");
             kvs.emplace_back("timeInForce", "IOC");
-            kvs.emplace_back("price", fmt::format("{}", price));
-            kvs.emplace_back("quantity", fmt::format("{}", volume));
+            kvs.emplace_back("price", price_str);
+            kvs.emplace_back("quantity", volume_str);
             kvs.emplace_back("newOrderRespType", "RESULT");
             break;
         default:

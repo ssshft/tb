@@ -58,11 +58,8 @@ std::string GateioUsWsTradeUnit::buildSubscribeJson(int reqId, const char* chann
     return j;
 }
 
-std::string GateioUsWsTradeUnit::buildOrderPlaceJson(int reqId, const pubsub::TCommand& tcmd, const md::InstrumentInfo& info, const std::string& price, double sizeSigned, const char* tif) const {
+std::string GateioUsWsTradeUnit::buildOrderPlaceJson(int reqId, const pubsub::TCommand& tcmd, const md::InstrumentInfo& info, const std::string& price_str, const std::string& size_str, const char* tif) const {
     int64_t ts = crypto::getCurrentTimeSeconds();
-
-    int sizePrecision = static_cast<int>(std::llround(-std::log10(info.lotSize)));
-    std::string size_str = fmt::format("{:.{}f}", sizeSigned, sizePrecision);
 
     std::string j;
     j.reserve(400);
@@ -80,9 +77,9 @@ std::string GateioUsWsTradeUnit::buildOrderPlaceJson(int reqId, const pubsub::TC
     j.append(info.originInstId);                       
     j.push_back('"');
     j.append(R"(,"size":)");                       
-    j.append(size_str);   // 有符号数, 不加引号
+    j.append(size_str);
     j.append(R"(,"price":")");                     
-    j.append(price);                                   
+    j.append(price_str);                                   
     j.push_back('"');
     j.append(R"(,"tif":")");                       
     j.append(tif);                                     
@@ -1118,9 +1115,6 @@ void GateioUsWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
         return;
     }
 
-    double price = crypto::getFixedPrecision(tcmd.body.newOrder.limitPrice * info.magnifyNumber, info.tickSize);
-    double volume = crypto::getFixedPrecision(tcmd.body.newOrder.volumeTotal * info.reduceNumber, info.lotSize);
-
     const char* tif = nullptr;
     bool priceZero = false;
     switch (tcmd.body.newOrder.orderType) {
@@ -1148,6 +1142,9 @@ void GateioUsWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             return;
     }
 
+    double price  = crypto::quantize(tcmd.body.newOrder.limitPrice * info.magnifyNumber,  info.pricePow10, info.tickSizeInt);
+    double volume = crypto::quantize(tcmd.body.newOrder.volumeTotal * info.reduceNumber, info.sizePow10,  info.lotSizeInt);
+
     // Gate futures size 带正负号
     double sizeSigned = 0;
     if (tcmd.body.newOrder.offsetFlag == OF_OPEN) {
@@ -1173,10 +1170,11 @@ void GateioUsWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
         return;
     }
 
-    int pricePrecision = static_cast<int>(std::llround(-std::log10(info.tickSize)));
-    std::string price_str = priceZero ? "0" : fmt::format("{:.{}f}", price, pricePrecision);
+    std::string price_str = priceZero ? "0" : fmt::format("{:.{}f}", price, info.priceDigits);
+    std::string volume_str = fmt::format("{:.{}f}", sizeSigned, info.sizeDigits);
+
     const int wsId = nextWsId_.fetch_add(1, std::memory_order_relaxed);
-    std::string msg = buildOrderPlaceJson(wsId, tcmd, info, price_str, sizeSigned, tif);
+    std::string msg = buildOrderPlaceJson(wsId, tcmd, info, price_str, volume_str, tif);
 
     recordPending(wsId, pubsub::CMD_NEW_ORDER, rcmd);
     LOG_INFO("TB {} Gate US ws order.place id={} msg={}", acc.accountName, wsId, msg);

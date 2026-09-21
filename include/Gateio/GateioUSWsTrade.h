@@ -50,7 +50,7 @@ private:
     std::string buildSubscribeJson(int reqId, const char* channel) const;
     std::string buildOrderPlaceJson(int reqId, const pubsub::TCommand& tcmd,
                                      const md::InstrumentInfo& info,
-                                     const std::string& price, double sizeSigned,
+                                     const std::string& price_str, const std::string& size_str,
                                      const char* tif) const;
     std::string buildOrderCancelJson(int reqId, const pubsub::TCommand& tcmd, const md::InstrumentInfo& info) const;
 

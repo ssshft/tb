@@ -946,13 +946,13 @@ void BinanceSpotWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             return;
     }
 
-    double price = crypto::getFixedPrecision(tcmd.body.newOrder.limitPrice * info.magnifyNumber, info.tickSize);
-    double volume = crypto::getFixedPrecision(tcmd.body.newOrder.volumeTotal * info.reduceNumber,  info.lotSize);
-    std::string price_str = fmt::format("{}", price);
-    std::string amount_str = fmt::format("{}", volume);
+    double price  = crypto::quantize(tcmd.body.newOrder.limitPrice * info.magnifyNumber,  info.pricePow10, info.tickSizeInt);
+    double volume = crypto::quantize(tcmd.body.newOrder.volumeTotal * info.reduceNumber, info.sizePow10,  info.lotSizeInt);
+    std::string price_str = fmt::format("{:.{}f}", price, info.priceDigits);
+    std::string volume_str  = fmt::format("{:.{}f}", volume, info.sizeDigits);
 
     const int wsId = nextWsId_.fetch_add(1, std::memory_order_relaxed);
-    std::string msg = buildOrderPlaceJson(wsId, tcmd, info, price_str, amount_str, side, type, tif, respTyp);
+    std::string msg = buildOrderPlaceJson(wsId, tcmd, info, price_str, volume_str, side, type, tif, respTyp);
 
     // 先记 pending, 再发 msg —— 反过来的话回执可能先到达 lookup miss
     recordPending(wsId, pubsub::CMD_NEW_ORDER, rcmd);

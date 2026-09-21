@@ -869,21 +869,21 @@ void BybitTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             return;
     }
 
-    double price = crypto::getFixedPrecision(tcmd.body.newOrder.limitPrice * info.magnifyNumber, info.tickSize);
-    double volume = crypto::getFixedPrecision(tcmd.body.newOrder.volumeTotal * info.reduceNumber, info.lotSize);
-    std::string price_str = fmt::format("{}", price);
-    std::string qty_str = fmt::format("{}", volume);
+    double price  = crypto::quantize(tcmd.body.newOrder.limitPrice * info.magnifyNumber,  info.pricePow10, info.tickSizeInt);
+    double volume = crypto::quantize(tcmd.body.newOrder.volumeTotal * info.reduceNumber, info.sizePow10,  info.lotSizeInt);
+    std::string price_str = fmt::format("{:.{}f}", price, info.priceDigits);
+    std::string volume_str  = fmt::format("{:.{}f}", volume, info.sizeDigits);
 
     // Bybit body: {category, symbol, side, orderType, qty, price(可选,Market跳过), timeInForce, orderLinkId, reduceOnly}
     std::string body;
     if (tcmd.body.newOrder.orderType == OT_MARKET) {
         body = fmt::format(
             R"({{"category":"{}","symbol":"{}","side":"{}","orderType":"{}","qty":"{}","timeInForce":"{}","orderLinkId":"{}","reduceOnly":{}}})",
-            category, info.originInstId, side, ordType, qty_str, tif, tcmd.body.newOrder.orderSysId, tcmd.body.newOrder.reduceOnly ? "true" : "false");
+            category, info.originInstId, side, ordType, volume_str, tif, tcmd.body.newOrder.orderSysId, tcmd.body.newOrder.reduceOnly ? "true" : "false");
     } else {
         body = fmt::format(
             R"({{"category":"{}","symbol":"{}","side":"{}","orderType":"{}","qty":"{}","price":"{}","timeInForce":"{}","orderLinkId":"{}","reduceOnly":{}}})",
-            category, info.originInstId, side, ordType, qty_str, price_str, tif, tcmd.body.newOrder.orderSysId, tcmd.body.newOrder.reduceOnly ? "true" : "false");
+            category, info.originInstId, side, ordType, volume_str, price_str, tif, tcmd.body.newOrder.orderSysId, tcmd.body.newOrder.reduceOnly ? "true" : "false");
     }
 
     LOG_INFO("TB {} Bybit add_new_order body={}", acc.accountName, body);

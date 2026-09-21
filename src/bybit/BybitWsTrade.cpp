@@ -1367,13 +1367,13 @@ void BybitWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             return;
     }
 
-    double price = crypto::getFixedPrecision(tcmd.body.newOrder.limitPrice * info.magnifyNumber, info.tickSize);
-    double volume = crypto::getFixedPrecision(tcmd.body.newOrder.volumeTotal * info.reduceNumber, info.lotSize);
-    std::string price_str = fmt::format("{}", price);
-    std::string qty_str = fmt::format("{}", volume);
+    double price  = crypto::quantize(tcmd.body.newOrder.limitPrice * info.magnifyNumber,  info.pricePow10, info.tickSizeInt);
+    double volume = crypto::quantize(tcmd.body.newOrder.volumeTotal * info.reduceNumber, info.sizePow10,  info.lotSizeInt);
+    std::string price_str = fmt::format("{:.{}f}", price, info.priceDigits);
+    std::string volume_str  = fmt::format("{:.{}f}", volume, info.sizeDigits);
 
     const int reqId = nextWsId_.fetch_add(1, std::memory_order_relaxed);
-    std::string msg = buildOrderPlaceJson(reqId, tcmd, info, category.c_str(), side, orderType, tif, qty_str, price_str);
+    std::string msg = buildOrderPlaceJson(reqId, tcmd, info, category.c_str(), side, orderType, tif, volume_str, price_str);
 
     recordPending(reqId, pubsub::CMD_NEW_ORDER, rcmd);
     LOG_INFO("TB {} Bybit ws order.create reqId={} msg={}", acc.accountName, reqId, msg);
