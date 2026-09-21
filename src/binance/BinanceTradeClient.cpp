@@ -75,6 +75,9 @@ void BinanceTradeClient::initial() {
     tcmd.body.queryAccount.instTypeEnum = SPOT;
     query_account(tcmd);
 
+    tcmd.body.queryAccount.instTypeEnum = USDT_SWAP;
+    query_position(tcmd);
+
 #ifdef USE_BINANCE_UNIFIED
 #else
     tcmd.body.queryAccount.instTypeEnum = USDT_SWAP;
@@ -107,6 +110,7 @@ void BinanceTradeClient::query_account(const pubsub::TCommand& tcmd) {
     else if (tcmd.body.queryAccount.instTypeEnum == USDT_SWAP || tcmd.body.queryAccount.instTypeEnum == USDT_FUTURES || tcmd.body.queryAccount.instTypeEnum == USDC_SWAP) {
         if (ufTradeUnit) {
             ufTradeUnit->query_account(tcmd);
+            ufTradeUnit->query_position(tcmd);
         }
     }
     // else if(tcmd.queryAccount.instTypeEnum == C_SWAP || tcmd.queryAccount.instTypeEnum == C_FUTURES){

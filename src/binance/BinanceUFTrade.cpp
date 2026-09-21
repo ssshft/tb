@@ -569,7 +569,7 @@ void BinanceUFTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                 PUSH_RCMD(pendingBalances[i]);
             }
 
-
+            /*
             simdjson::ondemand::array positions;
             if (doc["positions"].get(positions) != simdjson::SUCCESS) {
                 LOG_ERROR("TB {} UF query_position not array: {}", acc.accountName, resp.body);
@@ -655,11 +655,23 @@ void BinanceUFTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                 crypto::copy_sv_to_char_array(rcmd.body.position.instId, std::string_view(info.instId));
                 rcmd.body.position.direction = positionAmt >= 0 ? DT_LONG : DT_SHORT;
                 rcmd.body.position.volume = std::abs(positionAmt) * info.magnifyNumber;
-                rcmd.body.position.maintMargin = crypto::fast_atod(maintMargin_sv);
-                rcmd.body.position.avgPrice = crypto::fast_atod(entryPrice_sv) * info.reduceNumber;
-                rcmd.body.position.unrealizedPnl = crypto::fast_atod(unRealizedProfit_sv);
-                rcmd.body.position.markPrice = crypto::fast_atod(markPrice_sv) * info.reduceNumber;
-                rcmd.body.position.liquidPrice = crypto::fast_atod(liquidationPrice_sv) * info.reduceNumber;
+
+                if (!maintMargin_sv.empty()) {
+                    rcmd.body.position.maintMargin = crypto::fast_atod(maintMargin_sv);
+                }
+                if (!entryPrice_sv.empty()) {
+                    rcmd.body.position.avgPrice = crypto::fast_atod(entryPrice_sv) * info.reduceNumber;
+                }
+                if (!unRealizedProfit_sv.empty()) {
+                    rcmd.body.position.unrealizedPnl = crypto::fast_atod(unRealizedProfit_sv);
+                }
+                if (!markPrice_sv.empty()) {
+                    rcmd.body.position.markPrice = crypto::fast_atod(markPrice_sv) * info.reduceNumber;
+                }
+                if (!liquidPrice.empty()) {
+                    rcmd.body.position.liquidPrice = crypto::fast_atod(liquidationPrice_sv) * info.reduceNumber;
+                }
+
                 rcmd.body.position.adlQuantile = static_cast<int>(adl) + 1;
                 rcmd.body.position.updateTime = crypto::getCurrentTime();
                 rcmd.body.position.apiSourceEnum = AS_REST;
@@ -687,6 +699,7 @@ void BinanceUFTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                 pendingPositions[i].body.position.isLast = (i + 1 == pendingPositions.size());
                 PUSH_RCMD(pendingPositions[i]);
             }
+            */
         }
         catch (const std::exception& e) {
             LOG_ERROR("TB {} UF query_balance cb exc: {}", acc.accountName, e.what());
