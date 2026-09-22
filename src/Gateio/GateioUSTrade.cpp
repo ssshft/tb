@@ -180,66 +180,30 @@ void GateioUSTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
                 field.value().get(text_sv);
             }
             else if (k == "price") {
-                auto v = field.value();
-                if (v.is_number()) {
-                    double d = 0.0;
-                    if (v.get(d) == simdjson::SUCCESS) {
-                        price = d;
-                    }
-                } 
-                else if (v.is_string()) {
-                    std::string_view sv;
-                    if (v.get(sv) == simdjson::SUCCESS) {
-                        price = crypto::fast_atod(sv);
-                    }
+                auto v_res = field.value();
+                if (!v_res.error()) {
+                    get_flexible_double(v_res.value(), price);
                 }
             }
             else if (k == "tif") {
                 field.value().get(tif_sv);
             }
             else if (k == "size") {
-                auto v = field.value();
-                if (v.is_number()) {
-                    double d = 0.0;
-                    if (v.get(d) == simdjson::SUCCESS) {
-                        size = d;
-                    }
-                } 
-                else if (v.is_string()) {
-                    std::string_view sv;
-                    if (v.get(sv) == simdjson::SUCCESS) {
-                        size = crypto::fast_atod(sv);
-                    }
+                auto v_res = field.value();
+                if (!v_res.error()) {
+                    get_flexible_double(v_res.value(), size);
                 }
             }
             else if (k == "left") {
-                auto v = field.value();
-                if (v.is_number()) {
-                    double d = 0.0;
-                    if (v.get(d) == simdjson::SUCCESS) {
-                        left = d;
-                    }
-                } 
-                else if (v.is_string()) {
-                    std::string_view sv;
-                    if (v.get(sv) == simdjson::SUCCESS) {
-                        left = crypto::fast_atod(sv);
-                    }
+                auto v_res = field.value();
+                if (!v_res.error()) {
+                    get_flexible_double(v_res.value(), left);
                 }
             }
             else if (k == "fill_price") {
-                auto v = field.value();
-                if (v.is_number()) {
-                    double d = 0.0;
-                    if (v.get(d) == simdjson::SUCCESS) {
-                        fill = d;
-                    }
-                } 
-                else if (v.is_string()) {
-                    std::string_view sv;
-                    if (v.get(sv) == simdjson::SUCCESS) {
-                        fill = crypto::fast_atod(sv);
-                    }
+                auto v_res = field.value();
+                if (!v_res.error()) {
+                    get_flexible_double(v_res.value(), fill);
                 }
             }
             else if (k == "status") {
@@ -347,18 +311,9 @@ void GateioUSTradeUnit::handleBalancesUpdate(simdjson::ondemand::array& arr) {
                 field.value().get(cur_sv);
             }
             else if (k == "balance") {
-                auto v = field.value();
-                if (v.is_number()) {
-                    double d = 0.0;
-                    if (v.get(d) == simdjson::SUCCESS) {
-                        bal = d;
-                    }
-                } 
-                else if (v.is_string()) {
-                    std::string_view sv;
-                    if (v.get(sv) == simdjson::SUCCESS) {
-                        bal = crypto::fast_atod(sv);
-                    }
+                auto v_res = field.value();
+                if (!v_res.error()) {
+                    get_flexible_double(v_res.value(), bal);
                 }
             }
         }
@@ -404,108 +359,45 @@ void GateioUSTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
                 field.value().get(contract_sv);
             }
             else if (k == "size") {
-                auto v = field.value();
-                if (v.is_number()) {
-                    double d = 0.0;
-                    if (v.get(d) == simdjson::SUCCESS) {
-                        size = d;
-                    }
-                } 
-                else if (v.is_string()) {
-                    std::string_view sv;
-                    if (v.get(sv) == simdjson::SUCCESS) {
-                        size = crypto::fast_atod(sv);
-                    }
+                auto v_res = field.value();
+                if (!v_res.error()) {
+                    get_flexible_double(v_res.value(), size);
                 }
             }
             else if (k == "margin") {
-                auto v = field.value();
-                if (v.is_number()) {
-                    double d = 0.0;
-                    if (v.get(d) == simdjson::SUCCESS) {
-                        margin = d;
-                    }
-                } 
-                else if (v.is_string()) {
-                    std::string_view sv;
-                    if (v.get(sv) == simdjson::SUCCESS) {
-                        margin = crypto::fast_atod(sv);
-                    }
+                auto v_res = field.value();
+                if (!v_res.error()) {
+                    get_flexible_double(v_res.value(), margin);
                 }
             }
             else if (k == "entry_price") {
-                auto v = field.value();
-                if (v.is_number()) {
-                    double d = 0.0;
-                    if (v.get(d) == simdjson::SUCCESS) {
-                        entry = d;
-                    }
-                } 
-                else if (v.is_string()) {
-                    std::string_view sv;
-                    if (v.get(sv) == simdjson::SUCCESS) {
-                        entry = crypto::fast_atod(sv);
-                    }
+                auto v_res = field.value();
+                if (!v_res.error()) {
+                    get_flexible_double(v_res.value(), entry);
                 }
             }
             else if (k == "unrealised_pnl") {
-                auto v = field.value();
-                if (v.is_number()) {
-                    double d = 0.0;
-                    if (v.get(d) == simdjson::SUCCESS) {
-                        up = d;
-                    }
-                } 
-                else if (v.is_string()) {
-                    std::string_view sv;
-                    if (v.get(sv) == simdjson::SUCCESS) {
-                        up = crypto::fast_atod(sv);
-                    }
+                auto v_res = field.value();
+                if (!v_res.error()) {
+                    get_flexible_double(v_res.value(), up);
                 }
             }
             else if (k == "mark_price") {
-                auto v = field.value();
-                if (v.is_number()) {
-                    double d = 0.0;
-                    if (v.get(d) == simdjson::SUCCESS) {
-                        mark = d;
-                    }
-                } 
-                else if (v.is_string()) {
-                    std::string_view sv;
-                    if (v.get(sv) == simdjson::SUCCESS) {
-                        mark = crypto::fast_atod(sv);
-                    }
+                auto v_res = field.value();
+                if (!v_res.error()) {
+                    get_flexible_double(v_res.value(), mark);
                 }
             }
             else if (k == "liq_price") {
-                auto v = field.value();
-                if (v.is_number()) {
-                    double d = 0.0;
-                    if (v.get(d) == simdjson::SUCCESS) {
-                        liq = d;
-                    }
-                } 
-                else if (v.is_string()) {
-                    std::string_view sv;
-                    if (v.get(sv) == simdjson::SUCCESS) {
-                        liq = crypto::fast_atod(sv);
-                    }
+                auto v_res = field.value();
+                if (!v_res.error()) {
+                    get_flexible_double(v_res.value(), liq);
                 }
             }
             else if (k == "adl_ranking") {
-                auto v = field.value();
-                if (v.is_number()) {
-                    double d = 0.0;
-                    if (v.get(d) == simdjson::SUCCESS) {
-                        adl = d;
-                    }
-                } 
-                else if (v.is_string()) {
-                    std::string_view sv;
-                    if (v.get(sv) == simdjson::SUCCESS) {
-                        adl = crypto::fast_atod(sv);
-                    }
+                auto v_res = field.value();
+                if (!v_res.error()) {
+                    get_flexible_double(v_res.value(), adl);
                 }
             }
         }
@@ -602,63 +494,27 @@ void GateioUSTradeUnit::query_balance(const pubsub::TCommand&) {
                     field.value().get(cur_sv);
                 }
                 else if (k == "available") {
-                    auto v = field.value();
-                    if (v.is_string()) {
-                        std::string_view sv;
-                        if (v.get(sv) == simdjson::SUCCESS) {
-                            avail = crypto::fast_atod(sv);
-                        }
-                    }
-                    else if (v.is_number()) {
-                        double d = 0.0;
-                        if (v.get(d) == simdjson::SUCCESS) {
-                            avail = d;
-                        }
+                    auto v_res = field.value();
+                    if (!v_res.error()) {
+                        get_flexible_double(v_res.value(), avail);
                     }
                 }
                 else if (k == "order_margin") {
-                    auto v = field.value();
-                    if (v.is_string()) {
-                        std::string_view sv;
-                        if (v.get(sv) == simdjson::SUCCESS) {
-                            om = crypto::fast_atod(sv);
-                        }
-                    }
-                    else if (v.is_number()) {
-                        double d = 0.0;
-                        if (v.get(d) == simdjson::SUCCESS) {
-                            om = d;
-                        }
+                    auto v_res = field.value();
+                    if (!v_res.error()) {
+                        get_flexible_double(v_res.value(), om);
                     }
                 }
                 else if (k == "position_margin") {
-                    auto v = field.value();
-                    if (v.is_string()) {
-                        std::string_view sv;
-                        if (v.get(sv) == simdjson::SUCCESS) {
-                            pm = crypto::fast_atod(sv);
-                        }
-                    }
-                    else if (v.is_number()) {
-                        double d = 0.0;
-                        if (v.get(d) == simdjson::SUCCESS) {
-                            pm = d;
-                        }
+                    auto v_res = field.value();
+                    if (!v_res.error()) {
+                        get_flexible_double(v_res.value(), pm);
                     }
                 }
                 else if (k == "total") {
-                    auto v = field.value();
-                    if (v.is_string()) {
-                        std::string_view sv;
-                        if (v.get(sv) == simdjson::SUCCESS) {
-                            tot = crypto::fast_atod(sv);
-                        }
-                    }
-                    else if (v.is_number()) {
-                        double d = 0.0;
-                        if (v.get(d) == simdjson::SUCCESS) {
-                            tot = d;
-                        }
+                    auto v_res = field.value();
+                    if (!v_res.error()) {
+                        get_flexible_double(v_res.value(), tot);
                     }
                 }
             }
@@ -757,108 +613,45 @@ void GateioUSTradeUnit::query_position(const pubsub::TCommand&) {
                         field.value().get(contract_sv);
                     }
                     else if (k == "size") {
-                        auto v = field.value();
-                        if (v.is_number()) {
-                            double d = 0.0;
-                            if (v.get(d) == simdjson::SUCCESS) {
-                                size = d;
-                            }
-                        } 
-                        else if (v.is_string()) {
-                            std::string_view sv;
-                            if (v.get(sv) == simdjson::SUCCESS) {
-                                size = crypto::fast_atod(sv);
-                            }
+                        auto v_res = field.value();
+                        if (!v_res.error()) {
+                            get_flexible_double(v_res.value(), size);
                         }
                     }
                     else if (k == "margin") {
-                        auto v = field.value();
-                        if (v.is_string()) {
-                            std::string_view sv;
-                            if (v.get(sv) == simdjson::SUCCESS) {
-                                margin = crypto::fast_atod(sv);
-                            }
-                        }
-                        else if (v.is_number()) {
-                            double d = 0.0;
-                            if (v.get(d) == simdjson::SUCCESS) {
-                                margin = d;
-                            }
+                        auto v_res = field.value();
+                        if (!v_res.error()) {
+                            get_flexible_double(v_res.value(), margin);
                         }
                     }
                     else if (k == "entry_price") {
-                        auto v = field.value();
-                        if (v.is_string()) {
-                            std::string_view sv;
-                            if (v.get(sv) == simdjson::SUCCESS) {
-                                entry = crypto::fast_atod(sv);
-                            }
-                        }
-                        else if (v.is_number()) {
-                            double d = 0.0;
-                            if (v.get(d) == simdjson::SUCCESS) {
-                                entry = d;
-                            }
+                        auto v_res = field.value();
+                        if (!v_res.error()) {
+                            get_flexible_double(v_res.value(), entry);
                         }
                     }
                     else if (k == "unrealised_pnl") {
-                        auto v = field.value();
-                        if (v.is_string()) {
-                            std::string_view sv;
-                            if (v.get(sv) == simdjson::SUCCESS) {
-                                up = crypto::fast_atod(sv);
-                            }
-                        }
-                        else if (v.is_number()) {
-                            double d = 0.0;
-                            if (v.get(d) == simdjson::SUCCESS) {
-                                up = d;
-                            }
+                        auto v_res = field.value();
+                        if (!v_res.error()) {
+                            get_flexible_double(v_res.value(), up);
                         }
                     }
                     else if (k == "mark_price") {
-                        auto v = field.value();
-                        if (v.is_string()) {
-                            std::string_view sv;
-                            if (v.get(sv) == simdjson::SUCCESS) {
-                                mark = crypto::fast_atod(sv);
-                            }
-                        }
-                        else if (v.is_number()) {
-                            double d = 0.0;
-                            if (v.get(d) == simdjson::SUCCESS) {
-                                mark = d;
-                            }
+                        auto v_res = field.value();
+                        if (!v_res.error()) {
+                            get_flexible_double(v_res.value(), mark);
                         }
                     }
                     else if (k == "liq_price") {
-                        auto v = field.value();
-                        if (v.is_string()) {
-                            std::string_view sv;
-                            if (v.get(sv) == simdjson::SUCCESS) {
-                                liq = crypto::fast_atod(sv);
-                            }
-                        }
-                        else if (v.is_number()) {
-                            double d = 0.0;
-                            if (v.get(d) == simdjson::SUCCESS) {
-                                liq = d;
-                            }
+                        auto v_res = field.value();
+                        if (!v_res.error()) {
+                            get_flexible_double(v_res.value(), liq);
                         }
                     }
                     else if (k == "adl_ranking") {
-                        auto v = field.value();
-                        if (v.is_number()) {
-                            double d = 0.0;
-                            if (v.get(d) == simdjson::SUCCESS) {
-                                adl_s = d;
-                            }
-                        } 
-                        else if (v.is_string()) {
-                            std::string_view sv;
-                            if (v.get(sv) == simdjson::SUCCESS) {
-                                adl_s = crypto::fast_atod(sv);
-                            }
+                        auto v_res = field.value();
+                        if (!v_res.error()) {
+                            get_flexible_double(v_res.value(), adl_s);
                         }
                     }
                 }
@@ -1088,33 +881,15 @@ void GateioUSTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
                     has_label = field.value().get(label_sv) == simdjson::SUCCESS;
                 }
                 else if (k == "fill_price") {
-                    auto v = field.value();
-                    if (v.is_string()) {
-                        std::string_view sv;
-                        if (v.get(sv) == simdjson::SUCCESS) {
-                            fill = crypto::fast_atod(sv);
-                        }
-                    }
-                    else if (v.is_number()) {
-                        double d = 0.0;
-                        if (v.get(d) == simdjson::SUCCESS) {
-                            fill = d;
-                        }
+                    auto v_res = field.value();
+                    if (!v_res.error()) {
+                        get_flexible_double(v_res.value(), fill);
                     }
                 }
                 else if (k == "left") {
-                    auto v = field.value();
-                    if (v.is_number()) {
-                        double d = 0.0;
-                        if (v.get(d) == simdjson::SUCCESS) {
-                            left_num = d;
-                        }
-                    } 
-                    else if (v.is_string()) {
-                        std::string_view sv;
-                        if (v.get(sv) == simdjson::SUCCESS) {
-                            left_num = crypto::fast_atod(sv);
-                        }
+                    auto v_res = field.value();
+                    if (!v_res.error()) {
+                        get_flexible_double(v_res.value(), left_num);
                     }
                 }
                 else if (k == "status") {
@@ -1261,33 +1036,15 @@ void GateioUSTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
                     field.value().get(id);
                 }
                 else if (k == "fill_price") {
-                    auto v = field.value();
-                    if (v.is_string()) {
-                        std::string_view sv;
-                        if (v.get(sv) == simdjson::SUCCESS) {
-                            fill = crypto::fast_atod(sv);
-                        }
-                    }
-                    else if (v.is_number()) {
-                        double d = 0.0;
-                        if (v.get(d) == simdjson::SUCCESS) {
-                            fill = d;
-                        }
+                    auto v_res = field.value();
+                    if (!v_res.error()) {
+                        get_flexible_double(v_res.value(), fill);
                     }
                 }
                 else if (k == "left") {
-                    auto v = field.value();
-                    if (v.is_number()) {
-                        double d = 0.0;
-                        if (v.get(d) == simdjson::SUCCESS) {
-                            left_num = d;
-                        }
-                    } 
-                    else if (v.is_string()) {
-                        std::string_view sv;
-                        if (v.get(sv) == simdjson::SUCCESS) {
-                            left_num = crypto::fast_atod(sv);
-                        }
+                    auto v_res = field.value();
+                    if (!v_res.error()) {
+                        get_flexible_double(v_res.value(), left_num);
                     }
                 }
             }
@@ -1376,11 +1133,9 @@ void GateioUSTradeUnit::query_order(const pubsub::TCommand& tcmd) {
             int64_t id = 0;
             std::string_view text_sv;
             double size_num = 0.0;
-            std::string_view price_sv;
             double price = 0.0;
             double left_num = 0.0;
             double fill = 0.0;
-            std::string_view fill_sv;
             std::string_view finishAs_sv;
 
             bool has_status = false;
@@ -1397,63 +1152,27 @@ void GateioUSTradeUnit::query_order(const pubsub::TCommand& tcmd) {
                     field.value().get(text_sv);
                 }
                 else if (k == "size") {
-                    auto v = field.value();
-                    if (v.is_number()) {
-                        double d = 0.0;
-                        if (v.get(d) == simdjson::SUCCESS) {
-                            size_num = d;
-                        }
-                    } 
-                    else if (v.is_string()) {
-                        std::string_view sv;
-                        if (v.get(sv) == simdjson::SUCCESS) {
-                            size_num = crypto::fast_atod(sv);
-                        }
+                    auto v_res = field.value();
+                    if (!v_res.error()) {
+                        get_flexible_double(v_res.value(), size_num);
                     }
                 }
                 else if (k == "price") {
-                    auto v = field.value();
-                    if (v.is_string()) {
-                        std::string_view sv;
-                        if (v.get(sv) == simdjson::SUCCESS) {
-                            price = crypto::fast_atod(sv);
-                        }
-                    }
-                    else if (v.is_number()) {
-                        double d = 0.0;
-                        if (v.get(d) == simdjson::SUCCESS) {
-                            price = d;
-                        }
+                    auto v_res = field.value();
+                    if (!v_res.error()) {
+                        get_flexible_double(v_res.value(), price);
                     }
                 }
                 else if (k == "left") {
-                    auto v = field.value();
-                    if (v.is_number()) {
-                        double d = 0.0;
-                        if (v.get(d) == simdjson::SUCCESS) {
-                            left_num = d;
-                        }
-                    } 
-                    else if (v.is_string()) {
-                        std::string_view sv;
-                        if (v.get(sv) == simdjson::SUCCESS) {
-                            left_num = crypto::fast_atod(sv);
-                        }
+                    auto v_res = field.value();
+                    if (!v_res.error()) {
+                        get_flexible_double(v_res.value(), left_num);
                     }
                 }
                 else if (k == "fill_price") {
-                    auto v = field.value();
-                    if (v.is_string()) {
-                        std::string_view sv;
-                        if (v.get(sv) == simdjson::SUCCESS) {
-                            fill = crypto::fast_atod(sv);
-                        }
-                    }
-                    else if (v.is_number()) {
-                        double d = 0.0;
-                        if (v.get(d) == simdjson::SUCCESS) {
-                            fill = d;
-                        }
+                    auto v_res = field.value();
+                    if (!v_res.error()) {
+                        get_flexible_double(v_res.value(), fill);
                     }
                 }
                 else if (k == "finish_as") {
