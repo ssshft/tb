@@ -11,16 +11,7 @@
 #include "utils/tb_global.h"
 
 
-#define OneDayMicroSeconds 86400 * 1e6
-#define OneHourMicroSeconds 3600 * 1e6
-
 namespace om {
-
-    struct PushState {
-        double lastVolume{0.0};
-        OrderStatus lastStatus{OS_MIN};
-    };
-
     class OrderManager{
     public:
         OrderManager();
@@ -46,8 +37,6 @@ namespace om {
         tbb::concurrent_unordered_map<std::string, std::string> orderId2OrderSysIdMap;
         tbb::concurrent_unordered_map<std::string, pubsub::RCommand> orderSysId2OrderResponseMap;
 
-        std::unordered_map<std::string, PushState> pushStateMap;
         am::AccountManager accountManager;
-        // tb_sqlite::SqliteStorage storage;
     };
 }
