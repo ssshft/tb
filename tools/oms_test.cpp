@@ -30,6 +30,7 @@
 //   [17] 并发 seqlock       — 1 writer + N reader, 断言 0 撕裂读
 //   [18] 其余公开接口       — remove / recover_orphan_slots / is_open / created_new / close
 //   [19] TTL 语义           — FINISHED 的回收门槛 = min_reclaim_age_ns (环满事故的机理)
+//   [20] B3 lookup 三态     — OK / NOT_FOUND / BUSY, 且 NOT_FOUND 不得计成 BUSY
 //
 // 编译:
 //   g++ -std=c++17 -O2 -pthread -I../../include -I../include \
@@ -1039,6 +1040,174 @@ int main(int argc, char** argv) {
         check(w.stats().total_reclaims >= 1, "确实发生了回收", u(w.stats().total_reclaims));
         check(w.stats().total_alloc_exhausted == 1,
               "exhausted 计数没有继续涨 (仍是 1)", u(w.stats().total_alloc_exhausted));
+    }
+
+    // -------------------------------------------------------------------------
+    section("20. B3 lookup 三态: OK / NOT_FOUND / BUSY (对账不能把活单判死)");
+    // -------------------------------------------------------------------------
+    {
+        // 背景: 旧实现 lookup_* 只返回 bool, 把"**确认**不存在"和"索引里有这条、但这一瞬间
+        // 读不到一致快照 (写者忙 / slot 正在被回收)"混成同一个 false。重启对账据此会把
+        // **活单判成死单** → 重复下单 / 误平仓。
+        // 本节的判据有两条, 缺一不可:
+        //   ① BUSY 必须能和 NOT_FOUND 分开 (三态 API 存在且正确);
+        //   ② NOT_FOUND **绝不能**被计成 BUSY —— 否则 total_lookup_busy 只是个噪声计数。
+        // ★ BUSY 用**直接改 slot 状态**构造, 不靠并发碰运气 (否则测试会随机红/绿)。
+        OmsShmWriter w;
+        fresh(w, dir, "t20.dat", 64);
+        w.set_min_reclaim_age_ns(0);      // 本节点不测 TTL, 免得上层的回收干扰
+
+        pubsub::RCommand out;
+        using LS = OmsShmSegment::LookupStatus;
+
+        // 单次 lookup, 返回 (三态, BUSY 计数增量)。
+        //   ★ 为什么按**增量**断言而不是"总数 == N": bool 版 lookup_by_orderSysId 走的是
+        //     同一条路径, 也会计数。把"我调用了几次"写死进断言, 一改测试就假红。
+        auto q = [&](const char* key) -> std::pair<LS, uint64_t> {
+            const uint64_t b = w.local_lookup_busy();
+            const LS st = w.lookup_by_orderSysId_ex(key, out);
+            return { st, w.local_lookup_busy() - b };
+        };
+
+        check(std::string(OmsShmSegment::to_string(LS::OK))        == "OK" &&
+              std::string(OmsShmSegment::to_string(LS::NOT_FOUND)) == "NOT_FOUND" &&
+              std::string(OmsShmSegment::to_string(LS::BUSY))      == "BUSY",
+              "to_string(三态) 可读 (供日志/对账打点)");
+
+        check(w.upsert(mk("B3-1", "B3O-1", OS_NEW, 1001)) != kInvalidSlot,
+              "前置: 写入 1 张活单");
+        const uint32_t slot = find_slot_of(w, "B3-1");
+        check(slot != kInvalidSlot, "前置: 找得到它的 slot", u(slot));
+        check(w.local_lookup_busy() == 0, "前置: BUSY 计数为 0");
+
+        // --- ① OK: 三个索引都走通 ---
+        check(w.lookup_by_orderSysId_ex("B3-1", out) == LS::OK, "主索引 (orderSysId) → OK");
+        check(w.lookup_by_orderSysId("B3-1", out), "bool 版: 活单 → true");
+        check(w.lookup_by_client_ex("sss_test1", 1001, out) == LS::OK, "复合 client key → OK");
+        check(w.lookup_by_orderId_ex("B3O-1", out) == LS::OK, "orderId → OK");
+
+        // --- ② NOT_FOUND: 而且**不能**计成 BUSY ---
+        {
+            const auto r1 = q("NOPE");
+            const auto r2 = q("");
+            check(r1.first == LS::NOT_FOUND && r1.second == 0,
+                  "不存在的 key → NOT_FOUND 且不计 BUSY", u(r1.second));
+            check(r2.first == LS::NOT_FOUND && r2.second == 0,
+                  "空 key → NOT_FOUND 且不计 BUSY", u(r2.second));
+            check(w.lookup_by_client_ex("sss_test1", 999999, out) == LS::NOT_FOUND,
+                  "不存在的 client → NOT_FOUND");
+            check(w.lookup_by_orderId_ex("NOPE-OID", out) == LS::NOT_FOUND,
+                  "不存在的 orderId → NOT_FOUND");
+            check(w.local_lookup_busy() == 0,
+                  "★ 一路 NOT_FOUND 下来 BUSY 计数仍是 0",
+                  u(w.local_lookup_busy()));
+        }
+
+        // --- ③ BUSY: slot 正在被回收 (确定性构造) ---
+        w.slots()[slot].state.store(SLOT_RECLAIMING, std::memory_order_release);
+        {
+            const auto r = q("B3-1");
+            check(r.first == LS::BUSY, "slot 处于 RECLAIMING → BUSY");
+            check(r.second == 1, "BUSY 计数恰好 +1 (单次调用)", u(r.second));
+        }
+        {
+            const uint64_t b = w.local_lookup_busy();
+            check(!w.lookup_by_orderSysId("B3-1", out), "bool 版语义不变: BUSY 也是 false");
+            check(w.local_lookup_busy() == b + 1,
+                  "bool 版走同一路径, 也计一次 BUSY",
+                  u(w.local_lookup_busy() - b));
+        }
+
+        // 状态恢复 → 又是 OK, 且计数不再涨 (证明 BUSY 是**暂时**的, 重试有效)
+        w.slots()[slot].state.store(SLOT_LIVE, std::memory_order_release);
+        {
+            const auto r = q("B3-1");
+            check(r.first == LS::OK && r.second == 0,
+                  "状态恢复 → 回到 OK 且不再计 BUSY", u(r.second));
+        }
+
+        // --- ④ 空 slot ≠ BUSY: 索引条目陈旧 → NOT_FOUND ---
+        w.slots()[slot].state.store(SLOT_EMPTY, std::memory_order_release);
+        {
+            const auto r = q("B3-1");
+            check(r.first == LS::NOT_FOUND,
+                  "★ slot 已空 (索引条目陈旧) → NOT_FOUND, **不是** BUSY");
+            check(r.second == 0, "空 slot 不计入 BUSY", u(r.second));
+        }
+        w.slots()[slot].state.store(SLOT_LIVE, std::memory_order_release);
+
+        // --- ⑤ 索引条目被破坏 (slot_idx 非法) 不会崩、也不会误报 OK ---
+        //   注意语义: 直接篡改 slot_idx 时, `index_probe_find` → `entry_key_match` 会先把它
+        //   判成 kStale, 于是 found 根本不成立 → 结果是 NOT_FOUND。代码里那条
+        //   "slot_idx 非法 → BUSY" 是给**撕裂读**兜底的 (probe 判 found 之后、重读 slot_idx
+        //   之前被并发改掉), 无法确定性构造, 所以这里只钉住**可观测**的降级行为。
+        {
+            IndexEntry* arr = w.index(IDX_ORDER_SYS_ID);
+            const uint32_t icap = w.index_capacity();
+            uint32_t hit = kInvalidSlot;
+            for (uint32_t b = 0; b < icap; ++b) {
+                const uint64_t h = arr[b].key_hash.load(std::memory_order_acquire);
+                if (h != kHashEmpty && h != kHashTombstone &&
+                    arr[b].slot_idx.load(std::memory_order_acquire) == slot) { hit = b; break; }
+            }
+            check(hit != kInvalidSlot, "前置: 找得到该 slot 的主索引条目", u(hit));
+            if (hit != kInvalidSlot) {
+                arr[hit].slot_idx.store(kInvalidSlot, std::memory_order_release);
+                const auto r = q("B3-1");
+                check(r.first == LS::NOT_FOUND,
+                      "索引 slot_idx 非法 → 降级为 NOT_FOUND (不崩、不误报 OK)");
+                check(r.second == 0, "该路径不计入 BUSY (被 probe 判为陈旧条目)", u(r.second));
+                arr[hit].slot_idx.store(slot, std::memory_order_release);   // 复原
+                check(w.lookup_by_orderSysId_ex("B3-1", out) == LS::OK, "索引复原 → 回到 OK");
+            }
+        }
+
+        // --- ⑥ 本节存在的理由: 对账必须能**区分**活单与死单 ---
+        w.slots()[slot].state.store(SLOT_RECLAIMING, std::memory_order_release);
+        const LS live = w.lookup_by_orderSysId_ex("B3-1", out);   // 活单, 只是暂时读不到
+        const LS gone = w.lookup_by_orderSysId_ex("GONE", out);   // 真的没有
+        check(live == LS::BUSY && gone == LS::NOT_FOUND,
+              "★ 对账判据: 活单 BUSY / 死单 NOT_FOUND (可区分)",
+              std::string("live=") + OmsShmSegment::to_string(live) +
+              " gone=" + OmsShmSegment::to_string(gone));
+        check(w.lookup_by_orderSysId("B3-1", out) == w.lookup_by_orderSysId("GONE", out),
+              "反证: 旧 bool API 下这两者**无法**区分 (都是 false) —— 这就是 B3");
+        w.slots()[slot].state.store(SLOT_LIVE, std::memory_order_release);
+
+        // --- ⑦ ★ 只读 reader 走 BUSY 路径绝不能写 SHM (本轮抓到的真 bug) ---
+        //   第一版把 BUSY 计数放进了 SHM header。reader 的映射是 PROT_READ
+        //   (open(): read_only ? PROT_READ : PROT_READ|PROT_WRITE), 于是那次 fetch_add
+        //   撞上写保护页 → SIGBUS。症状是**偶发**, 极易被当成"测试不稳定"放过去:
+        //   实测 §17 并发用例 20 次挂 2 次, EXC_BAD_ACCESS code=2, 崩在 ldadd 指令上。
+        //   这里用一个**只读 reader** 明确钉住: BUSY 路径在只读映射上必须能安全走完,
+        //   而且计数只记在它自己身上 (进程内/实例内), 不碰 SHM。
+        {
+            w.slots()[slot].state.store(SLOT_RECLAIMING, std::memory_order_release);
+            const uint64_t w_before = w.local_lookup_busy();
+
+            OmsShmReader rr;
+            rr.open(j(dir, "t20.dat"));
+            check(rr.is_open(), "reader 以只读方式打开同一个文件");
+            check(rr.local_lookup_busy() == 0, "reader 自己的 BUSY 计数从 0 起");
+
+            pubsub::RCommand ro;
+            const LS rst = rr.lookup_by_orderSysId_ex("B3-1", ro);
+            check(rst == LS::BUSY, "★ 只读 reader: RECLAIMING slot → BUSY (没有 SIGBUS)");
+            check(rr.local_lookup_busy() == 1,
+                  "只读 reader 的 BUSY 计在自己身上", u(rr.local_lookup_busy()));
+
+            for (int i = 0; i < 8; ++i) (void)rr.lookup_by_orderSysId_ex("B3-1", ro);
+            check(rr.local_lookup_busy() == 9,
+                  "只读 reader 连续 9 次 BUSY 都安全", u(rr.local_lookup_busy()));
+
+            check(w.local_lookup_busy() == w_before,
+                  "reader 的 BUSY 不计入 writer 实例 (计数不共享, 也没写 SHM)",
+                  u(w.local_lookup_busy()));
+
+            w.slots()[slot].state.store(SLOT_LIVE, std::memory_order_release);
+            check(rr.lookup_by_orderSysId_ex("B3-1", ro) == LS::OK,
+                  "只读 reader: 状态恢复 → OK");
+        }
     }
 
     // -------------------------------------------------------------------------

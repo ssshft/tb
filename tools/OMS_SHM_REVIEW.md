@@ -140,7 +140,7 @@ P1-4 / P1-5（错误不可观测）、§3 的 P1-6 / P1-7（形式正确性，x8
 |---|---|---|---|
 | **B1** | `find_slot:985-993` | writer 侧查找**完全不复核**（reader 侧 `lookup_impl:553-562` 复核了），且返回的 `slot_idx` **没有 `>= slot_capacity()` 边界检查**（`lookup_impl:551` 有）。调用点 `730-732` 直接 `update_slot(slots()[idx])` | 配合 `insert_index:965-972` 的"命中 hash+prefix 就覆盖 `slot_idx`"，索引一旦指向别人的 slot，`upsert` 就会**静默覆盖无关活单**；索引若损坏则是 OOB 写。概率极低（~1e-9），但方向是**数据损坏** |
 | **B2** | `read_slot_snapshot:528` / `536`；`write_new_slot:856` / `877`；`update_slot:883` / `900` | seqlock **两边都缺 fence**：读侧 `s2` 前缺 acquire fence，写侧首次 `fetch_add` 应是 `acq_rel` | x86-64 TSO 天然禁止这两类重排 → **目标机 Ubuntu 实际不出问题**；ARM（含本机开发机）会读到撕裂快照 |
-| **B3** | `read_slot_snapshot:525-540` + `lookup_impl:553` | `lookup_*` 把"订单不存在"和"写者忙、重试 16 次没读到"返回**同一个 false** | 实测 0.036%（人工高压下）；对账逻辑会把活单当死单 |
+| ~~**B3**~~ ✅ | `read_slot_snapshot` + `lookup_impl` | `lookup_*` 把"订单不存在"和"写者忙、重试 16 次没读到"返回**同一个 false** | 实测 0.036%（人工高压下）；对账逻辑会把活单当死单。**✅ 已修 2026-10-06 20:4x（`tb/tools/OmsShm_v6.patch`）**：新增三态 `LookupStatus` + `lookup_by_*_ex()`，旧 bool API 语义不变；BUSY 用**进程内**计数（`local_lookup_busy()`），**不落 SHM**。改法与实测见 **§2.10** |
 | ~~**B4**~~ ✅ | `insert_all_indices:929-938`；`update_slot:901-903` | 别名索引插入失败只打 `stderr` WARN 后 `return true`；`update_slot` 连返回值都不看 | 丢了 `clientOrderId` / `orderId` 映射而**运维看不到**（实测 `alloc_failures=0` 的同时打出 5 行 WARN）。**✅ 已修 2026-10-06 19:20**：新增 `total_alias_insert_failures` 计数（塞进保留 pad，`sizeof`/`kVersion` 不变）+ 日志限流；`doctor` 增加对应分支；`update_slot` 那条已在 ② 里修掉（`sync_one_key` 现在看返回值） |
 | ~~**B5**~~ ⭐ ✅ | `index_probe_find:261-268`；`insert_index` 命中分支；`update_slot:946-970`；`lookup_impl:572` | **索引的"身份判定"其实只是提示**（`fnv1a(key)` + 前 16 字节，不覆盖 tail、不覆盖长度），而写入路径把它当身份用；更关键的是 `update_slot` **不更新 `s.orderSysId`/`s.clientOrderId`**，碰撞后 slot 的 key 副本与报单体**自相矛盾**，而 `lookup_impl:572` 复核的是 **key 副本** → 复核**通过** | **实测：用 A 的 key 查，返回 B 的报单体。** 这是"查错单"，比"查不到"严重得多 —— 详见 **§2.3**。**✅ 已修 2026-10-06 17:05（`tb/tools/OmsShm_B5.patch`），改法与实测见 §2.4** |
 | ~~**B6**~~ ⭐⭐ ✅ | `kMaxProbeIndex:64`；`index_capacity = next_pow2(2*slot_cap)`（`OmsShm.h:421`）；`index_probe_find:308`；`insert_index:1162` | **索引稳态下必然 100% 占满**（`live + tomb == index_capacity`、`empty == 0`），此后插入能否成功**完全取决于 32 步内能否找到 tombstone**。实测最长 live 连续段 **33~56**，已经超过 32 | **实测正在丢单**：`slot_cap=65536` 时 203 万次插入丢 **388 张**（**1.9e-4，1/5235**）；churn 越久越差（2/5/10/30/60 轮 → 1/5/12/70/126 次）。后果与 P1-1 同类：`upsert` 回滚返回 `kInvalidSlot`，单**没进 SHM**。**详见 §2.5**。**✅ 已修 2026-10-06 18:05（`tb/tools/OmsShm_B6.patch`）—— 索引改 4N、`kVersion` 2→3，改法与实测见 §2.6** |
@@ -1662,6 +1662,143 @@ oms_test.cpp}`），正反向应用均逐字节可还原。
 
 ---
 
+## 2.10 第 24 轮：B3 —— lookup 三态（以及中途抓到的 reader SIGBUS）
+
+### 一、问题
+
+`lookup_*` 只返回 `bool`，把三种**语义完全不同**的情况压成同一个 `false`：
+
+| 情况 | 真实含义 | 对账该怎么处置 |
+|---|---|---|
+| key 不在索引里 / 索引条目已陈旧 | **确认不存在** | 按"单没了"处理 |
+| 索引里**有**这条，但 seqlock 忙满 `kMaxReadRetry`(16) 次 | 这一瞬间读不到 | **稍后重试**，绝不能判死 |
+| 索引条目指向的 slot 正在被 reclaim | 同上（下一秒就是新单） | 同上 |
+
+重启对账 (reconcile) 用 bool 版就会把**活单判成死单** → 重复下单 / 误平仓。
+旧实现的 `read_slot_snapshot` 甚至把 `SLOT_EMPTY` 和 `SLOT_RECLAIMING` 合并成
+`if (st == SLOT_EMPTY || st == SLOT_RECLAIMING) return false;` —— 连"空"和"正在写"都不分。
+
+### 二、改法
+
+**A. 三态 API（公开）**
+
+```cpp
+enum class LookupStatus : uint8_t { OK = 0, NOT_FOUND = 1, BUSY = 2 };
+static const char* to_string(LookupStatus) noexcept;   // "OK" / "NOT_FOUND" / "BUSY"
+
+LookupStatus lookup_by_orderSysId_ex(...) const;
+LookupStatus lookup_by_client_ex(strategyId, cid, ...) const;
+LookupStatus lookup_by_clientOrderId_ex(composed, ...) const;
+LookupStatus lookup_by_orderId_ex(...) const;
+```
+
+**旧 bool API 语义不变** = `(status == OK)`，四个 `lookup_by_*` 变成一行适配层，
+所有既有调用点（`exists_by_orderSysId`、`oms_query`、`oms_bench`、§17 并发用例）零改动。
+
+**B. `read_slot_snapshot` 加 `bool* busy_out`** —— 把"为什么失败"带出来：
+
+| 分支 | busy_out | 结果 |
+|---|---|---|
+| `st == SLOT_EMPTY` | `false` | NOT_FOUND（索引条目陈旧） |
+| `st == SLOT_RECLAIMING` | `true` | **BUSY**（下一秒就是新单） |
+| 重试 16 次仍 `seq & 1` | `true` | **BUSY** |
+| 读到一致快照 | — | OK |
+
+默认参数 `= nullptr`，`iterate_state` 等既有调用点不受影响。
+
+**C. `lookup_impl_ex` 的三处判定**
+
+- `!found` → NOT_FOUND
+- `slot_idx` 非法 → **BUSY**（读索引无 seqlock，是撕裂读，重试有意义）
+  ⚠ 注意精度：直接篡改 `slot_idx` 会先被 `index_probe_find` 里的 `entry_key_match` →
+  `slot_key_ptr` 判成 `kStale`，`found` 根本不成立 → 得到的是 **NOT_FOUND**。
+  只有"probe 判 found"与"重读 slot_idx"之间的并发写才走到这个 BUSY。§20 钉住了前者。
+- `stored != key` → NOT_FOUND（**不**判 BUSY：重试结果相同，判 BUSY 会让对账无限重试）
+
+**D. BUSY 计数用进程内计数**
+
+```cpp
+uint64_t local_lookup_busy() const noexcept;   // 非共享
+mutable std::atomic<uint64_t> local_lookup_busy_{0};
+```
+
+### 三、★ 中途抓到的真 bug：把计数器放进 SHM header → 只读 reader SIGBUS
+
+第一版把 BUSY 计到 `header()->total_lookup_busy`（复用保留 pad，`sizeof`/`kVersion` 都不变，
+"看起来"和 A1/B4/v4 的做法完全一致）。**这是错的，而且会崩。**
+
+根因在 `open()`：
+
+```cpp
+int prot = read_only ? PROT_READ : (PROT_READ | PROT_WRITE);
+```
+
+**reader 的映射是只读的**（`OmsShm.h` 里那句注释写着"编译期区分意图 + 运行期强制只读"）。
+`lookup` 是读侧路径，而 §17 的 4 个 reader 线程就是 `OmsShmReader` —— 于是那次
+`fetch_add` 撞上写保护页：
+
+```
+* thread #6, stop reason = EXC_BAD_ACCESS (code=2, address=0x102268090)
+  * frame #0: oms::shm::OmsShmSegment::lookup_impl_ex(...) const + 736
+    ->  0x100013b7c <+736>: ldadd  x9, x8, [x8]      ← 就是那个 fetch_add
+```
+
+**为什么差点漏掉**：症状是**偶发** —— §17 并发用例 20 次挂 **2** 次，`PASS 191 FAIL 0`
+的绿色输出完全掩盖了它。而且 stdout 重定向到文件是块缓冲，崩溃时缓冲区丢掉，
+**看到的最后一行是 §15，真正的崩点在 §20 附近**（靠 scratch 目录里 `t20.dat` 已生成才定位到）。
+
+**为什么即使能写也不该放 header**：策略进程都是只读 reader，共享计数器收不到它们的 BUSY
+事件 —— 只会变成一个"静默少报"的假健康指标，比没有更糟。所以 BUSY 按**进程**计：
+每个进程读 `local_lookup_busy()` 打进自己的 metrics。
+
+**布局没变**：`OmsShmHeader` 的**字段**与 v4.1 逐字节相同（只多了一段注释），
+`sizeof` 仍 4096、`kVersion` 仍 3 → **不需要删 shm 文件**。
+（已用 `awk` 抽出 v4.1 基线与当前文件的 struct 定义做 `diff` 核对：只有注释行不同。）
+
+### 四、验证
+
+| 项 | 结果 |
+|---|---|
+| `oms_test` §20（B3 三态，新增 7 组） | 三态、`to_string`、NOT_FOUND 不计 BUSY、RECLAIMING→BUSY、恢复→OK、空 slot→NOT_FOUND、索引篡改→NOT_FOUND、**只读 reader 走 BUSY 路径不崩** |
+| 断言数 | 191 → **224** |
+| **SIGBUS 回归**：连跑 30 轮 | **0 / 30 失败**（修复前 20 轮挂 2 轮） |
+| 4 个 TU 编译 | 零 `-Wall -Wextra` 告警 |
+| B6 `verify.cpp` | 23 / 23 |
+| v4 `verify_v4.cpp` | 12 / 12 |
+| `sync_invariant.cpp` | 不变量破坏 **0 / 320**；旧 key 残留 0 |
+| `alloc_scan.cpp` | 可避免丢单 **0**；`slowpath=11` == 模拟值 11 |
+| `headroom.cpp` | `alloc_failures=0` |
+
+### 五、上线动作
+
+**无额外运维动作** —— 没改 shm 布局、没加共享计数器、`kVersion` 仍 3。
+
+> **给上层的迁移提示**：对账代码（重启 reconcile / WS 重连对账）应从 `lookup_by_*(...)`
+> 换成 `lookup_by_*_ex(...)`，并把 `BUSY` 处理成"重试本轮"，**不要**当成"单不存在"。
+> bool 版仍然可用，但它在对账场景下就是 B3 本身。
+
+### 六、撤销
+
+```bash
+patch -R -p1 < tb/tools/OmsShm_v6.patch
+```
+
+补丁：`tb/tools/OmsShm_v6.patch`（**551 行 / 32386 B**，3 文件 —— `include/oms/OmsShm.h` /
+`include/oms/README.md` / `tb/tools/oms_test.cpp`），基线 = **已应用 v5 之后**的状态：
+
+| 文件 | v6 基线 | 怎么核对 |
+|---|---|---|
+| `tb/tools/oms_test.cpp` | **git HEAD = `26db997` "update"**（= 第 23 轮/v5 的提交点） | `git show 26db997:tools/oms_test.cpp \| cmp - <v6基线>` ✅ 逐字节相等 |
+| `include/oms/OmsShm.h`、`include/oms/README.md` | v5 应用后的状态（不在 git 里） | 把 v5 补丁正向 apply 到 v5 的基线，产物与 v6 基线逐字节相等 ✅ |
+
+> ⚠️ **`26db997` 是用户在本轮把 v5 提交后产生的**（20:23）。所以：
+> - v5 补丁头里写的基线 `825ab3f` 现在**已过时**，但补丁本身仍然有效（它记录的是一次历史变更）；
+> - 在 `26db997` 之后**不需要**再应用 v5 补丁，直接 apply v6 即可。
+
+正反向 apply 均已逐字节 `cmp` 通过（见规则 42：自洽回环不算验证，基线本身也要核）。
+
+---
+
 ## 3. 形式正确性（当前环境能用，但是错的）
 
 ### P1-6 · seqlock 两边都缺 fence
@@ -1901,7 +2038,11 @@ md5 现为 `447b1ed8bb4bee4e1d1bfbab220c1fd2`）；
    ✅ **已完成**（2026-10-06 18:45，见 §2.7）。使用者提的三个"快路径 + 兜底"提案里，
    ③（alloc 全表兜底）与 ②（检查返回值）已改；①（index 全表兜底）评估后**不改**（§2.7 四）。
    **无额外运维动作**（v4 没改 shm 布局，`kVersion` 仍是 3）。
-8. **B3 lookup 三态** —— 重启对账用得到，别把活单当死单。
+8. ~~**B3 lookup 三态**~~ ✅ **已完成**（2026-10-06 20:4x，见 §2.10）：新增 `LookupStatus`
+   （OK / NOT_FOUND / BUSY）+ `lookup_by_*_ex()`，旧 bool API 语义不变。
+   BUSY 计数用**进程内** `local_lookup_busy()` —— 第一版放进 SHM header 会让只读 reader
+   SIGBUS（§17 并发用例 20 轮挂 2 轮），这条弯路记在 §2.10 三。
+   **待上层配合**：对账代码改用 `_ex()` 并把 BUSY 当"重试"，别当"不存在"。
 9. ✅ **测试本体已完成**（2026-10-06 19:22，见 §2.8）：新增 `tb/tools/oms_test.cpp`
    （18 节 / **182 条断言**）+ `oms_shm.sh test`（强制重建 + 解析契约检查）。
    原计划是 **D1 写真正的 `oms_demo`** + **D2 把 `tb/tools` 加进 CMake**，
