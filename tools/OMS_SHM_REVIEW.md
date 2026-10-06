@@ -1517,6 +1517,151 @@ patch -R -p1 < tb/tools/OmsShm_v4_1.patch
 
 ---
 
+## 2.9 第 23 轮：`bench` 刷 ERROR 的真因 —— 不是 store 的 bug，是 bench 的建模错误
+
+**现象**（Ubuntu 20.04 实测）：`./oms_shm.sh bench` 跑到 MIXED 相位后，`[OmsShm][ERROR]`
+以「累计 1 次 … 8 次 …」刷屏，状态恒为 `slot_cap=131072 live=87382 finished=43690 empty=0`，
+`最年轻的 FINISHED 距现在 2252 ms (< min_reclaim_age_ms=60000)`。
+
+### 一、先证明 store 的行为是对的
+
+`live=87382` / `finished=43690` 这两个数**恰好**是 `i % 3` 的分布：`i ∈ [0, 131072)` 里
+`i%3==0`（NEW→LIVE）43691 个、`i%3==1`（PARTFILLED→LIVE）43691 个、`i%3==2`（FILLED→FINISHED）
+43690 个 → LIVE 87382、FINISHED 43690。这个巧合说明：**环是被 MIXED 相位自己的单填满的**。
+
+用探针复刻整个相位顺序（`/tmp/omsshm_r23/probe.cpp`，cap=4096 / iters=20000）拿到决定性证据：
+
+| 相位 | empty | live | finished | inserts | updates | reclaims |
+|---|---|---|---|---|---|---|
+| after INSERT | 1 | 4095 | 0 | 4095 | 0 | 0 |
+| after UPDATE | 1 | 0 | 4095 | 4095 | 4095 | 0 |
+| after MIXED | 0 | 2731 | 1365 | **4096** | **8190** | **0** |
+
+`upd` 从 4095 涨到 8190（+4095），而 `ins` 只涨了 **1**。这就锁定了两个 bench 缺陷：
+
+**(M1) MIXED 相位的 key 空间和前面的相位重叠了。** 它用 `make_rcmd(r, i, st)` 且 `i` 从 0 开始，
+orderSysId = `"bench-<i>"` —— 而 INSERT/UPDATE 相位造的就是 `"bench-<0..capacity-2>"`。
+所以 `i < capacity-1` 的那些调用全是**更新已有单**，只有 `i == capacity-1` 那一次才真的新建
+（用掉唯一一个 EMPTY slot）。代码注释写的「一半 insert 一半 update (触发状态迁移 + 部分 reclaim)」
+**从来没有成立过**：实际是 ~100% update + 1 次 insert + `reclaims = 0`。
+
+**(M2) MIXED 相位新建单的数量没有上限。** `oms_shm.sh bench` 传 `--iters=1000000`，
+而环只有 131072 个 slot。`i >= 131071` 之后的 `"bench-<i>"` 才是新 key，于是
+**868928 次 upsert 注定失败**（87%）。v4 加的诊断 + 限流（前 8 次、之后每 4096 次）
+把它们打成 ~220 段 ERROR ≈ 1300 行 —— 于是**每一次 `./oms_shm.sh bench` 都以 ERROR 刷屏收场**，
+把人训练成无视 ERROR。这才是真正要修的东西。
+
+**(M3) MIXED 相位只打 reader 的吞吐，从来不打 writer 的。** 「1 writer + 4 readers」这个小节
+里，writer 的吞吐/延迟一个字都没输出 —— 而它才是这个相位真正想测的对象。
+
+> 编号说明：本节用 **M1/M2/M3**，避免与 §0.1 的 D 系列（D1/D2/D3/D4/D5）撞号 ——
+> 那里已有另一个 `D4`（`--help` 的 2 的幂措辞）和另一个 `D5`（`oms_query.cpp:216-220` 除零）。
+
+### 二、根因：TTL 把「可持续写入速率」钉死了
+
+环满**不是**因为 `slot_capacity` 不够，而是因为 `min_reclaim_age_ns = 60s`：
+
+> 稳态占用 ≈ 写入速率 × min_reclaim_age ⇒ **可持续写入速率上限 = slot_cap / min_reclaim_age**
+
+131072 / 60s ≈ **2185 单/秒**，而 bench 压到 ~70 万单/秒 → 0.2 秒写满。
+`live=87382` 那部分是**永远回收不了**的（MIXED 把 1/3 的单推成 FILLED，另 2/3 停在
+NEW/PARTFILLED —— 非终态，只能等 `max_live_stale_ns = 24h`），FINISHED 那部分则是「还太年轻」。
+所以快慢两遍全表扫描确实找不到可回收 slot —— 诊断说的没错，只是**没把那个速率上限算出来**。
+
+### 三、修法
+
+**A. `oms_bench.cpp` / `oms_demo.cpp`（两者仍逐字节相同，同步修改）**
+
+| 改动 | 说明 |
+|---|---|
+| `make_rcmd(..., prefix, oid_base)` | key 空间参数化：`orderSysId="<prefix>-<seq>"`、`strategyId="<prefix>"`（复合 client key 也不撞）、`orderId="<oid_base>+<seq>"` |
+| MIXED 相位改用 `"mx-"` 前缀 + `oid_base=5000000` | 与 INSERT/UPDATE 相位**完全不相交**（M1） |
+| 每个单走两步：偶数次 `NEW`、奇数次 `FILLED` | 真正的一半 insert / 一半 update，且每张单都会变成 FINISHED、TTL 过后可回收 |
+| 新增 `--mixed-ttl-ms`（**默认 0**） | 0 = 立刻可回收 → 回收始终可用 → **任何机器/容量都不会写满**；想复现「环写满」显式给大值 |
+| MIXED 打 writer 的 summary | 修 M3 |
+| MIXED 末尾自检 `alloc_fail` / `reclaims` / 占用 | 直接打 `✓ 可持续: 0 丢单` 或 `✗ 不可持续 … 上限 ≈ N 单/秒` |
+| `--reset` 时若文件容量 ≠ 请求容量则 unlink 重建 | 打开已存在文件时容量一律从 header 读，`--capacity` 会被**静默忽略** —— 一个遗留的 16k 文件会让 `--capacity=131072` 白传 |
+| `SHM ready` 打**文件实际**容量 + `(requested=N)` | 上面那个静默忽略要看得见 |
+
+**B. `OmsShm.h`：把那个速率上限算出来打出来**（`alloc_exhausted_report` 新增两行）
+
+```
+  → 可持续写入速率上限 ≈ slot_cap / min_reclaim_age = 2185 单/秒
+     (稳态占用 ≈ 写入速率 × min_reclaim_age; 超过这个速率必然写满)
+```
+
+并把结尾的「加大 capacity, 或让上层及时 finalize 订单」补成
+「加大 capacity, **调小 min_reclaim_age**, 或让上层及时 finalize 订单」——
+原来那句漏掉了这次事故真正的旋钮。
+
+**C. `oms_query --stats` 新增 `sustainable_insert_rate`**（数值行，以数字结尾），
+`doctor` 解析它并打一行 `[i] 可持续写入速率上限 ≈ N 单/秒`，`oms_shm.sh test` 的解析契约
+key 列表从 8 个扩到 **9 个**。
+
+**D. `oms_test.cpp` 新增第 19 节**钉住机理：8 个 slot 全 FINISHED（年龄 ~0）时新单**必然**写不进
+（`total_alloc_exhausted == 1`）；把 TTL 调成 0 后**同一张单立刻写得进去**且 `reclaims >= 1`。
+断言数 182 → **191**。
+
+### 四、验证
+
+| 项 | 结果 |
+|---|---|
+| `./oms_shm.sh build` | 4 × ✓，`-Wall -Wextra` **零告警** |
+| `./oms_shm.sh test` | **PASS 191, FAIL 0**；解析契约 **9/9**（`sustainable_insert_rate → 1`） |
+| `oms_bench` 用户原参数（cap=131072 / iters=1000000 / 4 readers） | **`alloc_fail=0`**、`reclaims=499999`、`inserts == updates == 631071`、`✓ 可持续: 0 丢单`；**零 ERROR** |
+| `oms_bench` 负向对照（`--mixed-ttl-ms=60000`, cap=4096） | 如期刷 ERROR，且新增行打出 `可持续写入速率上限 ≈ 68 单/秒`（= 4096/60） |
+| `oms_bench --reset` 容量不匹配 | 打 `capacity mismatch: file=16384 requested=131072 → unlink & recreate` 后按 131072 重建 |
+| `verify_v4.cpp` | 12 / 12 |
+| B6 `verify.cpp` | 23 / 23 |
+| `sync_invariant.cpp`（`kMaxProbeIndex=1` 头文件副本） | 不变量破坏 **0 / 320**；旧 key 残留 0 |
+| `alloc_scan.cpp` | 可避免丢单 **0**；`slowpath=10` == 模拟值 10 |
+| `headroom.cpp` cap=1024 / 4096 | `alloc_failures=0` |
+| `doctor` 四个 fixture | `v4_exh`→✗×2、`v4_slow`→⚠×1、`v4_small`→✗×2、`parser_fixture`→✓ healthy |
+
+### 五、上线动作
+
+**无额外运维动作** —— 本轮没有改 shm 布局（`sizeof(OmsShmHeader)` 仍 4096、`kVersion` 仍 3），
+也没有新增计数。B6 那次 `kVersion` 2→3 的「删 shm 重建」要求依然成立。
+
+> **运维提醒（这次事故的真正教训）**：生产环境要拿**实际下单速率**和
+> `slot_cap / min_reclaim_age` 比一下。默认 100000 slot + 60s TTL 只能撑 **~1666 单/秒**；
+> 131072 slot 是 ~2185 单/秒。超了就会静默丢单（v4 之前是**完全静默**，现在至少计数 + 诊断）。
+> `doctor` 已经把这条线打出来了。
+
+### 六、撤销
+
+```bash
+patch -R -p1 < tb/tools/OmsShm_v5.patch
+```
+
+补丁：`tb/tools/OmsShm_v5.patch`（**833 行 / 43703 B**，**7 文件** —— `include/oms/OmsShm.h` /
+`include/oms/README.md` / `tb/tools/{oms_query.cpp, oms_shm.sh, oms_bench.cpp, oms_demo.cpp,
+oms_test.cpp}`），正反向应用均逐字节可还原。
+
+**基线分两段**（因为 `include/oms/` 不在 git 里）：
+
+| 文件 | 基线 |
+|---|---|
+| `include/oms/OmsShm.h`（80486 B / 1515 行）、`include/oms/README.md`（26066 B / 974 行） | 已应用 P1-1/A1/A4/B5/B6/v4/v4.1 之后的状态 |
+| `tb/tools/{oms_query.cpp, oms_shm.sh, oms_bench.cpp, oms_demo.cpp, oms_test.cpp}` | tb 仓库 **git HEAD = `825ab3f` "update"**（逐文件 `cmp` 核对过） |
+
+> ⚠️ **补丁在 20:1x 重建过一次 —— 第一版有两个真 bug，都是"artifact 声称的基线不是真基线"这一类：**
+>
+> 1. **`oms_bench.cpp` / `oms_demo.cpp` 两段用的是空基线**（hunk 头写成 `@@ -0,0 +1,442 @@`，
+>    即"新建文件"）。第一版的说明还写着"这两个文件此前没有被任何补丁改过"—— **这是错的**，
+>    `OmsShm_B6.patch` 就改过它们。从 git HEAD 的树里 apply 会因为文件已存在（330 行）而失败。
+> 2. **`oms_test.cpp` 完全没进补丁**（第一版把它列为"不含，需单独放置"）。这个理由在 v4.1 成立
+>    —— 那时它还是**新增文件**；但 v4.1 已把它提交进 git，本轮它是**修改**（1023 → 1073 行），
+>    所以必须进补丁，否则单靠补丁复现不出验证过的状态。
+>
+> **为什么第一版看起来是"验过的"**：我只做了反向 apply → 正向 apply 的**自洽**回环，两边都能过
+> （空基线也能自洽），却**没检查基线本身是不是它声称的那个东西**。教训见技能规则 42。
+> 重建后补了三条硬校验：① 基线 `OmsShm.h` 字节数必须是 80486；② 基线里**不能**出现本轮新增的
+> 字符串（`mixed-ttl-ms` / `sustainable_insert_rate` / `可持续写入速率上限`）；③ 5 个 `tb/tools`
+> 文件的基线必须与 `git HEAD` **逐字节**相等。
+
+---
+
 ## 3. 形式正确性（当前环境能用，但是错的）
 
 ### P1-6 · seqlock 两边都缺 fence
@@ -1703,17 +1848,19 @@ clang++ -std=c++17 -I /Users/lawson/Documents/hft/include -I /tmp/omsshm_check/s
 > **没有跑真实生命周期做对照** —— 这是这次误判的直接原因。两个脚本现在都保留着，
 > 对照着看才说明问题。
 
-**当前仓库状态**：`include/oms/OmsShm.h` **已被七个补丁修改**
-（44788 → 47794 → 49427 → 51965 → 62899 → 68079 → 77059 → **80486 B**；
-980 → 1033 → 1062 → 1101 → 1265 → 1338 → 1471 → **1515 行**；
-md5 现为 `4389477d19bf505e5dbb97fb2a29eb65`）；
-`tb/tools/oms_query.cpp` **已被 A1 + A4 + B6 + v4 + v4.1 修改**（236 → 262 → 267 → 287 → 308 → **318 行**）；
-`tb/tools/oms_shm.sh` **已被 A4 + B6 + v4 + v4.1 修改**（180 → 182 → 199 → 229 → **299 行**）；
-`tb/tools/oms_bench.cpp` / `oms_demo.cpp` 只改了 `--help` 措辞；
+**当前仓库状态**：`include/oms/OmsShm.h` **已被八个补丁修改**
+（44788 → 47794 → 49427 → 51965 → 62899 → 68079 → 77059 → 80486 → **81474 B**；
+980 → 1033 → 1062 → 1101 → 1265 → 1338 → 1471 → 1515 → **1529 行**；
+md5 现为 `447b1ed8bb4bee4e1d1bfbab220c1fd2`）；
+`tb/tools/oms_query.cpp` **已被 A1 + A4 + B6 + v4 + v4.1 + v5 修改**（236 → 262 → 267 → 287 → 308 → 318 → **330 行**）；
+`tb/tools/oms_shm.sh` **已被 A4 + B6 + v4 + v4.1 + v5 修改**（180 → 182 → 199 → 229 → 299 → **316 行**）；
+`tb/tools/oms_bench.cpp` / `oms_demo.cpp`（仍逐字节相同，md5 `e274ede4c75ac0a7a98adec32ad2f95a`）
+**被 v5 改了 159 行**：`make_rcmd` 加 prefix/oid_base、MIXED 相位换 `"mx-"` key 空间、
+新增 `--mixed-ttl-ms`、打 writer summary + 自检、`--reset` 容量不匹配时重建（330 → **441 行**）；
 `include/oms/README.md` 改了索引 2N → 4N、内存、`shm_size`、Q2、新增 Q7 / Q8、四个新指标行、
-`oms_test` 说明，并把 `oms_demo` 的描述改成如实（883 → **973 行**）。
-新增 `tb/tools/OMS_SHM_REVIEW.md`、`tb/tools/oms_test.cpp`（**1023 行 / 52738 B**）、
-`tb/tools/OmsShm_{P1-1,A1,A4,B5,B6,v4,v4_1}.patch`（**均已应用**）。
+`oms_test` 说明、`oms_demo` 描述改成如实、v5 的 `sustainable_insert_rate`（883 → **974 行**）。
+新增 `tb/tools/OMS_SHM_REVIEW.md`、`tb/tools/oms_test.cpp`（**1073 行 / 191 条断言**）、
+`tb/tools/OmsShm_{P1-1,A1,A4,B5,B6,v4,v4_1,v5}.patch`（**均已应用**）。
 除这些文件外没有其它改动。
 
 > ⚠️ **运维**：B6 之后 `kVersion` 已到 3，**已有的 shm 文件必须删掉重建**
@@ -1792,5 +1939,20 @@ md5 现为 `4389477d19bf505e5dbb97fb2a29eb65`）；
     ✅ **已完成**（2026-10-06 19:22，见 §2.8）。这一组是使用者报的构建错误带出来的：
     `-pthread` 只给 `oms_bench` 加过，而真正构造 `std::thread` 的 `oms_demo` 没有；
     `nm -u` 确认 `oms_query` 根本不引用 `pthread_create`。
-    另修 `doctor` 的 8 处 `((issues++))`、补 `doctor` 的 auto-build、
-    把 `cmd_test` 改成每次强制重建（避免测到陈旧二进制）。
+   另修 `doctor` 的 8 处 `((issues++))`、补 `doctor` 的 auto-build、
+   把 `cmd_test` 改成每次强制重建（避免测到陈旧二进制）。
+14. ✅ **`bench` MIXED 相位刷 ERROR**（2026-10-06 20:0x，见 §2.9）。
+   使用者报的是「bench 跑出满屏 `[OmsShm][ERROR]`」——**store 没问题，是 bench 自己的建模错误**：
+   MIXED 相位的 key 空间与 INSERT/UPDATE 相位重叠（`"bench-<i>"` 且 i 从 0 开始）→
+   前 capacity-1 次调用其实全是 update，只有 1 次是真 insert；且新建单数量无上限
+   （`--iters=1000000` vs 131072 slot）→ 868928 次注定失败。
+   根因是 **TTL 把可持续写入速率钉死在 `slot_cap / min_reclaim_age`**（131072/60s ≈ 2185 单/秒），
+   而 bench 压到 ~70 万单/秒。
+   修：MIXED 换独立 key 空间 + 真正一半 insert/一半 update + `--mixed-ttl-ms`（默认 0）
+   + 打 writer 吞吐 + 自检 `alloc_fail/reclaims`；`--reset` 容量不匹配时重建；
+   `alloc_exhausted_report` 与 `oms_query --stats` 都算出并打出**可持续速率上限**；
+   `oms_test` 第 19 节钉住机理。断言 182 → **191**。
+   **无额外运维动作**（未改布局、未新增计数）。
+15. **仍未做**（顺延）：**D1**（`oms_demo` 与 `oms_bench` 仍逐字节相同，v5 是**同步**改的
+   两个文件，md5 `e274ede4c75ac0a7a98adec32ad2f95a`；`./oms_shm.sh demo` 跑的仍是 bench）、
+   **D2**（`tb/tools` 仍未进 CMake）。

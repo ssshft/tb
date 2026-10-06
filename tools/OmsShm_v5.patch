@@ -1,0 +1,833 @@
+# =============================================================================
+# OmsShm_v5.patch — 第 23 轮：bench MIXED 相位修复 + 可持续写入速率上限
+#
+# 应用: cd <hft_root> && patch -p1 < tb/tools/OmsShm_v5.patch
+# 撤销: patch -R -p1 < tb/tools/OmsShm_v5.patch
+#
+# ★ 基线分两段 (按文件来源, 逐文件给出):
+#   1) include/oms/OmsShm.h / include/oms/README.md
+#        → 基线 = **已应用 P1-1/A1/A4/B5/B6/v4/v4.1 之后**的状态
+#          OmsShm.h 80486 B / 1515 行; README 26066 B / 974 行
+#          (这两个文件在 hft 根目录下, **不在 git 里**)
+#   2) tb/tools/oms_query.cpp / tb/tools/oms_shm.sh /
+#      tb/tools/oms_bench.cpp / tb/tools/oms_demo.cpp / tb/tools/oms_test.cpp
+#        → 基线 = **tb 仓库的 git HEAD** (= commit 825ab3f "update",
+#          即第 22 轮结束时的状态)
+#
+# 换句话说: 在 Ubuntu 机器上 `git -C tb pull` 到 825ab3f 之后直接 apply 即可。
+# (已逐文件核对: 上面 5 个 tb/tools 文件的基线 == HEAD, 用 cmp 逐字节比过。)
+#
+# 注意: tb/tools/oms_shm.sh 需要可执行位 —— patch 不恢复 mode, 应用后执行
+#       chmod +x tb/tools/oms_shm.sh
+#
+# 本补丁**不改** shm 布局: sizeof(OmsShmHeader) 仍是 4096, kVersion 仍是 3,
+# 也没有新增计数器 → **不需要**删 shm 文件。
+# (B6 那次 kVersion 2→3 要删的原因依然成立, 合并做一次即可。)
+#
+# 内容概览 (7 个文件):
+#   - oms_bench.cpp / oms_demo.cpp: MIXED 相位换独立 key 空间 ("mx-" + oid_base=5000000)
+#     + 每单两次迭代 (OS_NEW → OS_FILLED) 的真 churn 循环 + 新增 --mixed-ttl-ms (默认 0)
+#     + 打 writer 自己的吞吐 + 末尾自检 (alloc_fail / reclaims) + --reset 容量不匹配时
+#       unlink 重建 + "SHM ready" 打实际容量 (requested=N)
+#   - include/oms/OmsShm.h: alloc_exhausted_report 打出
+#     「可持续写入速率上限 ≈ slot_cap / min_reclaim_age = N 单/秒」+ 稳态占用恒等式
+#   - oms_query.cpp: --stats 新增数值行 sustainable_insert_rate
+#   - oms_shm.sh: cmd_bench 显式 --mixed-ttl-ms=0; cmd_doctor 解析并打印速率上限;
+#                 cmd_test 的解析契约 key 列表 8 → 9 (加 sustainable_insert_rate)
+#   - oms_test.cpp: 新增 §19 钉住 TTL 回收年龄机制 (TTL>0 必失败 / TTL=0 同一单成功)
+#
+# 本补丁**不含** tb/tools/OMS_SHM_REVIEW.md (评审文档, 与前几版补丁一致, 不随补丁走)。
+#
+# 校验: 正向 (base → cur) 与反向 (cur → base) 均已逐字节 cmp 通过。
+# =============================================================================
+
+--- a/include/oms/OmsShm.h
++++ b/include/oms/OmsShm.h
+@@ -1191,10 +1191,24 @@
+         } else {
+             std::fprintf(stderr,
+                 "  一个 FINISHED 都没有 → 全是 LIVE 未终态, 在途单数已经 >= slot_cap\n");
++        }
++        // ★ 把"到底能跑多快"直接算出来 —— 这是这次事故真正缺的那个数。
++        //   稳态占用 ≈ 写入速率 × min_reclaim_age, 所以容量给定时,
++        //   可持续速率上限 = slot_cap / min_reclaim_age。超过它必然写满丢单,
++        //   跟"上层有没有及时 finalize"无关。实测 (slot_cap=131072, TTL=60s):
++        //   上限只有 ~2185 单/秒, 而 bench 压到 70 万单/秒 → 0.2 秒写满。
++        if (header()->min_reclaim_age_ns) {
++            const uint64_t ceiling =
++                static_cast<uint64_t>(cap) * 1'000'000'000ULL / header()->min_reclaim_age_ns;
++            std::fprintf(stderr,
++                "  → 可持续写入速率上限 ≈ slot_cap / min_reclaim_age = %llu 单/秒\n"
++                "     (稳态占用 ≈ 写入速率 × min_reclaim_age; 超过这个速率必然写满)\n",
++                (unsigned long long)ceiling);
+         }
+         std::fprintf(stderr,
+             "  → 该单未写入 SHM, total_alloc_failures / total_alloc_exhausted 都会 +1\n"
+-            "  → 长期出现就是 slot_capacity 不够: 加大 capacity, 或让上层及时 finalize 订单\n");
++            "  → 长期出现就是 slot_capacity 不够: 加大 capacity, 调小 min_reclaim_age,\n"
++            "     或让上层及时 finalize 订单\n");
+     }
+ 
+     void write_new_slot(uint32_t idx, const pubsub::RCommand& rcmd) {
+--- a/include/oms/README.md
++++ b/include/oms/README.md
+@@ -293,9 +293,25 @@
+ oms_bench —— 性能测试
+ 
+ oms_bench --shm=/dev/shm/tb_bench.dat --capacity=131072 \
+-          --iters=1000000 --readers=4 --reset
++          --iters=1000000 --readers=4 --mixed-ttl-ms=0 --reset
+ 
+-测量: insert / update / lookup 吞吐 + p50 / p95 / p99 / p999 / max 延迟。 混合场景 1 writer + N readers。
++测量: insert / update / lookup 吞吐 + p50 / p95 / p99 / p999 / max 延迟。 混合场景 1 writer + N readers
++(writer 和每个 reader 的吞吐都会打印)。
++
++★ --mixed-ttl-ms (默认 0) 只在 MIXED 相位生效, 它决定这个相位能不能"跑得下去":
++
++    可持续写入速率上限 ≈ slot_cap / min_reclaim_age
++
++  生产默认 TTL 是 60s, 所以 131072 slot 只够约 2185 单/秒; 而本机实测写入 ~70 万单/秒
++  → 环 0.2 秒就写满, 之后**每一张单都失败**并刷 [OmsShm][ERROR]。
++  MIXED 相位因此默认用 0 (= FINISHED 立刻可回收), 保证任何机器/容量都不会写满;
++  想复现"环写满"的行为, 显式给一个大值 (如 --mixed-ttl-ms=60000)。
++
++  自检: 相位结束会打印 `✓ 可持续: 0 丢单` 或 `✗ 不可持续: 丢了 N 单 … 上限 ≈ M 单/秒`。
++
++★ --reset 时若文件里已有的容量 ≠ --capacity, 会 unlink 重建。
++  (打开已存在的文件时容量一律从 header 读, --capacity 会被静默忽略 ——
++   一个遗留的 16k 文件会让 --capacity=131072 白传, 测出来的东西完全不是以为的。)
+ 
+ oms_demo —— ⚠ 当前**不是** demo
+ 
+@@ -727,7 +743,19 @@
+ 
+ 
+ 
++sustainable_insert_rate
+ 
++
++
++> 0
++
++
++
++可持续写入速率上限 = slot_cap / min_reclaim_age (单/秒); 0 = 不限制 (min_reclaim_age=0 时)。**这是容量与 TTL 一起决定的硬上限** —— 稳态占用 ≈ 写入速率 × min_reclaim_age, 实际下单速率超过它, 环必然写满并开始丢单 (跟上层 finalize 及不及时无关)
++
++
++
++
+ worst_live_run
+ 
+ 
+--- a/tb/tools/oms_query.cpp
++++ b/tb/tools/oms_query.cpp
+@@ -222,6 +222,18 @@
+         std::printf("  --\n");
+         std::printf("  min_reclaim_age            : %.1f s (FINISHED 最小 TTL)\n", s.min_reclaim_age_ns / 1e9);
+         std::printf("  max_live_stale             : %.1f s (LIVE 无更新阈值, 0=禁用)\n", s.max_live_stale_ns / 1e9);
++        // ★ 容量给定时"到底能跑多快"就已经定死了: 稳态占用 ≈ 写入速率 × min_reclaim_age,
++        //   所以 可持续速率上限 = slot_cap / min_reclaim_age。**超过它必然写满丢单**,
++        //   跟上层有没有及时 finalize 无关。第 23 轮事故: 131072 / 60s = 2185 单/秒,
++        //   而 bench 压到 ~70 万单/秒 → 0.2 秒写满, 之后每张单都失败。
++        //   数值行以数字结尾 (doctor 取值用); min_reclaim_age=0 表示不限制, 打 0。
++        {
++            const uint64_t ceiling = s.min_reclaim_age_ns
++                ? static_cast<uint64_t>(s.capacity) * 1'000'000'000ULL / s.min_reclaim_age_ns
++                : 0;
++            std::printf("  sustainable_insert_rate    : %llu\n", (unsigned long long)ceiling);
++            std::printf("      ← 可持续写入速率上限 = slot_cap / min_reclaim_age (单/秒); 0 = 不限制\n");
++        }
+         std::printf("  --\n");
+         std::printf("  index_capacity             : %u (每个索引 = next_pow2(4*slot_cap))\n",
+                     s.index_capacity);
+\ No newline at end of file
+--- a/tb/tools/oms_shm.sh
++++ b/tb/tools/oms_shm.sh
+@@ -109,7 +109,11 @@
+ 
+ cmd_bench() {
+     [ -x "$SCRIPT_DIR/oms_bench" ] || cmd_build
+-    "$SCRIPT_DIR/oms_bench" --shm=/dev/shm/tb_bench.dat --capacity=131072 --iters=1000000 --readers=4 --reset
++    # --mixed-ttl-ms=0: mixed 相位默认把 FINISHED 的 TTL 设成 0 (立刻可回收), 否则
++    #   "写入速率 × TTL" 远大于 capacity, 环 0.2 秒就满、之后每张单都失败并刷 ERROR。
++    #   生产语义下可持续速率上限 = capacity / TTL, 131072 slot + 60s TTL 只有约 2185 单/秒。
++    "$SCRIPT_DIR/oms_bench" --shm=/dev/shm/tb_bench.dat --capacity=131072 --iters=1000000 \
++                            --readers=4 --mixed-ttl-ms=0 --reset
+ }
+ 
+ # 功能 / 边界 / 并发断言集 (oms_test) + 输出格式的解析契约检查。
+@@ -136,7 +140,7 @@
+     # 这些就是 doctor 会解析的 key。契约: 该行形如 `key[^:]*:<spaces><digits>` 且**以数字结尾**。
+     for key in total_alloc_failures total_stale_live_reclaims total_alloc_slowpath \
+                total_alloc_exhausted total_key_sync_failures total_alias_insert_failures \
+-               probe_max worst_live_run; do
++               probe_max worst_live_run sustainable_insert_rate; do
+         local line got
+         line=$(echo "$out" | grep -E "^[[:space:]]*${key}([^:]*):" | head -1)
+         if [ -z "$line" ]; then
+@@ -216,10 +220,12 @@
+     exhausted=$(echo "$out"     | grep -E '^[[:space:]]*total_alloc_exhausted[[:space:]]*:'   | grep -oE '[0-9]+' | head -1)
+     key_sync_fail=$(echo "$out" | grep -E '^[[:space:]]*total_key_sync_failures[[:space:]]*:' | grep -oE '[0-9]+' | head -1)
+     alias_fail=$(echo "$out"    | grep -E '^[[:space:]]*total_alias_insert_failures[[:space:]]*:' | grep -oE '[0-9]+' | head -1)
++    sustain=$(echo "$out"       | grep -E '^[[:space:]]*sustainable_insert_rate[[:space:]]*:' | grep -oE '[0-9]+' | head -1)
+     [ -z "$slowpath" ]      && slowpath=0
+     [ -z "$exhausted" ]     && exhausted=0
+     [ -z "$key_sync_fail" ] && key_sync_fail=0
+     [ -z "$alias_fail" ]    && alias_fail=0
++    [ -z "$sustain" ]       && sustain=0
+ 
+     if [ "$alloc_fail" -gt 0 ]; then
+         err "alloc_failures = $alloc_fail  → 有单没写进 SHM! 看下面 alloc_exhausted / key_sync_failures 分辨是环满还是索引饱和"
+@@ -241,6 +247,15 @@
+     else
+         ok "alloc_exhausted = 0"
+     fi
++    # 容量给定后"能跑多快"就已经定死了 = slot_cap / min_reclaim_age。
++    #   超过它必然写满丢单, **跟上层 finalize 及不及时无关** —— 把它打出来,
++    #   便于和实际下单速率直接对比 (第 23 轮 bench 刷 ERROR 就是撞了这条线)。
++    if [ "$sustain" -gt 0 ]; then
++        log "  [i] 可持续写入速率上限 ≈ $sustain 单/秒 (= slot_cap / min_reclaim_age)"
++        log "      实际下单速率超过它 → 环会写满并开始丢单; 加大 capacity 或调小 min_reclaim_age"
++    else
++        log "  [i] min_reclaim_age = 0 → 不限制可持续写入速率"
++    fi
+     # ②: key 变更时索引插入失败。已保持旧 key 不变 (副本与索引仍一致), 但订单没跟上变更。
+     if [ "$key_sync_fail" -gt 0 ]; then
+         err "key_sync_failures = $key_sync_fail  → key 变更时索引插入失败 (索引饱和); 已保持旧 key, 订单仍可查"
+--- a/tb/tools/oms_bench.cpp
++++ b/tb/tools/oms_bench.cpp
+@@ -21,12 +21,14 @@
+ 
+ #include <algorithm>
+ #include <atomic>
++#include <cerrno>
+ #include <chrono>
+ #include <cstdio>
+ #include <cstring>
+ #include <string>
+ #include <string_view>
+ #include <thread>
++#include <unistd.h>
+ #include <vector>
+ 
+ using namespace oms::shm;
+\ No newline at end of file
+@@ -89,15 +91,27 @@
+ 
+ // -----------------------------------------------------------------------------
+ // 生成测试用 RCommand
++//
++// ★ prefix / oid_base 必须让**各相位之间的 key 空间互不相交**:
++//   - orderSysId = "<prefix>-<seq>"  → 主索引
++//   - strategyId = "<prefix>"        → 复合 clientOrderId 索引 (避免不同 prefix 撞 key)
++//   - orderId    = "<oid_base>+<seq>"→ orderId 索引
++//   否则后一个相位会**更新**前一个相位留下的单, 而不是新建 —— 测出来的东西
++//   跟注释写的完全不是一回事 (第 23 轮踩过: MIXED 相位复用 "bench-<i>" 且 i 从 0
++//   开始, 于是 i < insert_iters 全是 update, 只有 i >= insert_iters 才真的新建)。
+ // -----------------------------------------------------------------------------
+-static void make_rcmd(pubsub::RCommand& r, uint64_t seq, OrderStatus st) {
++static void make_rcmd(pubsub::RCommand& r, uint64_t seq, OrderStatus st,
++                      const char* prefix = "bench", uint64_t oid_base = 1000000) {
+     std::memset(&r, 0, sizeof(r));
+     r.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
+     auto& o = r.body.orderResponse;
+-    // orderSysId: bench-<seq>
+-    std::snprintf(o.orderSysId, sizeof(o.orderSysId), "bench-%llu", (unsigned long long)seq);
++    // orderSysId: <prefix>-<seq>
++    std::snprintf(o.orderSysId, sizeof(o.orderSysId), "%s-%llu", prefix,
++                  (unsigned long long)seq);
+     o.clientOrderId = static_cast<int64_t>(seq);
+-    std::snprintf(o.orderId, sizeof(o.orderId), "%llu", (unsigned long long)(1000000 + seq));
++    std::snprintf(o.orderId, sizeof(o.orderId), "%llu",
++                  (unsigned long long)(oid_base + seq));
++    std::snprintf(o.strategyId, sizeof(o.strategyId), "%s", prefix);
+     std::snprintf(o.instId, sizeof(o.instId), "BTC-USDT");
+     o.exchangeTypeEnum = BINANCE;
+     o.instTypeEnum     = SPOT;
+\ No newline at end of file
+@@ -177,25 +191,57 @@
+ }
+ 
+ // 4) 混合: 1 writer + N reader 并行
+-static void bench_mixed(const std::string& shm_path, uint64_t writer_iters,
+-                        uint64_t reader_iters, int n_readers)
++//
++// ★ 这个相位必须是**可持续**的流, 否则它测的不是 store 的容量, 而是自己的建模错误。
++//   两个前提 (第 23 轮修正, 之前两个都不成立):
++//
++//   (a) key 空间与前面的 insert / update 相位**不重叠**。
++//       旧版复用 "bench-<i>" 且 i 从 0 开始 → i < insert_iters 的调用其实是在
++//       **更新**前面插入的单, 只有 i >= insert_iters 才真的新建 slot。
++//       实测 (cap=4096, iters=20000): upd += 4095, ins += 1 —— 注释里写的
++//       "一半 insert 一半 update" 从来没有成立过。现在用独立的 "mx-" 前缀。
++//
++//   (b) 新建单的数量必须能被环容纳。稳态占用 ≈ **写入速率 × TTL**:
++//       TTL = min_reclaim_age_ns (默认 60s) 时, 本机 ~70 万单/秒 → 需要约
++//       4200 万个 slot, 而 131072 的环 0.2 秒就满, 之后**每一张单都失败**
++//       (实测 100 万次迭代里 868928 次失败, 日志刷屏)。
++//       所以这里把 TTL 调成 **--mixed-ttl-ms (默认 0 = 立刻可回收)**:
++//       回收始终可用 → 无论机器多快、容量多小都不会写满, 而且回收路径被真实压到。
++//       想复现"环接近写满"的行为, 显式给一个大 TTL 即可 (此时必须满足
++//       capacity >= 速率 × TTL, 否则必然丢单 —— 这正是那次事故的成因)。
++//
++//   每个单走两步: 偶数次迭代 insert(NEW), 紧接着奇数次迭代 update(FILLED),
++//   所以每张单都会变成 FINISHED, TTL 过后可被回收 —— insert / update /
++//   状态迁移 / 回收 四条路径全部被覆盖。
++static void bench_mixed(const std::string& shm_path, uint64_t writer_iters,
++                        uint64_t reader_iters, int n_readers, uint64_t min_reclaim_ms)
+ {
+-    std::atomic<bool> stop{false};
+-    std::atomic<uint64_t> writer_ops{0};
++    std::atomic<bool>     stop{false};
++    std::atomic<uint64_t> orders_done{0};     // 已推进到终态的单数 (reader 的查询上界)
++    std::vector<uint64_t> wlat;
++    uint64_t              wwall = 0;
+ 
+     // Writer
+-    std::thread wt([&](){
++    std::thread wt([&]{
+         OmsShmWriter w;
+         w.open(shm_path);
++        // ★ 见上面 (b): 不调小 TTL, 这个相位必然把环写满。
++        w.set_min_reclaim_age_ns(min_reclaim_ms * 1'000'000ULL);
++        wlat.reserve(writer_iters);
+         pubsub::RCommand r;
++        const uint64_t t0 = now_ns();
+         for (uint64_t i = 0; i < writer_iters; ++i) {
+-            // 一半 insert 一半 update (触发状态迁移 + 部分 reclaim)
+-            OrderStatus st = (i % 3 == 2) ? OS_FILLED : ((i % 3 == 1) ? OS_PARTFILLED : OS_NEW);
+-            make_rcmd(r, i, st);
++            const uint64_t    ord = i >> 1;                       // 每个单占两次迭代
++            const OrderStatus st  = (i & 1) ? OS_FILLED : OS_NEW;  // insert → 终态
++            make_rcmd(r, ord, st, "mx", 5'000'000);
++            const uint64_t s = now_ns();
+             w.upsert(r);
+-            writer_ops.fetch_add(1, std::memory_order_relaxed);
++            const uint64_t e = now_ns();
++            wlat.push_back(e - s);
++            if (i & 1) orders_done.fetch_add(1, std::memory_order_relaxed);
+         }
+-        stop.store(true);
++        wwall = now_ns() - t0;
++        stop.store(true, std::memory_order_release);
+     });
+ 
+     // Readers
+\ No newline at end of file
+@@ -214,10 +260,10 @@
+             char key[64];
+             uint64_t i = 0;
+             while (i < reader_iters && !stop.load(std::memory_order_acquire)) {
+-                uint64_t seq = writer_ops.load(std::memory_order_relaxed);
+-                if (seq == 0) { std::this_thread::yield(); continue; }
+-                uint64_t pick = i % seq;
+-                int n = std::snprintf(key, sizeof(key), "bench-%llu", (unsigned long long)pick);
++                uint64_t done = orders_done.load(std::memory_order_relaxed);
++                if (done == 0) { std::this_thread::yield(); continue; }
++                uint64_t pick = i % done;
++                int n = std::snprintf(key, sizeof(key), "mx-%llu", (unsigned long long)pick);
+                 uint64_t s = now_ns();
+                 r.lookup_by_orderSysId(std::string_view(key, n), out);
+                 uint64_t e = now_ns();
+\ No newline at end of file
+@@ -231,13 +277,38 @@
+     wt.join();
+     for (auto& t : rts) t.join();
+ 
+-    // 汇总每个 reader
++    // writer 的结果也要打 —— 旧版只打 reader, "1 writer + N readers" 里的 writer
++    // 吞吐完全没被报告, 而它才是这个相位真正想测的东西。
++    print_summary("MIXED-WRITER", summarize(wlat, wwall));
+     for (int t = 0; t < n_readers; ++t) {
+         char name[64];
+         std::snprintf(name, sizeof(name), "MIXED-READER-%d", t);
+         auto s = summarize(rlats[t], rwall[t]);
+         print_summary(name, s);
+     }
++
++    // 自检: 可持续的流不该丢单, 且应该真的发生过回收。
++    OmsShmReader rc;
++    rc.open(shm_path);
++    const auto st = rc.stats();
++    std::printf("\n  [MIXED 自检] ttl=%llums  inserts=%llu  updates=%llu  reclaims=%llu  "
++                "alloc_fail=%llu\n",
++                (unsigned long long)min_reclaim_ms,
++                (unsigned long long)st.total_inserts,
++                (unsigned long long)st.total_updates,
++                (unsigned long long)st.total_reclaims,
++                (unsigned long long)st.total_alloc_failures);
++    std::printf("    empty=%u live=%u finished=%u (slot_cap=%u)\n",
++                st.empty, st.live, st.finished, st.capacity);
++    if (st.total_alloc_failures == 0) {
++        std::printf("    ✓ 可持续: 0 丢单\n");
++    } else {
++        std::printf("    ✗ 不可持续: 丢了 %llu 单 —— TTL 太大或 capacity 太小 "
++                    "(可持续速率上限 ≈ slot_cap / TTL = %llu 单/秒)\n",
++                    (unsigned long long)st.total_alloc_failures,
++                    (unsigned long long)(st.min_reclaim_age_ns
++                        ? (uint64_t)st.capacity * 1'000'000'000ULL / st.min_reclaim_age_ns : 0));
++    }
+ }
+ 
+ // -----------------------------------------------------------------------------
+\ No newline at end of file
+@@ -247,7 +318,7 @@
+     std::fprintf(stderr,
+         "Usage:\n"
+         "  oms_bench [--shm=<path>] [--capacity=<N>] [--iters=<N>]\n"
+-        "            [--readers=<N>] [--reset]\n"
++        "            [--readers=<N>] [--mixed-ttl-ms=<N>] [--reset]\n"
+         "\n"
+         "  --shm       path (default: /dev/shm/tb_bench.dat)\n"
+         "  --capacity  slot count (default: 100000, range 1..2^28;\n"
+\ No newline at end of file
+@@ -255,6 +326,12 @@
+         "              slot_cap itself does NOT need to be a power of two)\n"
+         "  --iters     iterations per test (default: 500000)\n"
+         "  --readers   concurrent reader threads in mixed test (default: 4)\n"
++        "  --mixed-ttl-ms  FINISHED 最小 TTL (default: 0) 只在 mixed 相位生效。\n"
++        "              可持续写入速率上限 ≈ capacity / TTL。生产默认 TTL 是 60s:\n"
++        "              131072 slot 只够约 2185 单/秒, 而本机实测 70 万单/秒 ——\n"
++        "              环 0.2 秒就满, 之后每一张单都失败。所以 mixed 相位默认用\n"
++        "              0 (= 立刻可回收), 保证任何机器/容量都不会写满; 想复现\n"
++        "              「环写满」的行为就显式给一个大值。\n"
+         "  --reset     zero-init the shm at start (safe, DO NOT run on production shm)\n");
+ }
+ 
+\ No newline at end of file
+@@ -263,6 +340,7 @@
+     uint32_t capacity = 100'000;
+     uint64_t iters = 500'000;
+     int n_readers = 4;
++    uint64_t mixed_ttl_ms = 0;       // 见 bench_mixed 的说明: 0 = 回收始终可用, 任何容量都不会写满
+     bool do_reset = false;
+ 
+     for (int i = 1; i < argc; ++i) {
+\ No newline at end of file
+@@ -271,6 +349,8 @@
+         else if (a.rfind("--capacity=", 0) == 0) capacity  = std::stoul(std::string(a.substr(11)));
+         else if (a.rfind("--iters=", 0) == 0)    iters     = std::stoull(std::string(a.substr(8)));
+         else if (a.rfind("--readers=", 0) == 0)  n_readers = std::stoi (std::string(a.substr(10)));
++        else if (a.rfind("--mixed-ttl-ms=", 0) == 0)
++                                                 mixed_ttl_ms = std::stoull(std::string(a.substr(15)));
+         else if (a == "--reset")                 do_reset  = true;
+         else if (a == "-h" || a == "--help") { usage(); return 0; }
+         else { std::fprintf(stderr, "unknown arg: %s\n", argv[i]); usage(); return 1; }
+\ No newline at end of file
+@@ -285,13 +365,36 @@
+         return 2;
+     }
+     if (do_reset) {
++        // ★ 打开**已存在**的文件时, 容量一律从 header 读, 命令行 --capacity 被忽略
++        //   (OmsShm.h 的既定语义: 容量归 owner 所有)。于是 "./oms_shm.sh bench"
++        //   传的 --capacity=131072 会被一个遗留的 16k 文件悄悄吃掉, 而 --reset 只清零
++        //   不改变容量 —— 测出来的东西和以为的完全不是一回事。这里显式重建。
++        if (w.slot_capacity() != capacity) {
++            std::fprintf(stderr,
++                "[reset] capacity mismatch: file=%u requested=%u → unlink & recreate\n",
++                w.slot_capacity(), capacity);
++            w.close();
++            if (::unlink(shm_path.c_str()) != 0 && errno != ENOENT) {
++                std::fprintf(stderr, "unlink failed: errno=%d\n", errno);
++                return 4;
++            }
++            try {
++                w.open(shm_path, capacity);
++            } catch (const std::exception& e) {
++                std::fprintf(stderr, "writer re-open failed: %s\n", e.what());
++                return 2;
++            }
++        }
+         std::fprintf(stderr, "[reset] wiping shm ...\n");
+         w.reset_all();
+     }
+-    std::printf("SHM ready: path=%s capacity=%u (slot_size=%zuB, total=%.1fMB)\n",
+-                shm_path.c_str(), capacity,
++    // ★ 打**文件里实际的** slot_capacity, 而不是命令行请求的那个: 打开已存在的文件时
++    //   容量一律从 header 读, 请求值被忽略 —— 旧版打的是请求值, 容易看错。
++    std::printf("SHM ready: path=%s capacity=%u (requested=%u, slot_size=%zuB, total=%.1fMB)\n",
++                shm_path.c_str(), w.slot_capacity(), capacity,
+                 sizeof(OmsSlot),
+-                (double)OmsShmLayout::compute_total_size(capacity, capacity * 2) / (1024.0 * 1024.0));
++                (double)OmsShmLayout::compute_total_size(w.slot_capacity(),
++                                                         w.index_capacity()) / (1024.0 * 1024.0));
+ 
+     // 单线程 insert / update / lookup
+     // insert iters 上限 = capacity (超了会开始 reclaim, 干扰纯 insert 语义)
+\ No newline at end of file
+@@ -312,9 +415,17 @@
+     // 混合读写
+     w.close();
+     r.close();
+-    std::printf("\n=== MIXED: 1 writer + %d readers ===\n", n_readers);
+-    bench_mixed(shm_path, iters, iters, n_readers);
++    std::printf("\n=== MIXED: 1 writer + %d readers (mixed TTL = %llu ms) ===\n",
++                n_readers, (unsigned long long)mixed_ttl_ms);
++    bench_mixed(shm_path, iters, iters, n_readers, mixed_ttl_ms);
+ 
++    // 把 TTL 恢复成默认值 —— mixed 相位为了可持续把它调小了, 不该留给下一次运行。
++    {
++        OmsShmWriter wr;
++        wr.open(shm_path);
++        wr.set_min_reclaim_age_ns(kDefaultMinReclaimAgeNs);
++    }
++
+     // 最终 stats
+     OmsShmReader r2;
+     r2.open(shm_path);
+\ No newline at end of file
+--- a/tb/tools/oms_demo.cpp
++++ b/tb/tools/oms_demo.cpp
+@@ -21,12 +21,14 @@
+ 
+ #include <algorithm>
+ #include <atomic>
++#include <cerrno>
+ #include <chrono>
+ #include <cstdio>
+ #include <cstring>
+ #include <string>
+ #include <string_view>
+ #include <thread>
++#include <unistd.h>
+ #include <vector>
+ 
+ using namespace oms::shm;
+\ No newline at end of file
+@@ -89,15 +91,27 @@
+ 
+ // -----------------------------------------------------------------------------
+ // 生成测试用 RCommand
++//
++// ★ prefix / oid_base 必须让**各相位之间的 key 空间互不相交**:
++//   - orderSysId = "<prefix>-<seq>"  → 主索引
++//   - strategyId = "<prefix>"        → 复合 clientOrderId 索引 (避免不同 prefix 撞 key)
++//   - orderId    = "<oid_base>+<seq>"→ orderId 索引
++//   否则后一个相位会**更新**前一个相位留下的单, 而不是新建 —— 测出来的东西
++//   跟注释写的完全不是一回事 (第 23 轮踩过: MIXED 相位复用 "bench-<i>" 且 i 从 0
++//   开始, 于是 i < insert_iters 全是 update, 只有 i >= insert_iters 才真的新建)。
+ // -----------------------------------------------------------------------------
+-static void make_rcmd(pubsub::RCommand& r, uint64_t seq, OrderStatus st) {
++static void make_rcmd(pubsub::RCommand& r, uint64_t seq, OrderStatus st,
++                      const char* prefix = "bench", uint64_t oid_base = 1000000) {
+     std::memset(&r, 0, sizeof(r));
+     r.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
+     auto& o = r.body.orderResponse;
+-    // orderSysId: bench-<seq>
+-    std::snprintf(o.orderSysId, sizeof(o.orderSysId), "bench-%llu", (unsigned long long)seq);
++    // orderSysId: <prefix>-<seq>
++    std::snprintf(o.orderSysId, sizeof(o.orderSysId), "%s-%llu", prefix,
++                  (unsigned long long)seq);
+     o.clientOrderId = static_cast<int64_t>(seq);
+-    std::snprintf(o.orderId, sizeof(o.orderId), "%llu", (unsigned long long)(1000000 + seq));
++    std::snprintf(o.orderId, sizeof(o.orderId), "%llu",
++                  (unsigned long long)(oid_base + seq));
++    std::snprintf(o.strategyId, sizeof(o.strategyId), "%s", prefix);
+     std::snprintf(o.instId, sizeof(o.instId), "BTC-USDT");
+     o.exchangeTypeEnum = BINANCE;
+     o.instTypeEnum     = SPOT;
+\ No newline at end of file
+@@ -177,25 +191,57 @@
+ }
+ 
+ // 4) 混合: 1 writer + N reader 并行
+-static void bench_mixed(const std::string& shm_path, uint64_t writer_iters,
+-                        uint64_t reader_iters, int n_readers)
++//
++// ★ 这个相位必须是**可持续**的流, 否则它测的不是 store 的容量, 而是自己的建模错误。
++//   两个前提 (第 23 轮修正, 之前两个都不成立):
++//
++//   (a) key 空间与前面的 insert / update 相位**不重叠**。
++//       旧版复用 "bench-<i>" 且 i 从 0 开始 → i < insert_iters 的调用其实是在
++//       **更新**前面插入的单, 只有 i >= insert_iters 才真的新建 slot。
++//       实测 (cap=4096, iters=20000): upd += 4095, ins += 1 —— 注释里写的
++//       "一半 insert 一半 update" 从来没有成立过。现在用独立的 "mx-" 前缀。
++//
++//   (b) 新建单的数量必须能被环容纳。稳态占用 ≈ **写入速率 × TTL**:
++//       TTL = min_reclaim_age_ns (默认 60s) 时, 本机 ~70 万单/秒 → 需要约
++//       4200 万个 slot, 而 131072 的环 0.2 秒就满, 之后**每一张单都失败**
++//       (实测 100 万次迭代里 868928 次失败, 日志刷屏)。
++//       所以这里把 TTL 调成 **--mixed-ttl-ms (默认 0 = 立刻可回收)**:
++//       回收始终可用 → 无论机器多快、容量多小都不会写满, 而且回收路径被真实压到。
++//       想复现"环接近写满"的行为, 显式给一个大 TTL 即可 (此时必须满足
++//       capacity >= 速率 × TTL, 否则必然丢单 —— 这正是那次事故的成因)。
++//
++//   每个单走两步: 偶数次迭代 insert(NEW), 紧接着奇数次迭代 update(FILLED),
++//   所以每张单都会变成 FINISHED, TTL 过后可被回收 —— insert / update /
++//   状态迁移 / 回收 四条路径全部被覆盖。
++static void bench_mixed(const std::string& shm_path, uint64_t writer_iters,
++                        uint64_t reader_iters, int n_readers, uint64_t min_reclaim_ms)
+ {
+-    std::atomic<bool> stop{false};
+-    std::atomic<uint64_t> writer_ops{0};
++    std::atomic<bool>     stop{false};
++    std::atomic<uint64_t> orders_done{0};     // 已推进到终态的单数 (reader 的查询上界)
++    std::vector<uint64_t> wlat;
++    uint64_t              wwall = 0;
+ 
+     // Writer
+-    std::thread wt([&](){
++    std::thread wt([&]{
+         OmsShmWriter w;
+         w.open(shm_path);
++        // ★ 见上面 (b): 不调小 TTL, 这个相位必然把环写满。
++        w.set_min_reclaim_age_ns(min_reclaim_ms * 1'000'000ULL);
++        wlat.reserve(writer_iters);
+         pubsub::RCommand r;
++        const uint64_t t0 = now_ns();
+         for (uint64_t i = 0; i < writer_iters; ++i) {
+-            // 一半 insert 一半 update (触发状态迁移 + 部分 reclaim)
+-            OrderStatus st = (i % 3 == 2) ? OS_FILLED : ((i % 3 == 1) ? OS_PARTFILLED : OS_NEW);
+-            make_rcmd(r, i, st);
++            const uint64_t    ord = i >> 1;                       // 每个单占两次迭代
++            const OrderStatus st  = (i & 1) ? OS_FILLED : OS_NEW;  // insert → 终态
++            make_rcmd(r, ord, st, "mx", 5'000'000);
++            const uint64_t s = now_ns();
+             w.upsert(r);
+-            writer_ops.fetch_add(1, std::memory_order_relaxed);
++            const uint64_t e = now_ns();
++            wlat.push_back(e - s);
++            if (i & 1) orders_done.fetch_add(1, std::memory_order_relaxed);
+         }
+-        stop.store(true);
++        wwall = now_ns() - t0;
++        stop.store(true, std::memory_order_release);
+     });
+ 
+     // Readers
+\ No newline at end of file
+@@ -214,10 +260,10 @@
+             char key[64];
+             uint64_t i = 0;
+             while (i < reader_iters && !stop.load(std::memory_order_acquire)) {
+-                uint64_t seq = writer_ops.load(std::memory_order_relaxed);
+-                if (seq == 0) { std::this_thread::yield(); continue; }
+-                uint64_t pick = i % seq;
+-                int n = std::snprintf(key, sizeof(key), "bench-%llu", (unsigned long long)pick);
++                uint64_t done = orders_done.load(std::memory_order_relaxed);
++                if (done == 0) { std::this_thread::yield(); continue; }
++                uint64_t pick = i % done;
++                int n = std::snprintf(key, sizeof(key), "mx-%llu", (unsigned long long)pick);
+                 uint64_t s = now_ns();
+                 r.lookup_by_orderSysId(std::string_view(key, n), out);
+                 uint64_t e = now_ns();
+\ No newline at end of file
+@@ -231,13 +277,38 @@
+     wt.join();
+     for (auto& t : rts) t.join();
+ 
+-    // 汇总每个 reader
++    // writer 的结果也要打 —— 旧版只打 reader, "1 writer + N readers" 里的 writer
++    // 吞吐完全没被报告, 而它才是这个相位真正想测的东西。
++    print_summary("MIXED-WRITER", summarize(wlat, wwall));
+     for (int t = 0; t < n_readers; ++t) {
+         char name[64];
+         std::snprintf(name, sizeof(name), "MIXED-READER-%d", t);
+         auto s = summarize(rlats[t], rwall[t]);
+         print_summary(name, s);
+     }
++
++    // 自检: 可持续的流不该丢单, 且应该真的发生过回收。
++    OmsShmReader rc;
++    rc.open(shm_path);
++    const auto st = rc.stats();
++    std::printf("\n  [MIXED 自检] ttl=%llums  inserts=%llu  updates=%llu  reclaims=%llu  "
++                "alloc_fail=%llu\n",
++                (unsigned long long)min_reclaim_ms,
++                (unsigned long long)st.total_inserts,
++                (unsigned long long)st.total_updates,
++                (unsigned long long)st.total_reclaims,
++                (unsigned long long)st.total_alloc_failures);
++    std::printf("    empty=%u live=%u finished=%u (slot_cap=%u)\n",
++                st.empty, st.live, st.finished, st.capacity);
++    if (st.total_alloc_failures == 0) {
++        std::printf("    ✓ 可持续: 0 丢单\n");
++    } else {
++        std::printf("    ✗ 不可持续: 丢了 %llu 单 —— TTL 太大或 capacity 太小 "
++                    "(可持续速率上限 ≈ slot_cap / TTL = %llu 单/秒)\n",
++                    (unsigned long long)st.total_alloc_failures,
++                    (unsigned long long)(st.min_reclaim_age_ns
++                        ? (uint64_t)st.capacity * 1'000'000'000ULL / st.min_reclaim_age_ns : 0));
++    }
+ }
+ 
+ // -----------------------------------------------------------------------------
+\ No newline at end of file
+@@ -247,7 +318,7 @@
+     std::fprintf(stderr,
+         "Usage:\n"
+         "  oms_bench [--shm=<path>] [--capacity=<N>] [--iters=<N>]\n"
+-        "            [--readers=<N>] [--reset]\n"
++        "            [--readers=<N>] [--mixed-ttl-ms=<N>] [--reset]\n"
+         "\n"
+         "  --shm       path (default: /dev/shm/tb_bench.dat)\n"
+         "  --capacity  slot count (default: 100000, range 1..2^28;\n"
+\ No newline at end of file
+@@ -255,6 +326,12 @@
+         "              slot_cap itself does NOT need to be a power of two)\n"
+         "  --iters     iterations per test (default: 500000)\n"
+         "  --readers   concurrent reader threads in mixed test (default: 4)\n"
++        "  --mixed-ttl-ms  FINISHED 最小 TTL (default: 0) 只在 mixed 相位生效。\n"
++        "              可持续写入速率上限 ≈ capacity / TTL。生产默认 TTL 是 60s:\n"
++        "              131072 slot 只够约 2185 单/秒, 而本机实测 70 万单/秒 ——\n"
++        "              环 0.2 秒就满, 之后每一张单都失败。所以 mixed 相位默认用\n"
++        "              0 (= 立刻可回收), 保证任何机器/容量都不会写满; 想复现\n"
++        "              「环写满」的行为就显式给一个大值。\n"
+         "  --reset     zero-init the shm at start (safe, DO NOT run on production shm)\n");
+ }
+ 
+\ No newline at end of file
+@@ -263,6 +340,7 @@
+     uint32_t capacity = 100'000;
+     uint64_t iters = 500'000;
+     int n_readers = 4;
++    uint64_t mixed_ttl_ms = 0;       // 见 bench_mixed 的说明: 0 = 回收始终可用, 任何容量都不会写满
+     bool do_reset = false;
+ 
+     for (int i = 1; i < argc; ++i) {
+\ No newline at end of file
+@@ -271,6 +349,8 @@
+         else if (a.rfind("--capacity=", 0) == 0) capacity  = std::stoul(std::string(a.substr(11)));
+         else if (a.rfind("--iters=", 0) == 0)    iters     = std::stoull(std::string(a.substr(8)));
+         else if (a.rfind("--readers=", 0) == 0)  n_readers = std::stoi (std::string(a.substr(10)));
++        else if (a.rfind("--mixed-ttl-ms=", 0) == 0)
++                                                 mixed_ttl_ms = std::stoull(std::string(a.substr(15)));
+         else if (a == "--reset")                 do_reset  = true;
+         else if (a == "-h" || a == "--help") { usage(); return 0; }
+         else { std::fprintf(stderr, "unknown arg: %s\n", argv[i]); usage(); return 1; }
+\ No newline at end of file
+@@ -285,13 +365,36 @@
+         return 2;
+     }
+     if (do_reset) {
++        // ★ 打开**已存在**的文件时, 容量一律从 header 读, 命令行 --capacity 被忽略
++        //   (OmsShm.h 的既定语义: 容量归 owner 所有)。于是 "./oms_shm.sh bench"
++        //   传的 --capacity=131072 会被一个遗留的 16k 文件悄悄吃掉, 而 --reset 只清零
++        //   不改变容量 —— 测出来的东西和以为的完全不是一回事。这里显式重建。
++        if (w.slot_capacity() != capacity) {
++            std::fprintf(stderr,
++                "[reset] capacity mismatch: file=%u requested=%u → unlink & recreate\n",
++                w.slot_capacity(), capacity);
++            w.close();
++            if (::unlink(shm_path.c_str()) != 0 && errno != ENOENT) {
++                std::fprintf(stderr, "unlink failed: errno=%d\n", errno);
++                return 4;
++            }
++            try {
++                w.open(shm_path, capacity);
++            } catch (const std::exception& e) {
++                std::fprintf(stderr, "writer re-open failed: %s\n", e.what());
++                return 2;
++            }
++        }
+         std::fprintf(stderr, "[reset] wiping shm ...\n");
+         w.reset_all();
+     }
+-    std::printf("SHM ready: path=%s capacity=%u (slot_size=%zuB, total=%.1fMB)\n",
+-                shm_path.c_str(), capacity,
++    // ★ 打**文件里实际的** slot_capacity, 而不是命令行请求的那个: 打开已存在的文件时
++    //   容量一律从 header 读, 请求值被忽略 —— 旧版打的是请求值, 容易看错。
++    std::printf("SHM ready: path=%s capacity=%u (requested=%u, slot_size=%zuB, total=%.1fMB)\n",
++                shm_path.c_str(), w.slot_capacity(), capacity,
+                 sizeof(OmsSlot),
+-                (double)OmsShmLayout::compute_total_size(capacity, capacity * 2) / (1024.0 * 1024.0));
++                (double)OmsShmLayout::compute_total_size(w.slot_capacity(),
++                                                         w.index_capacity()) / (1024.0 * 1024.0));
+ 
+     // 单线程 insert / update / lookup
+     // insert iters 上限 = capacity (超了会开始 reclaim, 干扰纯 insert 语义)
+\ No newline at end of file
+@@ -312,9 +415,17 @@
+     // 混合读写
+     w.close();
+     r.close();
+-    std::printf("\n=== MIXED: 1 writer + %d readers ===\n", n_readers);
+-    bench_mixed(shm_path, iters, iters, n_readers);
++    std::printf("\n=== MIXED: 1 writer + %d readers (mixed TTL = %llu ms) ===\n",
++                n_readers, (unsigned long long)mixed_ttl_ms);
++    bench_mixed(shm_path, iters, iters, n_readers, mixed_ttl_ms);
+ 
++    // 把 TTL 恢复成默认值 —— mixed 相位为了可持续把它调小了, 不该留给下一次运行。
++    {
++        OmsShmWriter wr;
++        wr.open(shm_path);
++        wr.set_min_reclaim_age_ns(kDefaultMinReclaimAgeNs);
++    }
++
+     // 最终 stats
+     OmsShmReader r2;
+     r2.open(shm_path);
+\ No newline at end of file
+--- a/tb/tools/oms_test.cpp
++++ b/tb/tools/oms_test.cpp
+@@ -29,6 +29,7 @@
+ //   [16] reset_all          — 清零**全部**计数 (含 v4 补漏的那几个)
+ //   [17] 并发 seqlock       — 1 writer + N reader, 断言 0 撕裂读
+ //   [18] 其余公开接口       — remove / recover_orphan_slots / is_open / created_new / close
++//   [19] TTL 语义           — FINISHED 的回收门槛 = min_reclaim_age_ns (环满事故的机理)
+ //
+ // 编译:
+ //   g++ -std=c++17 -O2 -pthread -I../../include -I../include \
+@@ -993,6 +994,51 @@
+         check(rr.is_open(), "Reader: open 后 is_open() == true");
+         rr.close();
+         check(!rr.is_open(), "Reader: close 后 is_open() == false");
++    }
++
++    // -------------------------------------------------------------------------
++    section("19. TTL 语义: FINISHED 的回收门槛 = min_reclaim_age_ns");
++    // -------------------------------------------------------------------------
++    {
++        // 钉住第 23 轮事故的机理: 环里全是"FINISHED 但还太年轻"的 slot 时, 新单**必然**
++        // 写不进去 —— 这是 TTL 的设计, 不是 bug; 把 TTL 调成 0 后同一批 slot 立刻可回收,
++        // 同一张单马上就写进去了。oms_bench 的 mixed 相位刷 [ERROR] 就是这个原因:
++        //   可持续写入速率上限 = slot_cap / min_reclaim_age (131072 / 60s ≈ 2185 单/秒),
++        //   而 bench 压到 ~70 万单/秒 → 0.2 秒写满。
++        OmsShmWriter w;
++        fresh(w, dir, "t19.dat", 8);
++        w.set_min_reclaim_age_ns(60ULL * 1'000'000'000);              // 默认 60s
++        w.set_max_live_stale_ns(24ULL * 3600 * 1'000'000'000);
++
++        for (uint32_t i = 0; i < 8; ++i) {
++            char s[32];
++            std::snprintf(s, sizeof s, "T%02u", i);
++            w.upsert(mk(s, s, OS_NEW, 700 + i));
++            w.upsert(mk(s, s, OS_FILLED, 700 + i));                   // → FINISHED
++        }
++        {
++            const auto st = w.stats();
++            check(st.finished == 8 && st.empty == 0,
++                  "前置: 8 个 slot 全部 FINISHED 且 empty == 0",
++                  "finished=" + u(st.finished) + " empty=" + u(st.empty));
++            check(st.total_reclaims == 0, "TTL 内一个都没被回收", u(st.total_reclaims));
++        }
++
++        pubsub::RCommand out;
++        check(w.upsert(mk("NEW1", "NEW1", OS_NEW, 900)) == kInvalidSlot,
++              "TTL 内新单写不进去 (真·环满)");
++        check(!w.lookup_by_orderSysId("NEW1", out), "失败的新单确实没进 SHM");
++        check(w.stats().total_alloc_exhausted == 1,
++              "total_alloc_exhausted == 1", u(w.stats().total_alloc_exhausted));
++
++        // ★ 把 TTL 调成 0 → 同一批 FINISHED slot 立刻变成可回收
++        w.set_min_reclaim_age_ns(0);
++        check(w.upsert(mk("NEW1", "NEW1", OS_NEW, 900)) != kInvalidSlot,
++              "TTL 调成 0 后同一张单立刻写得进去 (回收了 FINISHED)");
++        check(w.lookup_by_orderSysId("NEW1", out), "新单可查");
++        check(w.stats().total_reclaims >= 1, "确实发生了回收", u(w.stats().total_reclaims));
++        check(w.stats().total_alloc_exhausted == 1,
++              "exhausted 计数没有继续涨 (仍是 1)", u(w.stats().total_alloc_exhausted));
+     }
+ 
+     // -------------------------------------------------------------------------
+@@ -1011,6 +1057,10 @@
+         }
+         w.upsert(mk("P00", "N00", OS_FILLED, 600));    // 制造 1 个 FINISHED
+         w.upsert(mk("PZZ", "NZZ", OS_NEW, 999));       // 触发一次 reclaim
++        // ★ 把 TTL 恢复成默认值再交付 fixture: 这样 `oms_query --stats` 打出的
++        //   sustainable_insert_rate 是**非零**的, 解析契约才算真的验到那个数
++        //   (全是 0 的话, 计算写错也看不出来)。
++        w.set_min_reclaim_age_ns(kDefaultMinReclaimAgeNs);
+     }
+ 
+     // -------------------------------------------------------------------------

@@ -29,6 +29,7 @@
 //   [16] reset_all          — 清零**全部**计数 (含 v4 补漏的那几个)
 //   [17] 并发 seqlock       — 1 writer + N reader, 断言 0 撕裂读
 //   [18] 其余公开接口       — remove / recover_orphan_slots / is_open / created_new / close
+//   [19] TTL 语义           — FINISHED 的回收门槛 = min_reclaim_age_ns (环满事故的机理)
 //
 // 编译:
 //   g++ -std=c++17 -O2 -pthread -I../../include -I../include \
@@ -996,6 +997,51 @@ int main(int argc, char** argv) {
     }
 
     // -------------------------------------------------------------------------
+    section("19. TTL 语义: FINISHED 的回收门槛 = min_reclaim_age_ns");
+    // -------------------------------------------------------------------------
+    {
+        // 钉住第 23 轮事故的机理: 环里全是"FINISHED 但还太年轻"的 slot 时, 新单**必然**
+        // 写不进去 —— 这是 TTL 的设计, 不是 bug; 把 TTL 调成 0 后同一批 slot 立刻可回收,
+        // 同一张单马上就写进去了。oms_bench 的 mixed 相位刷 [ERROR] 就是这个原因:
+        //   可持续写入速率上限 = slot_cap / min_reclaim_age (131072 / 60s ≈ 2185 单/秒),
+        //   而 bench 压到 ~70 万单/秒 → 0.2 秒写满。
+        OmsShmWriter w;
+        fresh(w, dir, "t19.dat", 8);
+        w.set_min_reclaim_age_ns(60ULL * 1'000'000'000);              // 默认 60s
+        w.set_max_live_stale_ns(24ULL * 3600 * 1'000'000'000);
+
+        for (uint32_t i = 0; i < 8; ++i) {
+            char s[32];
+            std::snprintf(s, sizeof s, "T%02u", i);
+            w.upsert(mk(s, s, OS_NEW, 700 + i));
+            w.upsert(mk(s, s, OS_FILLED, 700 + i));                   // → FINISHED
+        }
+        {
+            const auto st = w.stats();
+            check(st.finished == 8 && st.empty == 0,
+                  "前置: 8 个 slot 全部 FINISHED 且 empty == 0",
+                  "finished=" + u(st.finished) + " empty=" + u(st.empty));
+            check(st.total_reclaims == 0, "TTL 内一个都没被回收", u(st.total_reclaims));
+        }
+
+        pubsub::RCommand out;
+        check(w.upsert(mk("NEW1", "NEW1", OS_NEW, 900)) == kInvalidSlot,
+              "TTL 内新单写不进去 (真·环满)");
+        check(!w.lookup_by_orderSysId("NEW1", out), "失败的新单确实没进 SHM");
+        check(w.stats().total_alloc_exhausted == 1,
+              "total_alloc_exhausted == 1", u(w.stats().total_alloc_exhausted));
+
+        // ★ 把 TTL 调成 0 → 同一批 FINISHED slot 立刻变成可回收
+        w.set_min_reclaim_age_ns(0);
+        check(w.upsert(mk("NEW1", "NEW1", OS_NEW, 900)) != kInvalidSlot,
+              "TTL 调成 0 后同一张单立刻写得进去 (回收了 FINISHED)");
+        check(w.lookup_by_orderSysId("NEW1", out), "新单可查");
+        check(w.stats().total_reclaims >= 1, "确实发生了回收", u(w.stats().total_reclaims));
+        check(w.stats().total_alloc_exhausted == 1,
+              "exhausted 计数没有继续涨 (仍是 1)", u(w.stats().total_alloc_exhausted));
+    }
+
+    // -------------------------------------------------------------------------
     // 给 oms_shm.sh test 用的解析契约 fixture: 一个有内容、计数非零的 shm,
     // 供 oms_query --stats 输出后校验"数值行以数字结尾"。
     // -------------------------------------------------------------------------
@@ -1011,6 +1057,10 @@ int main(int argc, char** argv) {
         }
         w.upsert(mk("P00", "N00", OS_FILLED, 600));    // 制造 1 个 FINISHED
         w.upsert(mk("PZZ", "NZZ", OS_NEW, 999));       // 触发一次 reclaim
+        // ★ 把 TTL 恢复成默认值再交付 fixture: 这样 `oms_query --stats` 打出的
+        //   sustainable_insert_rate 是**非零**的, 解析契约才算真的验到那个数
+        //   (全是 0 的话, 计算写错也看不出来)。
+        w.set_min_reclaim_age_ns(kDefaultMinReclaimAgeNs);
     }
 
     // -------------------------------------------------------------------------

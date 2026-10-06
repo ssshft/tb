@@ -222,6 +222,18 @@ int main(int argc, char** argv) {
         std::printf("  --\n");
         std::printf("  min_reclaim_age            : %.1f s (FINISHED 最小 TTL)\n", s.min_reclaim_age_ns / 1e9);
         std::printf("  max_live_stale             : %.1f s (LIVE 无更新阈值, 0=禁用)\n", s.max_live_stale_ns / 1e9);
+        // ★ 容量给定时"到底能跑多快"就已经定死了: 稳态占用 ≈ 写入速率 × min_reclaim_age,
+        //   所以 可持续速率上限 = slot_cap / min_reclaim_age。**超过它必然写满丢单**,
+        //   跟上层有没有及时 finalize 无关。第 23 轮事故: 131072 / 60s = 2185 单/秒,
+        //   而 bench 压到 ~70 万单/秒 → 0.2 秒写满, 之后每张单都失败。
+        //   数值行以数字结尾 (doctor 取值用); min_reclaim_age=0 表示不限制, 打 0。
+        {
+            const uint64_t ceiling = s.min_reclaim_age_ns
+                ? static_cast<uint64_t>(s.capacity) * 1'000'000'000ULL / s.min_reclaim_age_ns
+                : 0;
+            std::printf("  sustainable_insert_rate    : %llu\n", (unsigned long long)ceiling);
+            std::printf("      ← 可持续写入速率上限 = slot_cap / min_reclaim_age (单/秒); 0 = 不限制\n");
+        }
         std::printf("  --\n");
         std::printf("  index_capacity             : %u (每个索引 = next_pow2(4*slot_cap))\n",
                     s.index_capacity);

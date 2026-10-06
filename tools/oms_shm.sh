@@ -109,7 +109,11 @@ cmd_stale() {
 
 cmd_bench() {
     [ -x "$SCRIPT_DIR/oms_bench" ] || cmd_build
-    "$SCRIPT_DIR/oms_bench" --shm=/dev/shm/tb_bench.dat --capacity=131072 --iters=1000000 --readers=4 --reset
+    # --mixed-ttl-ms=0: mixed 相位默认把 FINISHED 的 TTL 设成 0 (立刻可回收), 否则
+    #   "写入速率 × TTL" 远大于 capacity, 环 0.2 秒就满、之后每张单都失败并刷 ERROR。
+    #   生产语义下可持续速率上限 = capacity / TTL, 131072 slot + 60s TTL 只有约 2185 单/秒。
+    "$SCRIPT_DIR/oms_bench" --shm=/dev/shm/tb_bench.dat --capacity=131072 --iters=1000000 \
+                            --readers=4 --mixed-ttl-ms=0 --reset
 }
 
 # 功能 / 边界 / 并发断言集 (oms_test) + 输出格式的解析契约检查。
@@ -136,7 +140,7 @@ cmd_test() {
     # 这些就是 doctor 会解析的 key。契约: 该行形如 `key[^:]*:<spaces><digits>` 且**以数字结尾**。
     for key in total_alloc_failures total_stale_live_reclaims total_alloc_slowpath \
                total_alloc_exhausted total_key_sync_failures total_alias_insert_failures \
-               probe_max worst_live_run; do
+               probe_max worst_live_run sustainable_insert_rate; do
         local line got
         line=$(echo "$out" | grep -E "^[[:space:]]*${key}([^:]*):" | head -1)
         if [ -z "$line" ]; then
@@ -216,10 +220,12 @@ cmd_doctor() {
     exhausted=$(echo "$out"     | grep -E '^[[:space:]]*total_alloc_exhausted[[:space:]]*:'   | grep -oE '[0-9]+' | head -1)
     key_sync_fail=$(echo "$out" | grep -E '^[[:space:]]*total_key_sync_failures[[:space:]]*:' | grep -oE '[0-9]+' | head -1)
     alias_fail=$(echo "$out"    | grep -E '^[[:space:]]*total_alias_insert_failures[[:space:]]*:' | grep -oE '[0-9]+' | head -1)
+    sustain=$(echo "$out"       | grep -E '^[[:space:]]*sustainable_insert_rate[[:space:]]*:' | grep -oE '[0-9]+' | head -1)
     [ -z "$slowpath" ]      && slowpath=0
     [ -z "$exhausted" ]     && exhausted=0
     [ -z "$key_sync_fail" ] && key_sync_fail=0
     [ -z "$alias_fail" ]    && alias_fail=0
+    [ -z "$sustain" ]       && sustain=0
 
     if [ "$alloc_fail" -gt 0 ]; then
         err "alloc_failures = $alloc_fail  → 有单没写进 SHM! 看下面 alloc_exhausted / key_sync_failures 分辨是环满还是索引饱和"
@@ -240,6 +246,15 @@ cmd_doctor() {
         issues=$((issues + 1))
     else
         ok "alloc_exhausted = 0"
+    fi
+    # 容量给定后"能跑多快"就已经定死了 = slot_cap / min_reclaim_age。
+    #   超过它必然写满丢单, **跟上层 finalize 及不及时无关** —— 把它打出来,
+    #   便于和实际下单速率直接对比 (第 23 轮 bench 刷 ERROR 就是撞了这条线)。
+    if [ "$sustain" -gt 0 ]; then
+        log "  [i] 可持续写入速率上限 ≈ $sustain 单/秒 (= slot_cap / min_reclaim_age)"
+        log "      实际下单速率超过它 → 环会写满并开始丢单; 加大 capacity 或调小 min_reclaim_age"
+    else
+        log "  [i] min_reclaim_age = 0 → 不限制可持续写入速率"
     fi
     # ②: key 变更时索引插入失败。已保持旧 key 不变 (副本与索引仍一致), 但订单没跟上变更。
     if [ "$key_sync_fail" -gt 0 ]; then
