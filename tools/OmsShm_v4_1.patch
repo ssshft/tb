@@ -1,0 +1,510 @@
+# =============================================================================
+# OmsShm_v4_1.patch — 第 22 轮：构建 -pthread + B4 别名计数 + A2 跳过计数 + 测试补齐
+#
+# 基线: 已应用 P1-1 / A1 / A4 / B5 / B6 / v4 之后的 include/oms/OmsShm.h (77059 B)
+# 应用: cd <hft_root> && patch -p1 < tb/tools/OmsShm_v4_1.patch
+# 撤销: patch -R -p1 < tb/tools/OmsShm_v4_1.patch
+#
+# 注意: tb/tools/oms_shm.sh 需要可执行位 —— patch 不恢复 mode, 应用后执行
+#       chmod +x tb/tools/oms_shm.sh
+#
+# 本补丁**不改** shm 布局: sizeof(OmsShmHeader) 仍是 4096, kVersion 仍是 3,
+# 新增的 total_alias_insert_failures 落在保留 pad 里 (旧文件读出 0 = 从未发生)。
+# 因此**不需要**再删 shm 文件 (B6 那次 kVersion 2→3 要删的原因依然成立, 合并做一次)。
+#
+# 新增文件 (本补丁不含, 需单独放置): tb/tools/oms_test.cpp
+#   (1023 行 / 52738 B, 18 节 / 182 条断言, 跑 ./oms_shm.sh test 或 ./oms_test [dir])
+#
+# 本补丁覆盖 4 个文件: include/oms/OmsShm.h / include/oms/README.md /
+#                     tb/tools/oms_query.cpp / tb/tools/oms_shm.sh
+# 正反向都已验证逐字节可还原 (见第 22 轮记录)。
+# =============================================================================
+
+--- a/include/oms/OmsShm.h
++++ b/include/oms/OmsShm.h
+@@ -195,8 +195,13 @@
+     std::atomic<uint64_t> total_key_sync_failures;    // key 变更时索引插入失败 (保持旧 key 不变)
+     // 注: total_alloc_failures = total_alloc_exhausted + (索引插入失败次数)
+ 
++    // v4.1 新增 —— 同样落在保留 pad 里, 不需要再 bump kVersion (旧文件读出 0 = 从未发生)。
++    std::atomic<uint64_t> total_alias_insert_failures; // 主索引 OK 但 clientOrderId/orderId 别名插入失败
++    // 注: 这条**不计入** total_alloc_failures —— 单确实进了 SHM (按 orderSysId 查得到),
++    //     丢的只是别名。但策略侧按 clientOrderId 查活单会落空, 所以必须能被 doctor 发现。
++
+     // 填充到 4 KB, 剩余保留将来扩展
+-    char pad[4096 - 112 - 24];
++    char pad[4096 - 112 - 32];
+ };
+ static_assert(sizeof(OmsShmHeader) == 4096, "OmsShmHeader must be 4 KB");
+ 
+@@ -213,8 +218,10 @@
+ 
+ // =============================================================================
+ // OmsSlot (每单一条, 1024 字节)
+-//   RCommand 本身 ~656B, 加 seqlock + 时间戳 + 3 个 key 副本 ≈ 848B, pad 到 1024。
++//   头部 232B (seqlock 8 + state 4 + pad 4 + 3 个时间戳 24 + 3 个 key 副本 192)
++//   + RCommand 536B = 768B, 再 pad 到 1024。
+ //   1024 = 16 cachelines, seqlock + state 落头 cacheline, order body 后续 cachelines。
++//   ★ 实际大小用下面的 static_assert 钉住, 别按这段注释估算容量。
+ // =============================================================================
+ constexpr size_t kSlotSize = 1024;
+ 
+@@ -364,7 +371,7 @@
+ // SHM 内存布局辅助
+ //
+ // [OmsShmHeader (4 KB)]
+-// [Slot 数组: capacity * 512 B]
++// [Slot 数组: slot_capacity * 1024 B]      (kSlotSize, 不是 512)
+ // [Index 数组 × IDX_COUNT: index_capacity * 32 B each]
+ // =============================================================================
+ struct OmsShmLayout {
+@@ -624,11 +631,16 @@
+     }
+ 
+     // 遍历所有 LIVE / FINISHED (慢, O(N), 只用于 snapshot / 对账, 别在 hot path 调)
+-    size_t iterate_live(const std::function<void(const pubsub::RCommand&)>& cb) const {
+-        return iterate_state(SLOT_LIVE, cb);
++    //   ★ 对账调用方**必须**传 skipped_out (A2): read_slot_snapshot 在"写者忙满 16 次重试"
++    //     或"slot 刚好被 reclaim"时会失败并跳过该 slot。旧实现只返回成功条数, 跳过多少
++    //     完全看不见 —— 对账会把活单当不存在, 且没有任何提示。传了就能发现并重试。
++    size_t iterate_live(const std::function<void(const pubsub::RCommand&)>& cb,
++                        size_t* skipped_out = nullptr) const {
++        return iterate_state(SLOT_LIVE, cb, skipped_out);
+     }
+-    size_t iterate_finished(const std::function<void(const pubsub::RCommand&)>& cb) const {
+-        return iterate_state(SLOT_FINISHED, cb);
++    size_t iterate_finished(const std::function<void(const pubsub::RCommand&)>& cb,
++                            size_t* skipped_out = nullptr) const {
++        return iterate_state(SLOT_FINISHED, cb, skipped_out);
+     }
+ 
+     // 便捷: 查存不存在, 不需要拿 order 内容
+@@ -690,9 +702,14 @@
+         return true;
+     }
+ 
++    // 返回成功回调的条数; *skipped_out (非空时) = 因为快照拿不到而**跳过**的条数。
++    //   ★ 跳过 ≠ 不存在: 该 slot 的 state 确实是 want_state, 只是这一瞬间读不干净。
++    //     对账场景拿到 skipped > 0 必须重试或告警, 不能当成"这条单不存在"。
+     size_t iterate_state(uint32_t want_state,
+-                         const std::function<void(const pubsub::RCommand&)>& cb) const {
+-        size_t n = 0;
++                         const std::function<void(const pubsub::RCommand&)>& cb,
++                         size_t* skipped_out = nullptr) const {
++        if (skipped_out) *skipped_out = 0;
++        size_t n = 0, skipped = 0;
+         uint32_t cap = slot_capacity();
+         ReadSnapshot snap;
+         for (uint32_t i = 0; i < cap; ++i) {
+@@ -701,8 +718,11 @@
+             if (read_slot_snapshot(i, snap)) {
+                 cb(snap.order);
+                 ++n;
++            } else {
++                ++skipped;   // 写者忙 / 刚好被 reclaim —— 必须让调用方看见 (A2)
+             }
+         }
++        if (skipped_out) *skipped_out = skipped;
+         return n;
+     }
+ 
+@@ -719,6 +739,9 @@
+         //   total_alloc_slowpath 是"快路径落空但被全表扫救回来"的次数, **不计入失败**。
+         uint64_t total_alloc_slowpath = 0, total_alloc_exhausted = 0;
+         uint64_t total_key_sync_failures = 0;
++        // ★ 别名索引 (clientOrderId / orderId) 插入失败次数 (B4)。
++        //   单进了 SHM (orderSysId 查得到), 但该别名查不到 —— 不计入 total_alloc_failures。
++        uint64_t total_alias_insert_failures = 0;
+         uint64_t min_reclaim_age_ns = 0, max_live_stale_ns = 0;
+ 
+         // ★ 索引占用 (每个索引一套)。
+@@ -783,6 +806,7 @@
+         s.total_alloc_slowpath      = header()->total_alloc_slowpath.load(std::memory_order_relaxed);
+         s.total_alloc_exhausted     = header()->total_alloc_exhausted.load(std::memory_order_relaxed);
+         s.total_key_sync_failures   = header()->total_key_sync_failures.load(std::memory_order_relaxed);
++        s.total_alias_insert_failures = header()->total_alias_insert_failures.load(std::memory_order_relaxed);
+         s.min_reclaim_age_ns        = header()->min_reclaim_age_ns;
+         s.max_live_stale_ns         = header()->max_live_stale_ns;
+         return s;
+@@ -918,6 +942,7 @@
+         header()->total_alloc_slowpath.store(0);
+         header()->total_alloc_exhausted.store(0);
+         header()->total_key_sync_failures.store(0);
++        header()->total_alias_insert_failures.store(0);
+     }
+ 
+     // 主接口: upsert 一条订单
+@@ -1016,6 +1041,10 @@
+     // ★ 扫满 n 个还没找到就返回 kInvalidSlot, **不重置 hint** (每步都已经 fetch_add 过了)。
+     uint32_t alloc_slot_scan(uint32_t n) {
+         uint32_t cap = slot_capacity();
++        // ★ cap == 0 必须挡住: 下面 `mask = cap - 1` 会得到 0xFFFFFFFF 且 `pow2` 判为 true,
++        //   于是 `h & mask` 直接当 idx 用 → 越界访问 slots[]。走 `h % cap` 那条则除零。
++        //   正常路径下 cap >= 1 (open() 已保证), 这里是防御性短路。
++        if (cap == 0) return kInvalidSlot;
+         uint32_t mask = cap - 1;
+         bool pow2 = (cap & (cap - 1)) == 0;
+         uint64_t now = now_ns();
+@@ -1343,17 +1372,32 @@
+         }
+         if (s.clientOrderId[0]) {
+             if (!insert_index(IDX_CLIENT_ORDER, s.clientOrderId, idx)) {
+-                std::fprintf(stderr, "[OmsShm][WARN] clientOrderId alias insert full slot=%u\n", idx);
++                report_alias_insert_failure(IDX_CLIENT_ORDER, idx, s.clientOrderId);
+             }
+         }
+         if (s.orderId[0]) {
+             if (!insert_index(IDX_EXCHANGE_ID, s.orderId, idx)) {
+-                std::fprintf(stderr, "[OmsShm][WARN] orderId alias insert full slot=%u\n", idx);
++                report_alias_insert_failure(IDX_EXCHANGE_ID, idx, s.orderId);
+             }
+         }
+         return true;
+     }
+ 
++    // 别名索引插入失败 (B4): 主索引已成功 → 这张单**在 SHM 里**, 但用该别名查不到。
++    //   后果是真实的: 策略侧按 clientOrderId 查活单会落空 (漏撤单 / 重复下单)。
++    //   旧实现只有一行不限流的 fprintf —— 环满时每单一条 = 刷屏, 且 doctor 看不见。
++    //   现在计入 total_alias_insert_failures (doctor 能发现) 并限流。
++    void report_alias_insert_failure(IndexKind kind, uint32_t idx, const char* key) {
++        const uint64_t n =
++            header()->total_alias_insert_failures.fetch_add(1, std::memory_order_relaxed) + 1;
++        if (n <= 8 || (n % 4096) == 0) {
++            std::fprintf(stderr,
++                "[OmsShm][WARN] %s 别名索引插入失败 slot=%u key=\"%s\" (累计 %llu 次)\n"
++                "  主索引 orderSysId 正常 → 这张单在 SHM 里, 但用该别名查不到\n",
++                index_kind_name(kind), idx, key, (unsigned long long)n);
++        }
++    }
++
+     bool insert_index(IndexKind kind, std::string_view key, uint32_t slot_idx) {
+         IndexEntry* arr = index(kind);
+         uint32_t cap = index_capacity();
+
+--- a/include/oms/README.md
++++ b/include/oms/README.md
+@@ -297,19 +297,31 @@
+ 
+ 测量: insert / update / lookup 吞吐 + p50 / p95 / p99 / p999 / max 延迟。 混合场景 1 writer + N readers。
+ 
+-oms_demo —— 使用示例
+-
+-完整流程演示: create → insert × 5 → update → lookup × 3 → iterate → stats → crash recover。
++oms_demo —— ⚠ 当前**不是** demo
+ 
+-oms_shm.sh —— 一站式运维脚本
++`oms_demo.cpp` 目前与 `oms_bench.cpp` **逐字节相同** (md5 一致), 所以 `./oms_shm.sh demo`
++跑的实际是性能测试, 而不是本节原先描述的"功能演示"。功能演示请看 oms_test。
++待办 (D1): 要么补一个真的 demo, 要么删掉 oms_demo。
+ 
+-./oms_shm.sh build               # 编译 3 个工具
++oms_test —— 功能 / 边界 / 并发断言集 (推荐入口)
++
++覆盖 (18 节 / 182 条断言): 布局常量 / 三层索引往返 / orderId 生命周期 / LIVE→FINISHED→reclaim /
++环满不覆盖 LIVE / 慢路径救回 / key 同步失败 / 别名插入失败 / 卡单强制回收 / 稳态 tombstone /
++探测余量 / iterate 跳过计数 / 版本与容量拒绝 / 崩溃恢复 / reset_all / 并发 seqlock 撕裂读 /
++remove 与 recover_orphan_slots 的返回值与幂等 / is_open + created_new + close 往返。
++退出码 0 = 全绿。推荐用 `./oms_shm.sh test` 跑 (它会先强制重新构建, 再顺带校验
++`oms_query --stats` 的输出格式仍满足 doctor 的解析契约)。
++
++oms_shm.sh —— 一站式运维脚本
++
++./oms_shm.sh build               # 编译 4 个工具 (query / bench / demo / test)
+ ./oms_shm.sh check               # 环境检查 (/dev/shm 大小 / tmpfs / 权限)
+-./oms_shm.sh demo                # 跑一次功能演示
++./oms_shm.sh demo                # ⚠ 目前等价于 bench (见上)
+ ./oms_shm.sh stats [shm]         # 打 stats
+ ./oms_shm.sh live [shm]          # 列活单
+ ./oms_shm.sh stale [shm]         # 列卡单
+ ./oms_shm.sh bench               # 跑性能测试
++./oms_shm.sh test [dir]          # 跑断言集 + 解析契约检查 (推荐)
+ ./oms_shm.sh watch [shm]         # 持续监控 (5s 刷新)
+ ./oms_shm.sh doctor [shm]        # 一键健康检查, 红字提示问题
+ CONFIRM=1 ./oms_shm.sh reset [shm]  # 危险: 清空 SHM
+@@ -352,7 +364,7 @@
+ cd new_dev/tb/tools
+ ./oms_shm.sh build
+ 
+-生成: oms_query, oms_bench, oms_demo。
++生成: oms_query, oms_bench, oms_demo, oms_test。
+ 
+ 3. 启动前检查
+ 
+@@ -700,10 +712,22 @@
+ 
+ 
+ key 变更时索引插入失败, 已保持旧 key (🟡索引饱和); 订单仍可查, 只是没跟上这次变更
++
++
++
++total_alias_insert_failures
++
++
++
++> 0
+ 
+ 
+ 
++主索引 OK 但 clientOrderId / orderId 别名插入失败 (🟡索引饱和); 单**在** SHM 里 (按 orderSysId 查得到), 但用该别名查不到 → 策略按 clientOrderId 查活单会落空 (漏撤单 / 重复下单)。**不计入** total_alloc_failures
+ 
++
++
++
+ worst_live_run
+ 
+ 
+@@ -944,6 +968,7 @@
+ └── tb/tools/
+     ├── oms_query.cpp           # CLI 查询
+     ├── oms_bench.cpp           # 性能测试
+-    ├── oms_demo.cpp            # 使用示例
++    ├── oms_demo.cpp            # ⚠ 目前与 oms_bench.cpp 逐字节相同 (待办 D1)
++    ├── oms_test.cpp            # 功能/边界/并发断言集
+     └── oms_shm.sh              # 一站式运维脚本
+ 
+
+--- a/tb/tools/oms_query.cpp
++++ b/tb/tools/oms_query.cpp
+@@ -225,8 +225,11 @@
+         std::printf("  --\n");
+         std::printf("  index_capacity             : %u (每个索引 = next_pow2(4*slot_cap))\n",
+                     s.index_capacity);
+-        std::printf("  probe_max                  : %u (索引 open-addressing 探测步数上限)\n",
+-                    s.probe_max);
++        // ★ 数值行**必须**以数字结尾 (doctor 用 `grep -oE '[0-9]+' | head -1` 取第一个数字)。
++        //   这里原来是 `probe_max : 32 (索引 open-addressing 探测步数上限)` —— 行尾挂了说明,
++        //   只是碰巧那段中文里没有数字才没出事。按约定把提示挪到下一行。
++        std::printf("  probe_max                  : %u\n", s.probe_max);
++        std::printf("      ← 索引 open-addressing 探测步数上限\n");
+         {
+             uint32_t tight = 0;
+             uint32_t worst_run = 0;
+\ No newline at end of file
+@@ -300,6 +303,14 @@
+             std::printf("      ← 非零: key 变更时索引插入失败, 已**保持旧 key 不变** (副本与索引仍一致)。\n"
+                         "        说明索引饱和, 看上面的 index live/tomb/empty 与 index_capacity。\n");
+         }
++        std::printf("  total_alias_insert_failures: %llu\n",
++                    (unsigned long long)s.total_alias_insert_failures);
++        if (s.total_alias_insert_failures) {
++            std::printf("      ← 非零: 主索引 OK 但 clientOrderId / orderId 别名插入失败。\n"
++                        "        单**在** SHM 里 (按 orderSysId 查得到), 但用该别名查不到 ——\n"
++                        "        策略侧按 clientOrderId 查活单会落空 (漏撤单 / 重复下单)。\n"
++                        "        不计入 total_alloc_failures; 同样说明索引饱和。\n");
++        }
+         return 0;
+     }
+ 
+\ No newline at end of file
+
+--- a/tb/tools/oms_shm.sh
++++ b/tb/tools/oms_shm.sh
+@@ -3,13 +3,14 @@
+ # oms_shm.sh — OMS SHM 一站式部署 / 运维脚本
+ #
+ # 用法:
+-#   ./oms_shm.sh build           # 编译 3 个工具 (query / bench / demo)
++#   ./oms_shm.sh build           # 编译 4 个工具 (query / bench / demo / test)
+ #   ./oms_shm.sh check           # 检查 /dev/shm 空间 + 权限
+ #   ./oms_shm.sh demo            # 跑一次完整功能演示
+ #   ./oms_shm.sh stats [shm]     # 打印当前 SHM stats
+ #   ./oms_shm.sh live  [shm]     # 列出活单
+ #   ./oms_shm.sh stale [shm]     # 列出卡单 (下次可能被强制回收)
+ #   ./oms_shm.sh bench           # 跑性能测试
++#   ./oms_shm.sh test  [dir]     # 跑功能/边界/并发断言集 + 解析契约检查
+ #   ./oms_shm.sh reset  [shm]    # 危险: 清空 SHM (需要 CONFIRM=1)
+ #   ./oms_shm.sh watch  [shm]    # 持续监控 (每 5s 打印一次 stats)
+ #   ./oms_shm.sh doctor [shm]    # 一键健康检查, 有问题打红字
+@@ -31,14 +32,23 @@
+ err()  { echo -e "${RED}✗${RESET} $*" >&2; }
+ 
+ cmd_build() {
+-    log "building oms_query / oms_bench / oms_demo ..."
++    log "building oms_query / oms_bench / oms_demo / oms_test ..."
+     cd "$SCRIPT_DIR"
+-    $CXX $CXXFLAGS $INCLUDE_DIRS oms_query.cpp -o oms_query \
++    # -pthread 的必要性只看**有没有构造 std::thread**, 与"头文件 include 了 <thread>"无关:
++    #   nm -u 实测 pthread_create 引用数 = oms_query 0 / oms_bench 1 / oms_demo 1 / oms_test 1。
++    #   (OmsShm.h 里那个 std::this_thread::yield() 位于 `#if defined(__x86_64__)` 的 #else 分支,
++    #    x86-64 上根本没被编译 —— 四个 TU 的 this_thread 引用数都是 0。)
++    # 老 glibc (< 2.34, 如 Ubuntu 20.04 / glibc 2.31) pthread 尚未并入 libc,
++    # 缺 -pthread 就会 undefined reference to `pthread_create' (症状落在 oms_demo)。
++    # 四行统一加: 无用无害, 且以后新增工具不会再踩一次。
++    $CXX $CXXFLAGS -pthread $INCLUDE_DIRS oms_query.cpp -o oms_query \
+         && ok "oms_query"  || { err "build oms_query failed"; return 1; }
+-    $CXX $CXXFLAGS $INCLUDE_DIRS -pthread oms_bench.cpp -o oms_bench \
++    $CXX $CXXFLAGS -pthread $INCLUDE_DIRS oms_bench.cpp -o oms_bench \
+         && ok "oms_bench"  || { err "build oms_bench failed"; return 1; }
+-    $CXX $CXXFLAGS $INCLUDE_DIRS oms_demo.cpp -o oms_demo \
++    $CXX $CXXFLAGS -pthread $INCLUDE_DIRS oms_demo.cpp -o oms_demo \
+         && ok "oms_demo"   || { err "build oms_demo failed"; return 1; }
++    $CXX $CXXFLAGS -pthread $INCLUDE_DIRS oms_test.cpp -o oms_test \
++        && ok "oms_test"   || { err "build oms_test failed"; return 1; }
+ }
+ 
+ cmd_check() {
+@@ -100,6 +110,53 @@
+ cmd_bench() {
+     [ -x "$SCRIPT_DIR/oms_bench" ] || cmd_build
+     "$SCRIPT_DIR/oms_bench" --shm=/dev/shm/tb_bench.dat --capacity=131072 --iters=1000000 --readers=4 --reset
++}
++
++# 功能 / 边界 / 并发断言集 (oms_test) + 输出格式的解析契约检查。
++#   解析契约必须在这里做: 它验的是 **oms_query 的 stdout** 与 **doctor 的解析式** 是否对得上,
++#   是两个程序之间的接口, 放进 C++ 里测不到。
++cmd_test() {
++    local dir="${1:-/tmp/oms_test}"
++    # ★ 测试命令**必须**用当前源码重新构建。只判"二进制是否存在"会让改了源码后
++    #   跑到陈旧二进制 —— 测试全绿, 实际验的是旧行为, 这是最坏的一类误报。
++    cmd_build || return 1
++    mkdir -p "$dir"
++    "$SCRIPT_DIR/oms_test" "$dir" || return 1
++
++    log ""
++    log "=== 解析契约: oms_query --stats 的数值行必须能被 doctor 的 grep 取到 ==="
++    local fixture="$dir/parser_fixture.dat"
++    if [ ! -f "$fixture" ]; then
++        err "fixture $fixture 不存在 (oms_test 应该生成它)"; return 1
++    fi
++    local out
++    out=$("$SCRIPT_DIR/oms_query" --shm="$fixture" --stats 2>&1) || { err "$out"; return 1; }
++
++    local bad=0
++    # 这些就是 doctor 会解析的 key。契约: 该行形如 `key[^:]*:<spaces><digits>` 且**以数字结尾**。
++    for key in total_alloc_failures total_stale_live_reclaims total_alloc_slowpath \
++               total_alloc_exhausted total_key_sync_failures total_alias_insert_failures \
++               probe_max worst_live_run; do
++        local line got
++        line=$(echo "$out" | grep -E "^[[:space:]]*${key}([^:]*):" | head -1)
++        if [ -z "$line" ]; then
++            err "$key 没出现在 --stats 输出里 (doctor 会静默取到 0)"; bad=$((bad + 1)); continue
++        fi
++        if ! echo "$line" | grep -qE "^[[:space:]]*${key}[^:]*:[[:space:]]*[0-9]+$"; then
++            err "$key 的行尾不是数字, doctor 取值会失败: $line"; bad=$((bad + 1)); continue
++        fi
++        # 用 doctor 完全一样的管道取值, 断言拿得到
++        got=$(echo "$out" | grep -E "^[[:space:]]*${key}[^:]*:" | grep -oE '[0-9]+' | head -1)
++        if [ -z "$got" ]; then
++            err "$key doctor 管道取值为空: $line"; bad=$((bad + 1)); continue
++        fi
++        ok "$key → $got"
++    done
++    if [ "$bad" -eq 0 ]; then
++        ok "解析契约: 全部 key 均可被 doctor 正确取值"
++    else
++        err "解析契约: $bad 个 key 有问题"; return 1
++    fi
+ }
+ 
+ cmd_reset() {
+@@ -128,6 +185,9 @@
+         err "shm file missing"; return 1
+     fi
+     local out
++    # doctor 之前**没有** auto-build, 别的子命令都有 —— 没编译过就只报一句
++    # "No such file or directory" (被 2>&1 吞进 $out), 看不出是没编译。
++    [ -x "$SCRIPT_DIR/oms_query" ] || cmd_build
+     out=$("$SCRIPT_DIR/oms_query" --shm="$shm" --stats 2>&1) || { err "$out"; return 1; }
+     echo "$out"
+     log ""
+@@ -136,6 +196,8 @@
+     #   ① 不要用 awk '{print $NF}' —— 行尾的中文提示会被当成值, 导致
+     #      [: integer expression expected 且检查静默失效 (P2-2 就是这个)。
+     #   ② 也不要只 grep 裸 key —— 说明文字里出现同一个词就会误匹配到多行。
++    #   ③ 累加必须写 `issues=$((issues + 1))` 而不是 `((issues++))`: 后者在
++    #      issues=0 时返回 1, 在部分 bash 版本下会被 set -e 当成失败直接终止脚本。
+     alloc_fail=$(echo "$out"     | grep -E '^[[:space:]]*total_alloc_failures[[:space:]]*:'      | grep -oE '[0-9]+' | head -1)
+     stale_reclaims=$(echo "$out" | grep -E '^[[:space:]]*total_stale_live_reclaims[[:space:]]*:' | grep -oE '[0-9]+' | head -1)
+     live_stale=$(echo "$out"     | grep "stale (卡单"                                            | grep -oE '[0-9]+' | head -1)
+@@ -149,61 +211,70 @@
+     probe_max=$(echo "$out" | grep -E '^[[:space:]]*probe_max[[:space:]]*:' | grep -oE '[0-9]+' | head -1)
+     [ -z "$probe_max" ] && probe_max=0
+ 
+-    # ③ alloc 快/慢路径 + ② key 同步失败的专属计数 (v4 新增, 同样按 key 锚定行取值)
++    # ③ alloc 快/慢路径 + ② key 同步失败 + B4 别名失败 的专属计数 (v4/v4.1 新增)
+     slowpath=$(echo "$out"      | grep -E '^[[:space:]]*total_alloc_slowpath[[:space:]]*:'    | grep -oE '[0-9]+' | head -1)
+     exhausted=$(echo "$out"     | grep -E '^[[:space:]]*total_alloc_exhausted[[:space:]]*:'   | grep -oE '[0-9]+' | head -1)
+     key_sync_fail=$(echo "$out" | grep -E '^[[:space:]]*total_key_sync_failures[[:space:]]*:' | grep -oE '[0-9]+' | head -1)
++    alias_fail=$(echo "$out"    | grep -E '^[[:space:]]*total_alias_insert_failures[[:space:]]*:' | grep -oE '[0-9]+' | head -1)
+     [ -z "$slowpath" ]      && slowpath=0
+     [ -z "$exhausted" ]     && exhausted=0
+     [ -z "$key_sync_fail" ] && key_sync_fail=0
++    [ -z "$alias_fail" ]    && alias_fail=0
+ 
+     if [ "$alloc_fail" -gt 0 ]; then
+         err "alloc_failures = $alloc_fail  → 有单没写进 SHM! 看下面 alloc_exhausted / key_sync_failures 分辨是环满还是索引饱和"
+-        ((issues++))
++        issues=$((issues + 1))
+     else
+         ok "alloc_failures = 0"
+     fi
+     # ③: 快路径落空但被全表扫描救回来 —— **单没丢**, 但余量已经在被消耗, 属于预警。
+     if [ "$slowpath" -gt 0 ]; then
+         warn "alloc_slowpath = $slowpath  → 快路径 128 步落空、被全表扫描救回 (单没丢); 在途单过于集中, 考虑加大 slot_capacity"
+-        ((issues++))
++        issues=$((issues + 1))
+     else
+         ok "alloc_slowpath = 0"
+     fi
+     # ③: 快慢两遍都没找到可回收 slot —— 真·环满, 单确实丢了。
+     if [ "$exhausted" -gt 0 ]; then
+         err "alloc_exhausted = $exhausted  → 真·环满 (快慢两遍全表扫描都没找到可回收 slot), 有单丢了!"
+-        ((issues++))
++        issues=$((issues + 1))
+     else
+         ok "alloc_exhausted = 0"
+     fi
+     # ②: key 变更时索引插入失败。已保持旧 key 不变 (副本与索引仍一致), 但订单没跟上变更。
+     if [ "$key_sync_fail" -gt 0 ]; then
+         err "key_sync_failures = $key_sync_fail  → key 变更时索引插入失败 (索引饱和); 已保持旧 key, 订单仍可查"
+-        ((issues++))
++        issues=$((issues + 1))
+     else
+         ok "key_sync_failures = 0"
+     fi
++    # B4: 别名索引 (clientOrderId / orderId) 插入失败 —— 单在 SHM 里, 但按该别名查不到。
++    if [ "$alias_fail" -gt 0 ]; then
++        err "alias_insert_failures = $alias_fail  → 单在 SHM 里但别名索引写不进去 (策略按 clientOrderId 查活单会落空)"
++        issues=$((issues + 1))
++    else
++        ok "alias_insert_failures = 0"
++    fi
+     # 探测余量 (B6): 环满后 empty 必然排干到 0, 插入能否成功只看最长 live 连续段。
+     #   它 >= probe 上限 = 已经在丢单; 余量不足 1.5 倍 = 该重新评估 index_capacity 倍数了。
+     if [ "$probe_max" -gt 0 ] && [ "$worst_run" -ge "$probe_max" ]; then
+         err "worst_live_run = $worst_run >= probe_max = $probe_max  → 索引已饱和, 正在丢单 (看 alloc_failures)"
+-        ((issues++))
++        issues=$((issues + 1))
+     elif [ "$probe_max" -gt 0 ] && [ $((worst_run * 3)) -ge $((probe_max * 2)) ]; then
+         warn "worst_live_run = $worst_run, 对 probe_max = $probe_max 余量不足 1.5 倍 → 考虑加大 index_capacity 倍数"
+-        ((issues++))
++        issues=$((issues + 1))
+     else
+         ok "worst_live_run = $worst_run (probe_max = $probe_max)"
+     fi
+     if [ "$stale_reclaims" -gt 0 ]; then
+         err "stale_live_reclaims = $stale_reclaims  → 有卡单被强制回收, 上层有 bug 导致订单不 finalize"
+-        ((issues++))
++        issues=$((issues + 1))
+     else
+         ok "stale_live_reclaims = 0"
+     fi
+     if [ "$live_stale" -gt 0 ]; then
+         warn "live_stale = $live_stale  → 目前有卡单 (24h+ 未更新), 下轮 alloc 会被回收"
+-        ((issues++))
++        issues=$((issues + 1))
+     else
+         ok "live_stale = 0"
+     fi
+@@ -222,8 +293,9 @@
+     live)   cmd_live "$2" ;;
+     stale)  cmd_stale "$2" ;;
+     bench)  cmd_bench ;;
++    test)   cmd_test "$2" ;;
+     reset)  cmd_reset "$2" ;;
+     watch)  cmd_watch "$2" ;;
+     doctor) cmd_doctor "$2" ;;
+     *) sed -n '3,20p' "$0" | sed 's|^# ||;s|^#||' ; exit 1 ;;
+-esac
+\ No newline at end of file
++esac

@@ -1,0 +1,295 @@
+--- a/include/oms/OmsShm.h
++++ b/include/oms/OmsShm.h
+@@ -231,21 +231,80 @@
+     "OmsSlot size drift; if pubsub::RCommand grew, bump kSlotSize");
+ static_assert(std::atomic<uint64_t>::is_always_lock_free, "atomic<u64> must be lock-free for shm");
+ static_assert(std::atomic<uint32_t>::is_always_lock_free, "atomic<u32> must be lock-free for shm");
++
++
++// =============================================================================
++// 索引条目 ⇄ slot 的"身份判定"
++//
++//   索引条目里存的是 `fnv1a(key)` + `key_prefix[16]`, 这只是**桶提示**, 不是身份:
++//     - 它不覆盖 key 的第 17 字节以后, 也不把长度当独立判据;
++//     - 实测 (N = 100000) 交易所自增 orderId 只有 **101** 个不同前缀, 而
++//       strategyId >= 16 字符的复合 clientOrderId 只有 **1** 个前缀 ——
++//       对这两类真实 key, 前缀**完全没有区分度**, 判定退化成"只有 64 位 hash"。
++//   真正的身份在 slot 的 key 副本里, 所以任何"是不是同一个 key"的判定都必须回读
++//   slot 比**完整 key**。前缀只配用来做快速否定 (16 字节比较比回读 slot 便宜)。
++//
++//   不这么做的后果 (实测): 一次 hash + 前缀碰撞会让 `upsert` 把新单**并进别人的
++//   slot** —— 查 A 返回 B 的报单体 (最坏的一类错误: 拿错单的状态去驱动撤单/平仓)。
++//   详见 tb/tools/OMS_SHM_REVIEW.md §2.3。
++// =============================================================================
++enum class EntryKeyMatch : uint8_t {
++    kMatch,   // slot 确实持有这个 key
++    kOther,   // slot 持有**别的** key —— 真碰撞, 必须继续探测, 绝不能当成命中
++    kStale,   // 条目指向的 slot 越界 / 已空 —— 条目陈旧: 不是命中, 但该 bucket 可复用
++};
++
++// 按 kind 取 slot 的 key 副本 buffer (越界 / 无 slot → nullptr)
++inline const char* slot_key_ptr(const OmsSlot* slots_arr, uint32_t slot_cap,
++                                uint32_t slot_idx, IndexKind kind,
++                                size_t& cap_out) noexcept
++{
++    if (!slots_arr || slot_idx == kInvalidSlot || slot_idx >= slot_cap) return nullptr;
++    const OmsSlot& s = slots_arr[slot_idx];
++    switch (kind) {
++        case IDX_ORDER_SYS_ID: cap_out = sizeof(s.orderSysId);    return s.orderSysId;
++        case IDX_CLIENT_ORDER: cap_out = sizeof(s.clientOrderId); return s.clientOrderId;
++        case IDX_EXCHANGE_ID:  cap_out = sizeof(s.orderId);       return s.orderId;
++        default:               cap_out = 0;                       return nullptr;
++    }
++}
++
++// 索引条目 e 与目标 key 的关系。★ 必须比**完整 key**, 不能用 e.key_prefix。
++//   代价敏感: 只做 memcmp(key.size()) + 一个终止符检查, 不做 strlen 扫描。
++//   (key 副本是 NUL 结尾的定长 buffer, 由 copy_key / memset 保证)
++inline EntryKeyMatch entry_key_match(const IndexEntry& e,
++                                     const OmsSlot* slots_arr, uint32_t slot_cap,
++                                     IndexKind kind, std::string_view key) noexcept
++{
++    size_t cap = 0;
++    const char* held = slot_key_ptr(slots_arr, slot_cap,
++                                    e.slot_idx.load(std::memory_order_acquire),
++                                    kind, cap);
++    if (!held) return EntryKeyMatch::kStale;
++    if (held[0] == '\0') return EntryKeyMatch::kStale;   // 空副本 = 条目陈旧
++    if (key.size() >= cap) return EntryKeyMatch::kOther; // 副本装不下这个 key → 不是它
++    if (std::memcmp(held, key.data(), key.size()) != 0) return EntryKeyMatch::kOther;
++    return held[key.size()] == '\0' ? EntryKeyMatch::kMatch : EntryKeyMatch::kOther;
++}
+ 
+ 
+ // =============================================================================
+ // 内部工具: 索引 open-addressing 探测
+ //   查找: 返回 bucket 索引 (命中); found=false 时返回可插入的空/tombstone bucket
++//   ★ 命中判据 = hash 相等 + 前缀相等 (**快速否定**) + slot 里持有完整 key (真判据)。
++//     只比 hash + 前缀会把"另一个 key 占着同一个 bucket"当成命中 → 查错单。
+ // =============================================================================
+ inline uint32_t index_probe_find(IndexEntry* idx_arr, uint32_t cap,
+                                  uint64_t hash, std::string_view key,
++                                 const OmsSlot* slots_arr, uint32_t slot_cap,
++                                 IndexKind kind,
+                                  bool& found_out) noexcept
+ {
+     found_out = false;
+     if (cap == 0) return UINT32_MAX;
+     const uint32_t mask = cap - 1;
+     const bool     pow2 = is_pow2(cap);
+-    uint32_t first_slot = UINT32_MAX;   // 记录第一个可 reuse (empty/tombstone) 的 bucket
++    uint32_t first_slot = UINT32_MAX;   // 记录第一个可 reuse (empty/tombstone/stale) 的 bucket
+     for (uint32_t i = 0; i < kMaxProbeIndex; ++i) {
+         uint32_t b = index_probe_bucket(hash, i, cap, mask, pow2);
+         IndexEntry& e = idx_arr[b];
+@@ -259,11 +318,22 @@
+             continue;   // 跳过 tombstone 继续查
+         }
+         if (h == hash) {
+-            // 验证 key 前缀
+             size_t cmp_n = key.size() < 16 ? key.size() : 16;
+             if (std::memcmp(e.key_prefix, key.data(), cmp_n) == 0) {
+-                found_out = true;
+-                return b;
++                switch (entry_key_match(e, slots_arr, slot_cap, kind, key)) {
++                case EntryKeyMatch::kMatch:
++                    found_out = true;
++                    return b;
++                case EntryKeyMatch::kStale:
++                    // 条目指向的 slot 已经空了 —— 条目陈旧。不当作命中, 继续找真条目,
++                    // 找不到就把它当可插入位置返回 (调用方会复用)。
++                    if (first_slot == UINT32_MAX) first_slot = b;
++                    continue;
++                case EntryKeyMatch::kOther:
++                    // hash 与前缀都相同, 但 slot 里是**另一个 key** —— 真碰撞。
++                    // 继续探测; 若在此停住, 就会把 B 的查询当成 A 命中, 返回错单。
++                    continue;
++                }
+             }
+         }
+     }
+@@ -555,7 +625,8 @@
+         uint32_t cap = index_capacity();
+         uint64_t hash = fnv1a(key);
+         bool found = false;
+-        uint32_t bucket = index_probe_find(arr, cap, hash, key, found);
++        uint32_t bucket = index_probe_find(arr, cap, hash, key,
++                                           slots(), slot_capacity(), kind, found);
+         if (!found) return false;
+         uint32_t slot_idx = arr[bucket].slot_idx.load(std::memory_order_acquire);
+         if (slot_idx == kInvalidSlot || slot_idx >= slot_capacity()) return false;
+@@ -945,30 +1016,100 @@
+ 
+     void update_slot(uint32_t idx, const pubsub::RCommand& rcmd) {
+         OmsSlot& s = slots()[idx];
++        const auto& resp = rcmd.body.orderResponse;
++
++        // ★ 热路径判定: key 的源字段一个都没动 → 完全不做同步 (正常成交/部分成交回报就是这样)。
++        //   必须在 memcpy 覆盖 s.order **之前**算, 才能拿旧报单体比。
++        //   每个子句都以"这次带没带这个字段"开头 —— 上层没回传该字段时直接短路,
++        //   不会因为"报单体里是空的、副本里是满的"而每次都掉进冷路径。
++        const bool need_sync =
++            (resp.orderSysId[0] && std::strncmp(s.orderSysId, resp.orderSysId,
++                                                sizeof(s.orderSysId)) != 0) ||
++            (resp.orderId[0]    && std::strncmp(s.orderId, resp.orderId,
++                                                sizeof(s.orderId))    != 0) ||
++            (resp.strategyId[0] &&
++                (s.clientOrderId[0] == '\0' ||
++                 s.order.body.orderResponse.clientOrderId != resp.clientOrderId ||
++                 std::strncmp(s.order.body.orderResponse.strategyId, resp.strategyId,
++                              sizeof(resp.strategyId)) != 0));
++
+         s.seq.fetch_add(1, std::memory_order_release);
+         uint64_t t = now_ns();
+         s.last_update_time_ns = t;    // ← 每次更新都刷, LIVE 只要还在活跃就永远不会 stale
+         // 完整覆盖 order
+         std::memcpy(&s.order, &rcmd, sizeof(pubsub::RCommand));
+-        bool orderId_changed = false;
+-        if (rcmd.body.orderResponse.orderId[0] &&
+-            std::strncmp(s.orderId, rcmd.body.orderResponse.orderId, sizeof(s.orderId)) != 0) {
+-            copy_key(s.orderId, sizeof(s.orderId), rcmd.body.orderResponse.orderId);
+-            orderId_changed = true;
+-        }
+-        if (is_terminal(rcmd.body.orderResponse.orderStatus)) {
++        // 维护不变量: key 副本 == 报单体 (详见 sync_key_copies 的说明)。冷路径, 不内联。
++        if (need_sync) sync_key_copies(idx, rcmd);
++        if (is_terminal(resp.orderStatus)) {
+             if (s.finish_time_ns == 0) s.finish_time_ns = t;
+             s.state.store(SLOT_FINISHED, std::memory_order_release);
+         } else {
+             s.state.store(SLOT_LIVE, std::memory_order_release);
+         }
+         s.seq.fetch_add(1, std::memory_order_release);
+-        if (orderId_changed && s.orderId[0]) {
+-            insert_index(IDX_EXCHANGE_ID, s.orderId, idx);
+-        }
+         header()->global_seq.fetch_add(1, std::memory_order_relaxed);
+     }
+ 
++    // 把 slot 的 3 个 key 副本同步成报单体里的值, 变了就把对应的索引项迁过去。
++    //
++    //   ★ 为什么必须同步: `find_slot` / `lookup_impl` 的**身份复核读的是 key 副本**。
++    //     副本一旦与报单体分叉, 复核就退化成"比一个永不改变的值", 等于没比 ——
++    //     这正是 B5 里"用 A 的 key 查回 B 的报单体"能成立的原因
++    //     (当时 update_slot 只覆盖报单体, 完全不碰 orderSysId / clientOrderId 副本)。
++    //   ★ 正常生命周期下这些 key 是 set-once (orderSysId / orderId 由交易所回报首次
++    //     设定后再也不变), 所以这是**冷路径**: update_slot 先用一次短比较把它挡掉。
++    //     实测把它塞进每次 update 会让 update 从 41 ns/op 涨到 74 ns/op
++    //     (compose_client_key 里的 snprintf 是大头), 挡掉之后回到 42 ns/op 附近。
++    //   ★ 报单体里字段为空 = "这次没带这个字段" → 不动副本, 不能把已建立的 key 抹掉。
++    //   ★ 顺序: 先 tombstone 旧索引项, 再改副本。反过来的话 tombstone_index 拿旧 key
++    //     去比 slot 的副本会比不中, 旧条目就永远留在索引里了。
++    //   ★ 在 seqlock odd 窗口内被调用: 只在 key 真的变了时执行, 罕见。索引自带原子,
++    //     读者若先读到新条目, 取快照时会等 seqlock 关闭, 不会看到半截数据。
++    void sync_key_copies(uint32_t idx, const pubsub::RCommand& rcmd) {
++        OmsSlot& s = slots()[idx];
++        const auto& resp = rcmd.body.orderResponse;
++        sync_one_key(idx, IDX_ORDER_SYS_ID, s.orderSysId, sizeof(s.orderSysId),
++                     resp.orderSysId);
++        if (resp.strategyId[0]) {
++            // 复合 client key: strategyId + cid。strategyId 为空时**不重算** ——
++            // 上层可能只回传了 cid, 重算会得到一个与创建时不同的 key, 反而写坏别名索引。
++            char ck[64];
++            const int cn = compose_client_key(
++                ck, sizeof(ck),
++                std::string_view(resp.strategyId,
++                                 strnlen_max(resp.strategyId, sizeof(resp.strategyId))),
++                resp.clientOrderId);
++            if (cn > 0) {
++                sync_one_key(idx, IDX_CLIENT_ORDER, s.clientOrderId,
++                             sizeof(s.clientOrderId), ck);
++            }
++        }
++        sync_one_key(idx, IDX_EXCHANGE_ID, s.orderId, sizeof(s.orderId), resp.orderId);
++    }
++
++    // 同步一个 key 副本: 变了就 tombstone 旧索引项 → 改副本 → 挂新索引项。
++    void sync_one_key(uint32_t idx, IndexKind kind, char* dst, size_t dst_sz,
++                      const char* new_val) {
++        if (!new_val || !new_val[0]) return;                   // 这次没带这个字段
++        if (std::strncmp(dst, new_val, dst_sz) == 0) return;   // 没变
++        const std::string_view old_val(dst, strnlen_max(dst, dst_sz));
++        const std::string_view nv(new_val, strnlen_max(new_val, dst_sz - 1));
++        if (!old_val.empty()) {
++            // 非空 → 非空 才叫"变更"; "" → 非空 是首次设定 (orderId 的正常路径), 静默
++            std::fprintf(stderr,
++                "[OmsShm][WARN] slot=%u %s key 变更: \"%.*s\" -> \"%.*s\" "
++                "(报单体与 key 副本不一致, 已迁移索引)\n",
++                idx, index_kind_name(kind),
++                static_cast<int>(old_val.size()), old_val.data(),
++                static_cast<int>(nv.size()), nv.data());
++            tombstone_index(kind, old_val);
++        }
++        const size_t nn = nv.size();
++        std::memcpy(dst, nv.data(), nn);
++        dst[nn] = 0;
++        insert_index(kind, nv, idx);
++    }
++
+     // 复制字符串到定长 buffer, null-terminate
+     static void copy_key(char* dst, size_t dst_sz, const char* src) noexcept {
+         if (!src) { dst[0] = 0; return; }
+@@ -1033,9 +1174,22 @@
+             if (h == hash) {
+                 size_t cmp_n = key.size() < 16 ? key.size() : 16;
+                 if (std::memcmp(e.key_prefix, key.data(), cmp_n) == 0) {
+-                    // 覆盖已有 (同 orderSysId 复用 slot 的场景)
+-                    e.slot_idx.store(slot_idx, std::memory_order_release);
+-                    return true;
++                    switch (entry_key_match(e, slots(), slot_capacity(), kind, key)) {
++                    case EntryKeyMatch::kMatch:
++                        // 覆盖已有 (同 orderSysId 复用 slot 的场景)
++                        e.slot_idx.store(slot_idx, std::memory_order_release);
++                        return true;
++                    case EntryKeyMatch::kStale:
++                        // 条目指向的 slot 已经空了 → 条目陈旧, 这个 bucket 可复用。
++                        // 记下来继续探测 (后面可能有真条目), 循环结束再决定用不用它。
++                        if (first_reusable == UINT32_MAX) first_reusable = b;
++                        continue;
++                    case EntryKeyMatch::kOther:
++                        // hash + 前缀都撞上了, 但 slot 里是**别的 key**。
++                        // ★ 绝不能在这里覆盖 —— 覆盖就等于把别人的单"顶掉",
++                        //   之后查那个 key 会命中这个 slot 并返回错单 (§2.3)。
++                        continue;
++                    }
+                 }
+             }
+         }
+@@ -1050,14 +1204,23 @@
+     }
+ 
+     // 找 slot_idx (writer 用, 无需 seqlock, 因为写操作串行)
++    //   ★ 索引命中只是**候选**: index_probe_find 已经回读 slot 用完整 key 复核过,
++    //     found_out 为 true ⟺ 那个 slot 确实持有这个 key (kOther / kStale 都不会置位)。
++    //     少了这道复核, 一次 hash + 前缀碰撞就会让 upsert 把新单**并进别人的 slot**
++    //     (查 A 返回 B 的报单体) —— 见 OMS_SHM_REVIEW.md §2.3。
++    //   ★ 这里再补一次 slot_idx 越界检查: 返回值会被直接拿去索引 slots[], 不能脏。
+     uint32_t find_slot(IndexKind kind, std::string_view key) {
+         IndexEntry* arr = index(kind);
+-        uint32_t cap = index_capacity();
+-        uint64_t hash = fnv1a(key);
++        const uint32_t cap = index_capacity();
++        if (!arr || cap == 0 || key.empty()) return kInvalidSlot;
++        const uint64_t hash = fnv1a(key);
+         bool found = false;
+-        uint32_t bucket = index_probe_find(arr, cap, hash, key, found);
++        const uint32_t bucket = index_probe_find(arr, cap, hash, key,
++                                                 slots(), slot_capacity(), kind, found);
+         if (!found) return kInvalidSlot;
+-        return arr[bucket].slot_idx.load(std::memory_order_acquire);
++        const uint32_t slot_idx = arr[bucket].slot_idx.load(std::memory_order_acquire);
++        if (slot_idx == kInvalidSlot || slot_idx >= slot_capacity()) return kInvalidSlot;
++        return slot_idx;
+     }
+ 
+     // Tombstone slot 关联的所有索引项
+@@ -1072,7 +1235,8 @@
+         uint32_t cap = index_capacity();
+         uint64_t hash = fnv1a(key);
+         bool found = false;
+-        uint32_t bucket = index_probe_find(arr, cap, hash, key, found);
++        uint32_t bucket = index_probe_find(arr, cap, hash, key,
++                                           slots(), slot_capacity(), kind, found);
+         if (!found) return;
+         IndexEntry& e = arr[bucket];
+         e.key_hash.store(kHashTombstone, std::memory_order_release);

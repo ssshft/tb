@@ -223,12 +223,94 @@ int main(int argc, char** argv) {
         std::printf("  min_reclaim_age            : %.1f s (FINISHED 最小 TTL)\n", s.min_reclaim_age_ns / 1e9);
         std::printf("  max_live_stale             : %.1f s (LIVE 无更新阈值, 0=禁用)\n", s.max_live_stale_ns / 1e9);
         std::printf("  --\n");
+        std::printf("  index_capacity             : %u (每个索引 = next_pow2(4*slot_cap))\n",
+                    s.index_capacity);
+        // ★ 数值行**必须**以数字结尾 (doctor 用 `grep -oE '[0-9]+' | head -1` 取第一个数字)。
+        //   这里原来是 `probe_max : 32 (索引 open-addressing 探测步数上限)` —— 行尾挂了说明,
+        //   只是碰巧那段中文里没有数字才没出事。按约定把提示挪到下一行。
+        std::printf("  probe_max                  : %u\n", s.probe_max);
+        std::printf("      ← 索引 open-addressing 探测步数上限\n");
+        {
+            uint32_t tight = 0;
+            uint32_t worst_run = 0;
+            for (uint32_t k = 0; k < oms::shm::IDX_COUNT; ++k) {
+                const auto& o = s.index_occupancy[k];
+                std::printf("  index %-14s       : live=%-8u tomb=%-8u empty=%-8u 占用 %.2f%%\n",
+                            oms::shm::index_kind_name(k), o.live, o.tomb, o.empty,
+                            s.index_capacity ? 100.0 * o.used() / s.index_capacity : 0.0);
+                std::printf("      └─ 最长 live 连续段 %u / probe 上限 %u (余量 %.2fx)\n",
+                            o.max_live_run, s.probe_max,
+                            o.max_live_run ? static_cast<double>(s.probe_max) / o.max_live_run : 0.0);
+                if (o.empty == 0) ++tight;
+                if (o.max_live_run > worst_run) worst_run = o.max_live_run;
+            }
+            // 注意: slot 环填满后 live≈slot_cap、tomb≈slot_cap, 于是 empty→0 是**稳态正常现象**
+            // (slot_cap 是 2 的幂时更是恰好 empty==0)。所以这里只做说明, 不当告警。
+            if (tight) {
+                std::printf("  [i] %u/%u 个索引 empty=0 —— slot 环填满后这是正常现象\n"
+                            "      (live≈slot_cap, tomb≈slot_cap)。环满后 empty 必然排干到 0,\n"
+                            "      插入能否成功只看最长 live 连续段与 probe 上限的比值 (见上一行)\n",
+                            tight, oms::shm::IDX_COUNT);
+            }
+            // ★ 探测余量判读 (B6, OMS_SHM_REVIEW.md §2.5): 环满后 empty 必然为 0, 插入必须
+            //   走到某个可复用 bucket, 而连续 live 段一个都不提供 —— 所以"最长连续 live 段
+            //   >= probe 上限"就等于**已经在丢单** (total_alloc_failures 会随之增长)。
+            if (worst_run >= s.probe_max) {
+                std::printf("  [!] 最长 live 连续段 %u >= probe 上限 %u —— 已经在丢单\n"
+                            "      加大 slot_cap 没用 (empty 照样排干到 0); 要加大 index_capacity 的倍数\n",
+                            worst_run, s.probe_max);
+            } else if (worst_run * 3 >= s.probe_max * 2) {
+                std::printf("  [i] 最长 live 连续段 %u, 对 probe 上限 %u 余量不足 1.5 倍 —— 留意\n",
+                            worst_run, s.probe_max);
+            }
+            // ★ 数值行以数字结尾 (oms_shm.sh doctor 取值用); 提示写在 key 里, 行尾不挂文字。
+            std::printf("  worst_live_run (最长 live 连续段) : %u\n", worst_run);
+        }
+        std::printf("  --\n");
         std::printf("  total_inserts              : %llu\n", (unsigned long long)s.total_inserts);
         std::printf("  total_updates              : %llu\n", (unsigned long long)s.total_updates);
         std::printf("  total_reclaims             : %llu\n", (unsigned long long)s.total_reclaims);
-        std::printf("  total_stale_live_reclaims  : %llu  ← 非零说明有卡单被强制回收, 排查!\n",
-                                                             (unsigned long long)s.total_stale_live_reclaims);
-        std::printf("  total_alloc_failures       : %llu\n", (unsigned long long)s.total_alloc_failures);
+        // ★ 数值行**必须**以数字结尾: oms_shm.sh doctor 用 awk '{print $NF}' 取值,
+        //   行尾挂中文提示会让它取到提示文字, 检查静默失效 (见 OMS_SHM_REVIEW.md §0.4)。
+        //   提示一律另起一行。
+        std::printf("  total_stale_live_reclaims  : %llu\n",
+                    (unsigned long long)s.total_stale_live_reclaims);
+        if (s.total_stale_live_reclaims) {
+            std::printf("      ← 非零: 有卡单被强制回收, 排查!\n");
+        }
+        std::printf("  total_alloc_failures       : %llu\n",
+                    (unsigned long long)s.total_alloc_failures);
+        if (s.total_alloc_failures) {
+            std::printf("      ← 非零: 有单没写进 SHM! 看上面的 index live/tomb/empty 与 index_capacity\n");
+        }
+        // ★ ③ (alloc 快/慢路径) 与 ② (key 同步失败) 的专属计数。数值行同样以数字结尾。
+        std::printf("  total_alloc_slowpath       : %llu\n",
+                    (unsigned long long)s.total_alloc_slowpath);
+        if (s.total_alloc_slowpath) {
+            std::printf("      ← 非零: 快路径 128 步落空、被全表扫描**救回来**的次数。单没丢,\n"
+                        "        但说明 hint 前方有 >= 128 个连续不可回收 slot —— 在途单过于集中,\n"
+                        "        要加大 slot_capacity, 或让上层及时 finalize 订单。\n");
+        }
+        std::printf("  total_alloc_exhausted      : %llu\n",
+                    (unsigned long long)s.total_alloc_exhausted);
+        if (s.total_alloc_exhausted) {
+            std::printf("      ← 非零: 快慢两遍扫描都没找到可回收 slot → **真·环满, 单丢了**。\n"
+                        "        看上面的 live / finished / reclaiming 与 min_reclaim_age。\n");
+        }
+        std::printf("  total_key_sync_failures    : %llu\n",
+                    (unsigned long long)s.total_key_sync_failures);
+        if (s.total_key_sync_failures) {
+            std::printf("      ← 非零: key 变更时索引插入失败, 已**保持旧 key 不变** (副本与索引仍一致)。\n"
+                        "        说明索引饱和, 看上面的 index live/tomb/empty 与 index_capacity。\n");
+        }
+        std::printf("  total_alias_insert_failures: %llu\n",
+                    (unsigned long long)s.total_alias_insert_failures);
+        if (s.total_alias_insert_failures) {
+            std::printf("      ← 非零: 主索引 OK 但 clientOrderId / orderId 别名插入失败。\n"
+                        "        单**在** SHM 里 (按 orderSysId 查得到), 但用该别名查不到 ——\n"
+                        "        策略侧按 clientOrderId 查活单会落空 (漏撤单 / 重复下单)。\n"
+                        "        不计入 total_alloc_failures; 同样说明索引饱和。\n");
+        }
         return 0;
     }
 

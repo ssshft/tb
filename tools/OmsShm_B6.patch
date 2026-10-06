@@ -1,0 +1,522 @@
+--- a/include/oms/OmsShm.h
++++ b/include/oms/OmsShm.h
+@@ -55,13 +55,25 @@
+ // =============================================================================
+ 
+ constexpr uint32_t kMagic          = 0x4F4D5352;   // 'OMSR' little-endian
+-constexpr uint32_t kVersion        = 2;            // v2: 加 last_update_time_ns + max_live_stale_ns
++constexpr uint32_t kVersion        = 3;            // v2: 加 last_update_time_ns + max_live_stale_ns
++                                                   // v3: index_capacity 由 2N 改成 next_pow2(4N)
+ constexpr uint32_t kDefaultCapacity = 100'000;     // slot 数
+ constexpr uint64_t kDefaultMinReclaimAgeNs   = 60ULL * 1'000'000'000;         // 60s: FINISHED 最小 TTL
+ constexpr uint64_t kDefaultMaxLiveStaleNs    = 24ULL * 3600 * 1'000'000'000;  // 24h: LIVE 无更新最长容忍
+ constexpr uint32_t kInvalidSlot    = UINT32_MAX;
+ constexpr uint32_t kMaxProbeSlots  = 128;          // 环形 alloc 最大探测
+-constexpr uint32_t kMaxProbeIndex  = 32;           // 索引 open-addressing 最大探测
++
++// 索引 open-addressing 最大探测步数。
++//   ★ 这不是一个"给大点就安全"的余量常数: 环填满后 `empty` 必然排干到 0
++//     (live + tomb == index_capacity), 插入能否成功**完全**取决于本值步内能否碰到
++//     tombstone, 而线性探测下所需步数的上界 = **最长连续 live 段**。
++//   ★ 实测 (OMS_SHM_REVIEW.md §2.5): 索引 2N 时最长连续段 19 → 35 → 38~55 → 41~49,
++//     **全部 > 32** → 已经在静默丢单 (slot_cap=65536: 1.9e-4, 随时间恶化到 ~2.5e-4)。
++//     容量改成 4N 后连续段塌到 13~20, 对 32 有 1.6 倍以上余量。
++//     **所以该修的是容量 (index_capacity), 不是把这个数调大。**
++//   ★ 调大本值只是治标: 门槛往后挪, 连续段照样随容量缓慢增长, 永远说不清余量。
++//     要判断够不够, 看 Stats::index_occupancy[].max_live_run 与本值的比值。
++constexpr uint32_t kMaxProbeIndex  = 32;
+ constexpr uint32_t kMaxReadRetry   = 16;           // seqlock 读重试上限
+ 
+ // Index entry 里的 key_hash 特殊值
+@@ -152,7 +164,7 @@
+     uint32_t magic;                 // 校验
+     uint32_t version;
+     uint32_t slot_capacity;         // N
+-    uint32_t index_capacity;        // next_pow2(2N), 单个索引大小; **必须是 2 的幂**
++    uint32_t index_capacity;        // next_pow2(4N), 单个索引大小; **必须是 2 的幂**
+     uint32_t index_kinds;           // = IDX_COUNT (3)
+ 
+     uint64_t min_reclaim_age_ns;    // FINISHED slot 至少 idle 多久才能回收
+@@ -416,9 +428,17 @@
+         // ★ 索引容量**必须**是 2 的幂 —— 三处探测都用 (hash+i) & (cap-1), 只有 cap 是
+         //   2 的幂时该序列才满射。反例: slot_cap=100000 → 2N=200000, mask=0x30D3F
+         //   只有 11 个 bit 置位 → 索引最多 2048 个 bucket 就饱和, 之后 upsert 全部失败。
+-        //   向上取整到 2 的幂即可, 索引最大负载仍 ≤ 0.5 (每 slot 每个索引最多 1 项)。
+         //   注意: 这里只对**新建**的文件生效; 打开已有文件时容量一律从 header 读。
+-        uint32_t use_idx = (use_cap > 0) ? next_pow2(use_cap * 2) : 2;
++        //
++        // ★ 倍数用 4 而不是 2 (v3 变更, 见 OMS_SHM_REVIEW.md §2.5):
++        //   环填满后 `empty` 必然排干到 0 (live + tomb == index_capacity, 与索引开多大
++        //   无关), 此后插入能否成功只取决于 kMaxProbeIndex 步内能否碰到 tombstone,
++        //   上界 = 最长连续 live 段。2N 时可复用桶密度只有 0.5, 实测最长连续段
++        //   19 → 35 → 38~55 → 41~49 (随容量增长), **全部 > 32** → 静默丢单。
++        //   4N 把密度提到 0.75, 连续段塌到 13~20 (1M slot 时仍只有 20), 对 32 有
++        //   1.6 倍以上余量; 代价是每个索引内存 +100% (默认 100k slot: 24 → 48 MiB)。
++        //   实测 update/lookup 单次耗时不变, 平均查询探测步数 2.45 → 1.44。
++        uint32_t use_idx = (use_cap > 0) ? next_pow2(use_cap * 4) : 2;
+         size_t   expect_size = OmsShmLayout::compute_total_size(use_cap, use_idx);
+ 
+         if (st.st_size == 0) {
+@@ -428,9 +448,14 @@
+             }
+             // slot_cap 只在新建时被采纳, 所以范围校验也只在这里做
+             // (OmsShmReader::open 故意传 slot_cap=0, 容量从 header 读)
+-            if (slot_cap == 0 || slot_cap > (1u << 30)) {
++            // ★ 上界是 2^28 而不是 2^30: index_capacity = next_pow2(4N) 要能放进
++            //   uint32_t, 4 * 2^28 = 2^30 是上限; 再大 next_pow2 会先溢出再返回 1,
++            //   于是索引容量变成 1 个 bucket —— 静默写坏, 必须在这里挡住。
++            if (slot_cap == 0 || slot_cap > (1u << 28)) {
+                 ::close(fd_); fd_ = -1;
+-                throw std::runtime_error("OmsShm: slot_cap out of range (1 .. 2^30)");
++                throw std::runtime_error(
++                    "OmsShm: slot_cap out of range (1 .. 2^28; "
++                    "index_capacity = next_pow2(4*slot_cap) must fit in uint32_t)");
+             }
+             if (::ftruncate(fd_, static_cast<off_t>(expect_size)) != 0) {
+                 ::close(fd_); fd_ = -1;
+@@ -496,6 +521,19 @@
+                     " is not a power of two; this file was created by an older build whose "
+                     "index probe saturates early. Delete " + file_path +
+                     " and let it be recreated.");
++            }
++            // ★ 索引倍数校验 (v3)。老文件 index_capacity = next_pow2(2N) **也是 2 的幂**,
++            //   所以上面那条 pow2 检查挡不住它 —— 必须在版本号之外再按倍数挡一次。
++            //   用 64 位比较避免 hdr_cap 很大时 4 * hdr_cap 溢出。
++            if (static_cast<uint64_t>(hdr_idx) < static_cast<uint64_t>(hdr_cap) * 4ULL) {
++                ::munmap(p, expect_size);
++                ::close(fd_); fd_ = -1;
++                throw std::runtime_error(
++                    "OmsShm: index_capacity=" + std::to_string(hdr_idx) +
++                    " < 4 * slot_capacity=" + std::to_string(hdr_cap) +
++                    "; this file was created by a build with the old 2N index sizing, which "
++                    "silently drops orders once the ring is full (see OMS_SHM_REVIEW.md §2.5). "
++                    "Delete " + file_path + " and let it be recreated.");
+             }
+             layout_.map_from(p, hdr_cap, hdr_idx);
+         }
+@@ -681,14 +719,28 @@
+             uint32_t tomb  = 0;   // tombstone (已删, 仍占 bucket)
+             uint32_t empty = 0;   // 从未用过
+             uint32_t used() const noexcept { return live + tomb; }
++
++            // ★ 探测余量 (B6): 最长的一段**连续 live bucket**。
++            //   线性探测下, 一次插入需要走的步数上界就是这个值 —— 因为插入必须走到
++            //   某个可复用 bucket (empty/tombstone), 而连续的 live 段一个都提供不了。
++            //   与 kMaxProbeIndex 的比值就是真实余量:
++            //     max_live_run <  kMaxProbeIndex        → 有余量 (正常)
++            //     3 * max_live_run >= 2 * kMaxProbeIndex → 余量不足 1.5 倍, 要留意
++            //     max_live_run >= kMaxProbeIndex        → 已经在丢单 (total_alloc_failures 会涨)
++            //   实测 (4N): 6 / 10 / 13~16 / 16 / 19~20 对应 slot_cap
++            //   1K / 8K / 64K~512K / 512K / 1M —— 一直 < 32, 且随容量增长很慢。
++            //   索引 2N 时则是 19 / 35 / 38~55 / 41~49 / 38~43, 全部 > 32 (见 §2.5)。
++            uint32_t max_live_run = 0;
+         };
+         uint32_t       index_capacity = 0;              // 每个索引的 bucket 数
++        uint32_t       probe_max      = 0;              // = kMaxProbeIndex, 便于工具直接算余量
+         IndexOccupancy index_occupancy[IDX_COUNT] = {}; // 下标 = IndexKind
+     };
+     Stats stats() const {
+         Stats s{};
+         if (!header()) return s;
+         s.capacity = slot_capacity();
++        s.probe_max = kMaxProbeIndex;
+         uint64_t now = now_ns();
+         uint64_t max_live_stale = header()->max_live_stale_ns;
+         for (uint32_t i = 0; i < s.capacity; ++i) {
+@@ -706,7 +758,7 @@
+                 case SLOT_RECLAIMING: ++s.reclaiming; break;
+             }
+         }
+-        // ★ 索引占用扫描。纯诊断用 (O(index_capacity * IDX_COUNT)), 不在热路径上。
++        // ★ 索引占用 + 探测余量扫描。纯诊断用 (O(index_capacity * IDX_COUNT)), 不在热路径上。
+         s.index_capacity = index_capacity();
+         for (uint32_t k = 0; k < IDX_COUNT; ++k) {
+             if (index(k)) s.index_occupancy[k] = index_occupancy_of(static_cast<IndexKind>(k));
+@@ -721,18 +773,35 @@
+         return s;
+     }
+ 
+-    // 单个索引的占用快照 (诊断用, O(index_capacity))。stats() 与 upsert 失败日志共用。
++    // 单个索引的占用 + 最长连续 live 段快照 (诊断用, O(index_capacity))。
++    // stats() 与 upsert 失败日志共用; 最长连续段与占用共用同一个循环, 不额外扫。
+     Stats::IndexOccupancy index_occupancy_of(IndexKind kind) const noexcept {
+         Stats::IndexOccupancy occ{};
+         if (kind >= IDX_COUNT) return occ;              // 防越界 (index() 本身不检查)
+         const uint32_t cap = index_capacity();
+         IndexEntry* arr = index(kind);
+         if (!arr || cap == 0) return occ;
++        uint32_t run = 0;                               // 当前连续 live 段长度
++        uint32_t head_run = 0;                          // 从 bucket 0 起的那段 (用于跨尾部合并)
+         for (uint32_t i = 0; i < cap; ++i) {
+             uint64_t h = arr[i].key_hash.load(std::memory_order_relaxed);
+-            if (h == kHashEmpty)          ++occ.empty;
+-            else if (h == kHashTombstone) ++occ.tomb;
+-            else                          ++occ.live;
++            if (h == kHashEmpty) {
++                ++occ.empty;
++                if (i == run) head_run = run;           // 刚结束的这段起点是 0
++                run = 0;
++            } else if (h == kHashTombstone) {
++                ++occ.tomb;
++                if (i == run) head_run = run;
++                run = 0;
++            } else {
++                ++occ.live;
++                if (++run > occ.max_live_run) occ.max_live_run = run;
++            }
++        }
++        // ★ 探测是环形的 ((hash+i) & mask 会绕回 0), 所以尾部那段和从 0 开始的那段
++        //   在探测意义上**是连续的**, 必须合并 —— 否则会低估最长连续段。
++        if (head_run > 0 && run > 0 && head_run + run > occ.max_live_run) {
++            occ.max_live_run = head_run + run;
+         }
+         return occ;
+     }
+@@ -859,29 +928,33 @@
+         IndexKind failed = IDX_COUNT;
+         if (!insert_all_indices(idx, &failed)) {
+             // 索引写不进去 —— 罕见, 但一旦发生这张单就**没进 SHM** (total_alloc_failures++)。
+-            // ★ 先别急着加容量: 下面把占用快照打出来, 用"可复用 bucket 占比"区分两类成因。
+-            //   注意判据是 tomb+empty 而不是 empty —— 环满稳态下 empty 本来就是 0,
+-            //   但 tombstone 是可复用的, 那种情况属于探测序列问题而非容量不够。
+-            // ★ index_capacity 是 next_pow2(2 × slot_cap), **不是** 2 × slot_cap。
++            // ★ 判读 (B6): 环满后 empty 必然排干到 0 (与索引开多大无关), 插入必须走到某个
++            //   可复用 bucket, 而连续 live 段一个都不提供 —— 所以"最长连续 live 段
++            //   >= probe_max"就是**唯一**成因。别再写"加大 slot_cap": empty 照样排干到 0。
++            // ★ index_capacity 是 next_pow2(4 × slot_cap), **不是** 4 × slot_cap。
+             // ★ 也**不要**再去查 "tombstone 泄漏" —— 实测已排除: 环满时
+             //   live + tomb == index_capacity 是设计如此 (见 OMS_SHM_REVIEW.md §0.2)。
+             const Stats::IndexOccupancy occ = index_occupancy_of(failed);
+             const uint32_t icap = index_capacity();
++            const bool run_too_long = (occ.max_live_run >= kMaxProbeIndex);
++            const char* verdict =
++                run_too_long
++                    ? "最长连续 live 段 >= probe_max → 探测步数被 live 段吃光 (**聚集**)。"
++                      "加大 slot_cap 没用, 要加大 index_capacity 的倍数"
++                    : "快照里 max_live_run < probe_max, 本不该失败 → 请连同上面的快照上报";
+             std::fprintf(stderr,
+                 "[OmsShm][ERROR] index insert failed: kind=%s slot=%u orderSysId=%s\n"
+-                "  slot_cap=%u  index_capacity=%u (=next_pow2(2*slot_cap))  probe_max=%u\n"
+-                "  index occupancy: live=%u tomb=%u empty=%u  (used=%.2f%%)\n"
++                "  slot_cap=%u  index_capacity=%u (=next_pow2(4*slot_cap))\n"
++                "  probe headroom: max_live_run=%u  probe_max=%u\n"
++                "  index occupancy: live=%u tomb=%u empty=%u  used_pct=%.2f\n"
+                 "  %s\n"
+                 "  → 该单未写入 SHM, total_alloc_failures 已 +1, 上层会当作写失败处理\n",
+                 index_kind_name(failed), idx, rcmd.body.orderResponse.orderSysId,
+-                slot_capacity(), icap, kMaxProbeIndex,
++                slot_capacity(), icap,
++                occ.max_live_run, kMaxProbeIndex,
+                 occ.live, occ.tomb, occ.empty,
+                 icap ? 100.0 * occ.used() / icap : 0.0,
+-                (icap && (occ.tomb + occ.empty) < icap / 10)
+-                    ? "索引已近满 (可复用 bucket tomb+empty < 10%) → 加大 slot_cap, "
+-                      "index_capacity 会随之变成 next_pow2(2*slot_cap)"
+-                    : "仍有可复用 bucket (tomb+empty ≥ 10%) 但 probe_max 步内没找到 "
+-                      "→ 探测序列/聚集问题, **不是容量不够**");
++                verdict);
+             OmsSlot& s = slots()[idx];
+             s.seq.fetch_add(1, std::memory_order_release);
+             s.state.store(SLOT_EMPTY, std::memory_order_release);
+--- a/include/oms/README.md
++++ b/include/oms/README.md
+@@ -73,8 +73,8 @@
+                           │ /dev/shm/tb_oms.dat          │
+                           │ [Header 4KB]                 │
+                           │ [100k × 1024B Slots ~100MB]  │
+-                          │ [3 × 200k × 32B Index ~19MB] │
+-                          │ 总 ~120MB, 固定不涨          │
++                          │ [3 × 4N × 32B Index ~48MB]   │
++                          │ 总 ~146MB, 固定不涨          │
+                           └──────────────┬───────────────┘
+                                          │ mmap 读 (无锁)
+                     ┌────────────────────┼────────────────────┐
+@@ -92,10 +92,16 @@
+   magic / version / capacity / next_slot_hint / stats / TTL 配置
+ [OmsSlot 数组 (N × 1024B)]
+   每单一条: seqlock + state + 3 时间戳 + 3 key 副本 + RCommand
+-[主索引 IDX_ORDER_SYS_ID (2N × 32B)]
+-[别名索引 IDX_CLIENT_ORDER  (2N × 32B)]
+-[别名索引 IDX_EXCHANGE_ID   (2N × 32B)]
++[主索引 IDX_ORDER_SYS_ID (4N × 32B)]
++[别名索引 IDX_CLIENT_ORDER  (4N × 32B)]
++[别名索引 IDX_EXCHANGE_ID   (4N × 32B)]
+ 
++索引容量是 next_pow2(4N) 而**不是** 4N, 且**必须是 2 的幂** (三处探测都用 (hash+i) & (cap-1))。
++倍数取 4 而不是 2 的原因见 OMS_SHM_REVIEW.md §2.5: 环填满后 empty 必然排干到 0, 插入能否成功
++只取决于 kMaxProbeIndex 步内能否碰到 tombstone, 上界是最长连续 live 段。2N 时可复用桶密度
++只有 0.5, 实测最长连续段 19 → 35 → 38~55 (随容量增长) 全部 > 32 → 静默丢单; 4N 把密度提到
++0.75, 连续段塌到 13~20。代价是索引内存翻倍 (100k slot: 121.7 → 145.7 MiB)。
++
+ Slot 状态机
+ 
+      ┌─────────────────────────────────────────┐
+@@ -212,7 +218,7 @@
+ Writer (只在 OMS 单进程/单线程调用, 有写权限)
+ 
+ oms::shm::OmsShmWriter writer;
+-writer.open("/dev/shm/tb_oms.dat", /*capacity=*/131072);  // 建议 2^N
++writer.open("/dev/shm/tb_oms.dat", /*capacity=*/131072);  // slot 数, 1 .. 2^28; 索引容量自动 = next_pow2(4N)
+ 
+ // 写路径
+ pubsub::RCommand rcmd = /* 从 TradeUnit 收到的订单事件 */;
+@@ -318,7 +324,7 @@
+ 
+ services:
+   tb:
+-    shm_size: 256m           # 100k slot 需要 ~120MB, 加 headroom
++    shm_size: 384m           # 100k slot 需要 ~146MB (slot 100MB + 索引 48MB), 加 headroom
+     volumes:
+       - tb_shm:/dev/shm      # 可选: 独立命名 volume, 便于备份
+ volumes:
+@@ -327,7 +333,7 @@
+     driver_opts:
+       type: tmpfs
+       device: tmpfs
+-      o: size=256m
++      o: size=384m
+ 
+ Kubernetes (StatefulSet):
+ 
+@@ -335,7 +341,7 @@
+   - name: tb-shm
+     emptyDir:
+       medium: Memory
+-      sizeLimit: 256Mi
++      sizeLimit: 384Mi
+ 
+ 系统 tmpfs (/etc/fstab):
+ 
+@@ -653,12 +659,24 @@
+ 
+ 
+ 
+-环耗尽, tb 无法新单 (🔴严重)
++环耗尽 / 索引饱和, tb 无法新单 (🔴严重); 成因看 worst_live_run
++
++
++
++
+ 
++worst_live_run
+ 
+ 
+ 
++>= probe_max
+ 
++
++
++索引已饱和: 探测步数被连续 live 段吃光 → 正在丢单 (🔴严重); 余量 < 1.5 倍则 🟡
++
++
++
+ total_stale_live_reclaims
+ 
+ 
+@@ -728,7 +746,7 @@
+ 
+ Q2: alloc_failures > 0, tb 报 upsert 失败
+ 
+-根因: 100k slot 全被 LIVE 占满且都没到 stale 阈值。 检查:
++先看 stderr 里那句判读 (B6 起日志自带结论), 两种成因动作完全相反:
+ 
+ 
+ 
+@@ -742,8 +760,14 @@
+ 
+ 
+ 
+-是否需要 raise capacity (改 131072 → 262144, 重建 shm)?
++- 日志写 "最长连续 live 段 >= probe_max → 聚集": **不要**加大 slot_cap。 环满后 empty 必然
++  排干到 0, 与 slot_cap 无关; 要加大的是 index_capacity 的倍数 (现在是 next_pow2(4*slot_cap))。
++  `oms_query --stats` 的 worst_live_run / probe_max 就是余量。
++- 日志写 "max_live_run < probe_max, 本不该失败": 异常, 连同日志里的快照上报。
+ 
++仍要排除的: 是否策略在海量下单不撤? 是否 max_live_stale_ns 太长 (默认 24h) ? slot 环本身
++耗尽时 (与索引无关), `oms_query --stats` 会显示 live 顶到 capacity 且 empty=0。
++
+ Q3: stale_live_reclaims 持续增长
+ 
+ 根因: 有一批订单永远不 finalize (bug), 被 24h TTL 强制回收。 排查:
+@@ -767,9 +791,19 @@
+ 
+ 原因: 通常是 shm 路径不一致。 确认 reader / writer 用同一 path。 另可能是版本不匹配, magic 校验拒绝加载。
+ 
++Q7: 升级到索引 4N 之后 tb 起不来, 报 "magic/version mismatch" 或 "< 4 * slot_capacity"
+ 
++这是**预期**的, 不是 bug。 索引容量算法从 2N 改成 next_pow2(4N) 时 kVersion 从 2 提到了 3
++(旧文件的 index_capacity 也是 2 的幂, 光靠幂校验挡不住, 所以必须靠版本号)。 老文件索引密度
++只有 0.5, 环满后会静默丢单, 不能带病继续跑。 处理:
+ 
++# 撤所有活单 (通过交易所 UI/API) —— 重建会丢掉 shm 里的活单状态
++CONFIRM=1 ./oms_shm.sh reset     # 或直接 rm /dev/shm/tb_oms.dat
++# 重启新版 tb, 文件会按 4N 重建
++./oms_shm.sh doctor              # 确认 ✓ worst_live_run 远小于 probe_max
+ 
++
++
+ 九、契约与不变量 (违反必崩)
+ 
+ 
+diff --git a/tools/oms_bench.cpp b/tools/oms_bench.cpp
+index c945e80..b3b2d50 100644
+--- a/tb/tools/oms_bench.cpp
++++ b/tb/tools/oms_bench.cpp
+@@ -250,7 +250,9 @@ static void usage() {
+         "            [--readers=<N>] [--reset]\n"
+         "\n"
+         "  --shm       path (default: /dev/shm/tb_bench.dat)\n"
+-        "  --capacity  slot count (default: 100000, must be power of 2 for speed)\n"
++        "  --capacity  slot count (default: 100000, range 1..2^28;\n"
++        "              index_capacity = next_pow2(4*slot_cap) is computed for you,\n"
++        "              slot_cap itself does NOT need to be a power of two)\n"
+         "  --iters     iterations per test (default: 500000)\n"
+         "  --readers   concurrent reader threads in mixed test (default: 4)\n"
+         "  --reset     zero-init the shm at start (safe, DO NOT run on production shm)\n");
+diff --git a/tools/oms_demo.cpp b/tools/oms_demo.cpp
+index c945e80..b3b2d50 100644
+--- a/tb/tools/oms_demo.cpp
++++ b/tb/tools/oms_demo.cpp
+@@ -250,7 +250,9 @@ static void usage() {
+         "            [--readers=<N>] [--reset]\n"
+         "\n"
+         "  --shm       path (default: /dev/shm/tb_bench.dat)\n"
+-        "  --capacity  slot count (default: 100000, must be power of 2 for speed)\n"
++        "  --capacity  slot count (default: 100000, range 1..2^28;\n"
++        "              index_capacity = next_pow2(4*slot_cap) is computed for you,\n"
++        "              slot_cap itself does NOT need to be a power of two)\n"
+         "  --iters     iterations per test (default: 500000)\n"
+         "  --readers   concurrent reader threads in mixed test (default: 4)\n"
+         "  --reset     zero-init the shm at start (safe, DO NOT run on production shm)\n");
+diff --git a/tools/oms_query.cpp b/tools/oms_query.cpp
+index 86a53e2..4f559ed 100644
+--- a/tb/tools/oms_query.cpp
++++ b/tb/tools/oms_query.cpp
+@@ -223,12 +223,63 @@ int main(int argc, char** argv) {
+         std::printf("  min_reclaim_age            : %.1f s (FINISHED 最小 TTL)\n", s.min_reclaim_age_ns / 1e9);
+         std::printf("  max_live_stale             : %.1f s (LIVE 无更新阈值, 0=禁用)\n", s.max_live_stale_ns / 1e9);
+         std::printf("  --\n");
++        std::printf("  index_capacity             : %u (每个索引 = next_pow2(4*slot_cap))\n",
++                    s.index_capacity);
++        std::printf("  probe_max                  : %u (索引 open-addressing 探测步数上限)\n",
++                    s.probe_max);
++        {
++            uint32_t tight = 0;
++            uint32_t worst_run = 0;
++            for (uint32_t k = 0; k < oms::shm::IDX_COUNT; ++k) {
++                const auto& o = s.index_occupancy[k];
++                std::printf("  index %-14s       : live=%-8u tomb=%-8u empty=%-8u 占用 %.2f%%\n",
++                            oms::shm::index_kind_name(k), o.live, o.tomb, o.empty,
++                            s.index_capacity ? 100.0 * o.used() / s.index_capacity : 0.0);
++                std::printf("      └─ 最长 live 连续段 %u / probe 上限 %u (余量 %.2fx)\n",
++                            o.max_live_run, s.probe_max,
++                            o.max_live_run ? static_cast<double>(s.probe_max) / o.max_live_run : 0.0);
++                if (o.empty == 0) ++tight;
++                if (o.max_live_run > worst_run) worst_run = o.max_live_run;
++            }
++            // 注意: slot 环填满后 live≈slot_cap、tomb≈slot_cap, 于是 empty→0 是**稳态正常现象**
++            // (slot_cap 是 2 的幂时更是恰好 empty==0)。所以这里只做说明, 不当告警。
++            if (tight) {
++                std::printf("  [i] %u/%u 个索引 empty=0 —— slot 环填满后这是正常现象\n"
++                            "      (live≈slot_cap, tomb≈slot_cap)。环满后 empty 必然排干到 0,\n"
++                            "      插入能否成功只看最长 live 连续段与 probe 上限的比值 (见上一行)\n",
++                            tight, oms::shm::IDX_COUNT);
++            }
++            // ★ 探测余量判读 (B6, OMS_SHM_REVIEW.md §2.5): 环满后 empty 必然为 0, 插入必须
++            //   走到某个可复用 bucket, 而连续 live 段一个都不提供 —— 所以"最长连续 live 段
++            //   >= probe 上限"就等于**已经在丢单** (total_alloc_failures 会随之增长)。
++            if (worst_run >= s.probe_max) {
++                std::printf("  [!] 最长 live 连续段 %u >= probe 上限 %u —— 已经在丢单\n"
++                            "      加大 slot_cap 没用 (empty 照样排干到 0); 要加大 index_capacity 的倍数\n",
++                            worst_run, s.probe_max);
++            } else if (worst_run * 3 >= s.probe_max * 2) {
++                std::printf("  [i] 最长 live 连续段 %u, 对 probe 上限 %u 余量不足 1.5 倍 —— 留意\n",
++                            worst_run, s.probe_max);
++            }
++            // ★ 数值行以数字结尾 (oms_shm.sh doctor 取值用); 提示写在 key 里, 行尾不挂文字。
++            std::printf("  worst_live_run (最长 live 连续段) : %u\n", worst_run);
++        }
++        std::printf("  --\n");
+         std::printf("  total_inserts              : %llu\n", (unsigned long long)s.total_inserts);
+         std::printf("  total_updates              : %llu\n", (unsigned long long)s.total_updates);
+         std::printf("  total_reclaims             : %llu\n", (unsigned long long)s.total_reclaims);
+-        std::printf("  total_stale_live_reclaims  : %llu  ← 非零说明有卡单被强制回收, 排查!\n",
+-                                                             (unsigned long long)s.total_stale_live_reclaims);
+-        std::printf("  total_alloc_failures       : %llu\n", (unsigned long long)s.total_alloc_failures);
++        // ★ 数值行**必须**以数字结尾: oms_shm.sh doctor 用 awk '{print $NF}' 取值,
++        //   行尾挂中文提示会让它取到提示文字, 检查静默失效 (见 OMS_SHM_REVIEW.md §0.4)。
++        //   提示一律另起一行。
++        std::printf("  total_stale_live_reclaims  : %llu\n",
++                    (unsigned long long)s.total_stale_live_reclaims);
++        if (s.total_stale_live_reclaims) {
++            std::printf("      ← 非零: 有卡单被强制回收, 排查!\n");
++        }
++        std::printf("  total_alloc_failures       : %llu\n",
++                    (unsigned long long)s.total_alloc_failures);
++        if (s.total_alloc_failures) {
++            std::printf("      ← 非零: 有单没写进 SHM! 看上面的 index live/tomb/empty 与 index_capacity\n");
++        }
+         return 0;
+     }
+ 
+diff --git a/tools/oms_shm.sh b/tools/oms_shm.sh
+index 3f2c770..46f98e4 100644
+--- a/tb/tools/oms_shm.sh
++++ b/tb/tools/oms_shm.sh
+@@ -49,8 +49,8 @@ cmd_check() {
+     fi
+     local shm_size
+     shm_size=$(df -m /dev/shm | tail -1 | awk '{print $2}')
+-    if [ "$shm_size" -lt 256 ]; then
+-        warn "/dev/shm only ${shm_size}MB — 100k slot shm = ~120MB, consider raising"
++    if [ "$shm_size" -lt 384 ]; then
++        warn "/dev/shm only ${shm_size}MB — 100k slot shm = ~146MB (slot 100MB + 索引 48MB), consider raising"
+     else
+         ok "/dev/shm size = ${shm_size}MB (adequate)"
+     fi
+@@ -132,14 +132,22 @@ cmd_doctor() {
+     echo "$out"
+     log ""
+ 
+-    # 关键指标解析
+-    local alloc_fail stale_reclaims live_stale
+-    alloc_fail=$(echo "$out"    | grep total_alloc_failures       | awk '{print $NF}')
+-    stale_reclaims=$(echo "$out"| grep total_stale_live_reclaims  | awk '{print $NF}' | head -1)
+-    live_stale=$(echo "$out"    | grep "stale (卡单"              | awk '{print $NF}')
++    # 关键指标解析: 只认**以 key 开头**的那一行, 再取行内第一个数字。
++    #   ① 不要用 awk '{print $NF}' —— 行尾的中文提示会被当成值, 导致
++    #      [: integer expression expected 且检查静默失效 (P2-2 就是这个)。
++    #   ② 也不要只 grep 裸 key —— 说明文字里出现同一个词就会误匹配到多行。
++    alloc_fail=$(echo "$out"     | grep -E '^[[:space:]]*total_alloc_failures[[:space:]]*:'      | grep -oE '[0-9]+' | head -1)
++    stale_reclaims=$(echo "$out" | grep -E '^[[:space:]]*total_stale_live_reclaims[[:space:]]*:' | grep -oE '[0-9]+' | head -1)
++    live_stale=$(echo "$out"     | grep "stale (卡单"                                            | grep -oE '[0-9]+' | head -1)
++    worst_run=$(echo "$out"      | grep -E '^[[:space:]]*worst_live_run'                          | grep -oE '[0-9]+' | head -1)
+     [ -z "$alloc_fail" ]     && alloc_fail=0
+     [ -z "$stale_reclaims" ] && stale_reclaims=0
+     [ -z "$live_stale" ]     && live_stale=0
++    [ -z "$worst_run" ]      && worst_run=0
++
++    # probe 上限单独一行 (数字结尾), 不靠解析 index_capacity 那行的括号内容
++    probe_max=$(echo "$out" | grep -E '^[[:space:]]*probe_max[[:space:]]*:' | grep -oE '[0-9]+' | head -1)
++    [ -z "$probe_max" ] && probe_max=0
+ 
+     if [ "$alloc_fail" -gt 0 ]; then
+         err "alloc_failures = $alloc_fail  → RING EXHAUSTED, tb 无法新单! 立刻检查活单数 / 加 capacity"
+@@ -147,6 +155,17 @@ cmd_doctor() {
+     else
+         ok "alloc_failures = 0"
+     fi
++    # 探测余量 (B6): 环满后 empty 必然排干到 0, 插入能否成功只看最长 live 连续段。
++    #   它 >= probe 上限 = 已经在丢单; 余量不足 1.5 倍 = 该重新评估 index_capacity 倍数了。
++    if [ "$probe_max" -gt 0 ] && [ "$worst_run" -ge "$probe_max" ]; then
++        err "worst_live_run = $worst_run >= probe_max = $probe_max  → 索引已饱和, 正在丢单 (看 alloc_failures)"
++        ((issues++))
++    elif [ "$probe_max" -gt 0 ] && [ $((worst_run * 3)) -ge $((probe_max * 2)) ]; then
++        warn "worst_live_run = $worst_run, 对 probe_max = $probe_max 余量不足 1.5 倍 → 考虑加大 index_capacity 倍数"
++        ((issues++))
++    else
++        ok "worst_live_run = $worst_run (probe_max = $probe_max)"
++    fi
+     if [ "$stale_reclaims" -gt 0 ]; then
+         err "stale_live_reclaims = $stale_reclaims  → 有卡单被强制回收, 上层有 bug 导致订单不 finalize"
+         ((issues++))

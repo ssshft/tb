@@ -1,0 +1,134 @@
+--- a/include/oms/OmsShm.h
++++ b/include/oms/OmsShm.h
+@@ -107,6 +107,32 @@
+     size_t n = 0;
+     while (n < maxlen && s[n] != '\0') ++n;
+     return n;
++}
++
++inline bool is_pow2(uint32_t n) noexcept {
++    return n != 0 && (n & (n - 1)) == 0;
++}
++
++// 向上取整到 2 的幂 (n <= 2^31; 调用方需先做范围校验)
++inline uint32_t next_pow2(uint32_t n) noexcept {
++    if (n <= 1) return 1;
++    --n;
++    n |= n >> 1;  n |= n >> 2;  n |= n >> 4;
++    n |= n >> 8;  n |= n >> 16;
++    return n + 1;
++}
++
++// 索引探测的第 i 个 bucket。
++//   ★ 三处探测 (index_probe_find / insert_index / 经由前者的 tombstone_index)
++//     **必须**走同一个函数, 否则 lookup 与 insert 会得到不同的探测序列。
++//   ★ cap 是 2 的幂时 (hash+i) & (cap-1) 才是一个满射的线性探测序列;
++//     cap 不是 2 的幂时 mask 的高位恒为 0, 可命中的 bucket 数塌缩到 2^popcount(mask),
++//     索引会提前饱和。所以这里必须跟 alloc_slot 一样分 pow2 / 非 pow2 两条路。
++inline uint32_t index_probe_bucket(uint64_t hash, uint32_t i,
++                                   uint32_t cap, uint32_t mask, bool pow2) noexcept {
++    const uint64_t h = hash + i;
++    return pow2 ? static_cast<uint32_t>(h & mask)
++                : static_cast<uint32_t>(h % cap);
+ }
+ 
+ // =============================================================================
+@@ -116,7 +142,7 @@
+     uint32_t magic;                 // 校验
+     uint32_t version;
+     uint32_t slot_capacity;         // N
+-    uint32_t index_capacity;        // 2N, 单个索引大小
++    uint32_t index_capacity;        // next_pow2(2N), 单个索引大小; **必须是 2 的幂**
+     uint32_t index_kinds;           // = IDX_COUNT (3)
+ 
+     uint64_t min_reclaim_age_ns;    // FINISHED slot 至少 idle 多久才能回收
+@@ -206,10 +232,12 @@
+                                  bool& found_out) noexcept
+ {
+     found_out = false;
+-    uint32_t mask = cap - 1;
++    if (cap == 0) return UINT32_MAX;
++    const uint32_t mask = cap - 1;
++    const bool     pow2 = is_pow2(cap);
+     uint32_t first_slot = UINT32_MAX;   // 记录第一个可 reuse (empty/tombstone) 的 bucket
+     for (uint32_t i = 0; i < kMaxProbeIndex; ++i) {
+-        uint32_t b = static_cast<uint32_t>((hash + i) & mask);
++        uint32_t b = index_probe_bucket(hash, i, cap, mask, pow2);
+         IndexEntry& e = idx_arr[b];
+         uint64_t h = e.key_hash.load(std::memory_order_acquire);
+         if (h == kHashEmpty) {
+@@ -305,13 +333,25 @@
+         }
+ 
+         uint32_t use_cap = slot_cap;
+-        size_t   expect_size = OmsShmLayout::compute_total_size(use_cap, use_cap * 2);
++        // ★ 索引容量**必须**是 2 的幂 —— 三处探测都用 (hash+i) & (cap-1), 只有 cap 是
++        //   2 的幂时该序列才满射。反例: slot_cap=100000 → 2N=200000, mask=0x30D3F
++        //   只有 11 个 bit 置位 → 索引最多 2048 个 bucket 就饱和, 之后 upsert 全部失败。
++        //   向上取整到 2 的幂即可, 索引最大负载仍 ≤ 0.5 (每 slot 每个索引最多 1 项)。
++        //   注意: 这里只对**新建**的文件生效; 打开已有文件时容量一律从 header 读。
++        uint32_t use_idx = (use_cap > 0) ? next_pow2(use_cap * 2) : 2;
++        size_t   expect_size = OmsShmLayout::compute_total_size(use_cap, use_idx);
+ 
+         if (st.st_size == 0) {
+             // 新文件
+             if (read_only) {
+                 throw std::runtime_error("OmsShm: read-only open on empty file " + file_path);
+             }
++            // slot_cap 只在新建时被采纳, 所以范围校验也只在这里做
++            // (OmsShmReader::open 故意传 slot_cap=0, 容量从 header 读)
++            if (slot_cap == 0 || slot_cap > (1u << 30)) {
++                ::close(fd_); fd_ = -1;
++                throw std::runtime_error("OmsShm: slot_cap out of range (1 .. 2^30)");
++            }
+             if (::ftruncate(fd_, static_cast<off_t>(expect_size)) != 0) {
+                 ::close(fd_); fd_ = -1;
+                 throw std::runtime_error("OmsShm: ftruncate failed");
+@@ -337,12 +377,12 @@
+ 
+         // 若是新建, 初始化 header 拿到实际容量
+         if (created_new_) {
+-            layout_.map_from(p, use_cap, use_cap * 2);
++            layout_.map_from(p, use_cap, use_idx);
+             std::memset(p, 0, expect_size);
+             layout_.header->magic          = kMagic;
+             layout_.header->version        = kVersion;
+             layout_.header->slot_capacity  = use_cap;
+-            layout_.header->index_capacity = use_cap * 2;
++            layout_.header->index_capacity = use_idx;
+             layout_.header->index_kinds    = IDX_COUNT;
+             layout_.header->min_reclaim_age_ns = kDefaultMinReclaimAgeNs;
+             layout_.header->max_live_stale_ns  = kDefaultMaxLiveStaleNs;
+@@ -366,6 +406,17 @@
+                 ::close(fd_); fd_ = -1;
+                 throw std::runtime_error("OmsShm: file size mismatch header capacity");
+             }
++            // ★ 老版本建的文件 index_capacity = 2*slot_cap, 例如 slot_cap=100000 → 200000,
++            //   不是 2 的幂 → 索引在 2048 条就静默饱和。必须拒绝, 不能带病运行。
++            if (!is_pow2(hdr_idx)) {
++                ::munmap(p, expect_size);
++                ::close(fd_); fd_ = -1;
++                throw std::runtime_error(
++                    "OmsShm: index_capacity=" + std::to_string(hdr_idx) +
++                    " is not a power of two; this file was created by an older build whose "
++                    "index probe saturates early. Delete " + file_path +
++                    " and let it be recreated.");
++            }
+             layout_.map_from(p, hdr_cap, hdr_idx);
+         }
+     }
+@@ -895,10 +946,12 @@
+         // insert 特有: 优先复用 tombstone (若探测过程中先命中 tombstone 后命中 key,
+         // 应挪到 tombstone 位置压缩; 若不命中 key, 直接用 tombstone 或 empty)。
+         // 我们的探测: 遇到 EMPTY 停; tombstone 记 first_reusable 继续; 命中 hash+prefix 就改。
+-        uint32_t mask = cap - 1;
++        if (cap == 0) return false;
++        const uint32_t mask = cap - 1;
++        const bool     pow2 = is_pow2(cap);
+         uint32_t first_reusable = UINT32_MAX;   // 第一个 tombstone 或 empty
+         for (uint32_t i = 0; i < kMaxProbeIndex; ++i) {
+-            uint32_t b = static_cast<uint32_t>((hash + i) & mask);
++            uint32_t b = index_probe_bucket(hash, i, cap, mask, pow2);
+             IndexEntry& e = arr[b];
+             uint64_t h = e.key_hash.load(std::memory_order_acquire);
+             if (h == kHashEmpty) {

@@ -250,7 +250,9 @@ static void usage() {
         "            [--readers=<N>] [--reset]\n"
         "\n"
         "  --shm       path (default: /dev/shm/tb_bench.dat)\n"
-        "  --capacity  slot count (default: 100000, must be power of 2 for speed)\n"
+        "  --capacity  slot count (default: 100000, range 1..2^28;\n"
+        "              index_capacity = next_pow2(4*slot_cap) is computed for you,\n"
+        "              slot_cap itself does NOT need to be a power of two)\n"
         "  --iters     iterations per test (default: 500000)\n"
         "  --readers   concurrent reader threads in mixed test (default: 4)\n"
         "  --reset     zero-init the shm at start (safe, DO NOT run on production shm)\n");

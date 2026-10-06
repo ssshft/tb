@@ -1,0 +1,195 @@
+diff -ruN pa/include/oms/OmsShm.h pb/include/oms/OmsShm.h
+--- a/include/oms/OmsShm.h	2026-10-06 16:16:40
++++ b/include/oms/OmsShm.h	2026-10-06 16:16:41
+@@ -76,6 +76,16 @@
+     IDX_COUNT         = 3,
+ };
+ 
++// 索引名的唯一来源 (日志 / 工具共用, 避免两处字符串漂移)
++inline const char* index_kind_name(uint32_t k) noexcept {
++    switch (k) {
++        case IDX_ORDER_SYS_ID: return "orderSysId";
++        case IDX_CLIENT_ORDER: return "clientOrderId";
++        case IDX_EXCHANGE_ID:  return "orderId";
++        default:               return "?";
++    }
++}
++
+ // Slot 状态机
+ enum SlotState : uint32_t {
+     SLOT_EMPTY      = 0,   // 从未用过或已被 reclaim 完成
+@@ -627,18 +637,8 @@
+         }
+         // ★ 索引占用扫描。纯诊断用 (O(index_capacity * IDX_COUNT)), 不在热路径上。
+         s.index_capacity = index_capacity();
+-        if (s.index_capacity) {
+-            for (uint32_t k = 0; k < IDX_COUNT; ++k) {
+-                IndexEntry* arr = index(k);
+-                if (!arr) continue;
+-                auto& occ = s.index_occupancy[k];
+-                for (uint32_t i = 0; i < s.index_capacity; ++i) {
+-                    uint64_t h = arr[i].key_hash.load(std::memory_order_relaxed);
+-                    if (h == kHashEmpty)          ++occ.empty;
+-                    else if (h == kHashTombstone) ++occ.tomb;
+-                    else                          ++occ.live;
+-                }
+-            }
++        for (uint32_t k = 0; k < IDX_COUNT; ++k) {
++            if (index(k)) s.index_occupancy[k] = index_occupancy_of(static_cast<IndexKind>(k));
+         }
+         s.total_inserts             = header()->total_inserts.load(std::memory_order_relaxed);
+         s.total_updates             = header()->total_updates.load(std::memory_order_relaxed);
+@@ -650,6 +650,22 @@
+         return s;
+     }
+ 
++    // 单个索引的占用快照 (诊断用, O(index_capacity))。stats() 与 upsert 失败日志共用。
++    Stats::IndexOccupancy index_occupancy_of(IndexKind kind) const noexcept {
++        Stats::IndexOccupancy occ{};
++        if (kind >= IDX_COUNT) return occ;              // 防越界 (index() 本身不检查)
++        const uint32_t cap = index_capacity();
++        IndexEntry* arr = index(kind);
++        if (!arr || cap == 0) return occ;
++        for (uint32_t i = 0; i < cap; ++i) {
++            uint64_t h = arr[i].key_hash.load(std::memory_order_relaxed);
++            if (h == kHashEmpty)          ++occ.empty;
++            else if (h == kHashTombstone) ++occ.tomb;
++            else                          ++occ.live;
++        }
++        return occ;
++    }
++
+     static uint64_t now_ns() noexcept {
+         auto n = std::chrono::steady_clock::now().time_since_epoch();
+         return std::chrono::duration_cast<std::chrono::nanoseconds>(n).count();
+@@ -769,12 +785,32 @@
+             return kInvalidSlot;
+         }
+         write_new_slot(idx, rcmd);
+-        if (!insert_all_indices(idx, rcmd)) {
+-            // 索引全满 (罕见, index_capacity=2N + linear probe 一般不会到) — 回滚 slot
++        IndexKind failed = IDX_COUNT;
++        if (!insert_all_indices(idx, &failed)) {
++            // 索引写不进去 —— 罕见, 但一旦发生这张单就**没进 SHM** (total_alloc_failures++)。
++            // ★ 先别急着加容量: 下面把占用快照打出来, 用"可复用 bucket 占比"区分两类成因。
++            //   注意判据是 tomb+empty 而不是 empty —— 环满稳态下 empty 本来就是 0,
++            //   但 tombstone 是可复用的, 那种情况属于探测序列问题而非容量不够。
++            // ★ index_capacity 是 next_pow2(2 × slot_cap), **不是** 2 × slot_cap。
++            // ★ 也**不要**再去查 "tombstone 泄漏" —— 实测已排除: 环满时
++            //   live + tomb == index_capacity 是设计如此 (见 OMS_SHM_REVIEW.md §0.2)。
++            const Stats::IndexOccupancy occ = index_occupancy_of(failed);
++            const uint32_t icap = index_capacity();
+             std::fprintf(stderr,
+-                "[OmsShm][ERROR] insert_index full, rollback slot=%u orderSysId=%s. "
+-                "Consider raising index_capacity or investigating tombstone leak.\n",
+-                idx, rcmd.body.orderResponse.orderSysId);
++                "[OmsShm][ERROR] index insert failed: kind=%s slot=%u orderSysId=%s\n"
++                "  slot_cap=%u  index_capacity=%u (=next_pow2(2*slot_cap))  probe_max=%u\n"
++                "  index occupancy: live=%u tomb=%u empty=%u  (used=%.2f%%)\n"
++                "  %s\n"
++                "  → 该单未写入 SHM, total_alloc_failures 已 +1, 上层会当作写失败处理\n",
++                index_kind_name(failed), idx, rcmd.body.orderResponse.orderSysId,
++                slot_capacity(), icap, kMaxProbeIndex,
++                occ.live, occ.tomb, occ.empty,
++                icap ? 100.0 * occ.used() / icap : 0.0,
++                (icap && (occ.tomb + occ.empty) < icap / 10)
++                    ? "索引已近满 (可复用 bucket tomb+empty < 10%) → 加大 slot_cap, "
++                      "index_capacity 会随之变成 next_pow2(2*slot_cap)"
++                    : "仍有可复用 bucket (tomb+empty ≥ 10%) 但 probe_max 步内没找到 "
++                      "→ 探测序列/聚集问题, **不是容量不够**");
+             OmsSlot& s = slots()[idx];
+             s.seq.fetch_add(1, std::memory_order_release);
+             s.state.store(SLOT_EMPTY, std::memory_order_release);
+@@ -948,10 +984,13 @@
+ 
+     // 插入三层索引. 主索引 (orderSysId) 失败 → 整体失败; 别名失败只 log, 因为
+     // 主索引 OK 就能查到, 别名冗余用。
+-    bool insert_all_indices(uint32_t idx, const pubsub::RCommand& /*rcmd*/) {
++    // 返回 false 时 *failed_kind = 失败的那个索引 (供上层日志定位; 未失败则 = IDX_COUNT)
++    bool insert_all_indices(uint32_t idx, IndexKind* failed_kind = nullptr) {
++        if (failed_kind) *failed_kind = IDX_COUNT;
+         OmsSlot& s = slots()[idx];
+         if (s.orderSysId[0]) {
+             if (!insert_index(IDX_ORDER_SYS_ID, s.orderSysId, idx)) {
++                if (failed_kind) *failed_kind = IDX_ORDER_SYS_ID;
+                 return false;   // 主索引失败, 上层回滚
+             }
+         }
+diff -ruN pa/tb/tools/oms_query.cpp pb/tb/tools/oms_query.cpp
+--- a/tb/tools/oms_query.cpp	2026-10-06 16:16:41
++++ b/tb/tools/oms_query.cpp	2026-10-06 16:16:41
+@@ -226,35 +226,40 @@
+         std::printf("  index_capacity             : %u (每个索引; probe 上限 %u)\n",
+                     s.index_capacity, oms::shm::kMaxProbeIndex);
+         {
+-            static const char* kIdxName[3] = {"orderSysId", "clientOrderId", "orderId"};
+             uint32_t tight = 0;
+-            for (uint32_t k = 0; k < 3; ++k) {
++            for (uint32_t k = 0; k < oms::shm::IDX_COUNT; ++k) {
+                 const auto& o = s.index_occupancy[k];
+                 std::printf("  index %-14s       : live=%-8u tomb=%-8u empty=%-8u 占用 %.2f%%\n",
+-                            kIdxName[k], o.live, o.tomb, o.empty,
++                            oms::shm::index_kind_name(k), o.live, o.tomb, o.empty,
+                             s.index_capacity ? 100.0 * o.used() / s.index_capacity : 0.0);
+                 if (o.empty == 0) ++tight;
+             }
+             // 注意: slot 环填满后 live≈slot_cap、tomb≈slot_cap, 于是 empty→0 是**稳态正常现象**
+             // (slot_cap 是 2 的幂时更是恰好 empty==0)。所以这里只做说明, 不当告警。
+             if (tight) {
+-                std::printf("  [i] %u/3 个索引 empty=0 —— slot 环填满后这是正常现象\n"
++                std::printf("  [i] %u/%u 个索引 empty=0 —— slot 环填满后这是正常现象\n"
+                             "      (live≈slot_cap, tomb≈slot_cap)。插入靠 %u 步内复用 tombstone;\n"
+                             "      真正要盯的是 total_alloc_failures, 它增长才说明索引容量该加了\n",
+-                            tight, oms::shm::kMaxProbeIndex);
++                            tight, oms::shm::IDX_COUNT, oms::shm::kMaxProbeIndex);
+             }
+         }
+         std::printf("  --\n");
+         std::printf("  total_inserts              : %llu\n", (unsigned long long)s.total_inserts);
+         std::printf("  total_updates              : %llu\n", (unsigned long long)s.total_updates);
+         std::printf("  total_reclaims             : %llu\n", (unsigned long long)s.total_reclaims);
+-        std::printf("  total_stale_live_reclaims  : %llu  ← 非零说明有卡单被强制回收, 排查!\n",
+-                                                             (unsigned long long)s.total_stale_live_reclaims);
+-        std::printf("  total_alloc_failures       : %llu%s\n",
+-                    (unsigned long long)s.total_alloc_failures,
+-                    s.total_alloc_failures
+-                        ? "  ← 非零! 有单没写进 SHM, 先看上面的 index empty / index_capacity"
+-                        : "");
++        // ★ 数值行**必须**以数字结尾: oms_shm.sh doctor 用 awk '{print $NF}' 取值,
++        //   行尾挂中文提示会让它取到提示文字, 检查静默失效 (见 OMS_SHM_REVIEW.md §0.4)。
++        //   提示一律另起一行。
++        std::printf("  total_stale_live_reclaims  : %llu\n",
++                    (unsigned long long)s.total_stale_live_reclaims);
++        if (s.total_stale_live_reclaims) {
++            std::printf("      ← 非零: 有卡单被强制回收, 排查!\n");
++        }
++        std::printf("  total_alloc_failures       : %llu\n",
++                    (unsigned long long)s.total_alloc_failures);
++        if (s.total_alloc_failures) {
++            std::printf("      ← 非零: 有单没写进 SHM! 看上面的 index live/tomb/empty 与 index_capacity\n");
++        }
+         return 0;
+     }
+ 
+diff -ruN pa/tb/tools/oms_shm.sh pb/tb/tools/oms_shm.sh
+--- a/tb/tools/oms_shm.sh	2026-10-06 16:16:41
++++ b/tb/tools/oms_shm.sh	2026-10-06 16:17:20
+@@ -132,11 +132,13 @@
+     echo "$out"
+     log ""
+ 
+-    # 关键指标解析
+-    local alloc_fail stale_reclaims live_stale
+-    alloc_fail=$(echo "$out"    | grep total_alloc_failures       | awk '{print $NF}')
+-    stale_reclaims=$(echo "$out"| grep total_stale_live_reclaims  | awk '{print $NF}' | head -1)
+-    live_stale=$(echo "$out"    | grep "stale (卡单"              | awk '{print $NF}')
++    # 关键指标解析: 只认**以 key 开头**的那一行, 再取行内第一个数字。
++    #   ① 不要用 awk '{print $NF}' —— 行尾的中文提示会被当成值, 导致
++    #      [: integer expression expected 且检查静默失效 (P2-2 就是这个)。
++    #   ② 也不要只 grep 裸 key —— 说明文字里出现同一个词就会误匹配到多行。
++    alloc_fail=$(echo "$out"     | grep -E '^[[:space:]]*total_alloc_failures[[:space:]]*:'      | grep -oE '[0-9]+' | head -1)
++    stale_reclaims=$(echo "$out" | grep -E '^[[:space:]]*total_stale_live_reclaims[[:space:]]*:' | grep -oE '[0-9]+' | head -1)
++    live_stale=$(echo "$out"     | grep "stale (卡单"                                            | grep -oE '[0-9]+' | head -1)
+     [ -z "$alloc_fail" ]     && alloc_fail=0
+     [ -z "$stale_reclaims" ] && stale_reclaims=0
+     [ -z "$live_stale" ]     && live_stale=0

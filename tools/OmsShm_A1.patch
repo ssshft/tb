@@ -1,0 +1,89 @@
+diff -ruN pa/include/oms/OmsShm.h pb/include/oms/OmsShm.h
+--- a/include/oms/OmsShm.h	2026-10-06 13:34:13
++++ b/include/oms/OmsShm.h	2026-10-06 13:34:13
+@@ -589,6 +589,20 @@
+         uint64_t total_inserts = 0, total_updates = 0, total_reclaims = 0;
+         uint64_t total_stale_live_reclaims = 0, total_alloc_failures = 0;
+         uint64_t min_reclaim_age_ns = 0, max_live_stale_ns = 0;
++
++        // ★ 索引占用 (每个索引一套)。
++        //   稳态下 slot 环填满后: live ≈ slot_cap, tomb ≈ slot_cap, 所以
++        //   live + tomb ≈ index_capacity 且 empty → 0 —— 这是**正常现象**, 不是泄漏。
++        //   此时插入能否成功全靠 `kMaxProbeIndex` 步内找到 tombstone。
++        //   关注点: empty 掉到 0 附近, 且 total_alloc_failures 开始增长 → 索引要加容量。
++        struct IndexOccupancy {
++            uint32_t live  = 0;   // 有效条目
++            uint32_t tomb  = 0;   // tombstone (已删, 仍占 bucket)
++            uint32_t empty = 0;   // 从未用过
++            uint32_t used() const noexcept { return live + tomb; }
++        };
++        uint32_t       index_capacity = 0;              // 每个索引的 bucket 数
++        IndexOccupancy index_occupancy[IDX_COUNT] = {}; // 下标 = IndexKind
+     };
+     Stats stats() const {
+         Stats s{};
+@@ -609,6 +623,21 @@
+                 }
+                 case SLOT_FINISHED:   ++s.finished; break;
+                 case SLOT_RECLAIMING: ++s.reclaiming; break;
++            }
++        }
++        // ★ 索引占用扫描。纯诊断用 (O(index_capacity * IDX_COUNT)), 不在热路径上。
++        s.index_capacity = index_capacity();
++        if (s.index_capacity) {
++            for (uint32_t k = 0; k < IDX_COUNT; ++k) {
++                IndexEntry* arr = index(k);
++                if (!arr) continue;
++                auto& occ = s.index_occupancy[k];
++                for (uint32_t i = 0; i < s.index_capacity; ++i) {
++                    uint64_t h = arr[i].key_hash.load(std::memory_order_relaxed);
++                    if (h == kHashEmpty)          ++occ.empty;
++                    else if (h == kHashTombstone) ++occ.tomb;
++                    else                          ++occ.live;
++                }
+             }
+         }
+         s.total_inserts             = header()->total_inserts.load(std::memory_order_relaxed);
+diff -ruN pa/tb/tools/oms_query.cpp pb/tb/tools/oms_query.cpp
+--- a/tb/tools/oms_query.cpp	2026-10-06 13:34:13
++++ b/tb/tools/oms_query.cpp	2026-10-06 13:34:13
+@@ -223,12 +223,38 @@
+         std::printf("  min_reclaim_age            : %.1f s (FINISHED 最小 TTL)\n", s.min_reclaim_age_ns / 1e9);
+         std::printf("  max_live_stale             : %.1f s (LIVE 无更新阈值, 0=禁用)\n", s.max_live_stale_ns / 1e9);
+         std::printf("  --\n");
++        std::printf("  index_capacity             : %u (每个索引; probe 上限 %u)\n",
++                    s.index_capacity, oms::shm::kMaxProbeIndex);
++        {
++            static const char* kIdxName[3] = {"orderSysId", "clientOrderId", "orderId"};
++            uint32_t tight = 0;
++            for (uint32_t k = 0; k < 3; ++k) {
++                const auto& o = s.index_occupancy[k];
++                std::printf("  index %-14s       : live=%-8u tomb=%-8u empty=%-8u 占用 %.2f%%\n",
++                            kIdxName[k], o.live, o.tomb, o.empty,
++                            s.index_capacity ? 100.0 * o.used() / s.index_capacity : 0.0);
++                if (o.empty == 0) ++tight;
++            }
++            // 注意: slot 环填满后 live≈slot_cap、tomb≈slot_cap, 于是 empty→0 是**稳态正常现象**
++            // (slot_cap 是 2 的幂时更是恰好 empty==0)。所以这里只做说明, 不当告警。
++            if (tight) {
++                std::printf("  [i] %u/3 个索引 empty=0 —— slot 环填满后这是正常现象\n"
++                            "      (live≈slot_cap, tomb≈slot_cap)。插入靠 %u 步内复用 tombstone;\n"
++                            "      真正要盯的是 total_alloc_failures, 它增长才说明索引容量该加了\n",
++                            tight, oms::shm::kMaxProbeIndex);
++            }
++        }
++        std::printf("  --\n");
+         std::printf("  total_inserts              : %llu\n", (unsigned long long)s.total_inserts);
+         std::printf("  total_updates              : %llu\n", (unsigned long long)s.total_updates);
+         std::printf("  total_reclaims             : %llu\n", (unsigned long long)s.total_reclaims);
+         std::printf("  total_stale_live_reclaims  : %llu  ← 非零说明有卡单被强制回收, 排查!\n",
+                                                              (unsigned long long)s.total_stale_live_reclaims);
+-        std::printf("  total_alloc_failures       : %llu\n", (unsigned long long)s.total_alloc_failures);
++        std::printf("  total_alloc_failures       : %llu%s\n",
++                    (unsigned long long)s.total_alloc_failures,
++                    s.total_alloc_failures
++                        ? "  ← 非零! 有单没写进 SHM, 先看上面的 index empty / index_capacity"
++                        : "");
+         return 0;
+     }
+ 
