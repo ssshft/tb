@@ -1799,6 +1799,322 @@ patch -R -p1 < tb/tools/OmsShm_v6.patch
 
 ---
 
+## 2.11 第 25 轮：把 tb/OrderManager 的三张 tbb map 换成 OmsShm
+
+### 一、改了什么
+
+`om::OrderManager` 原来用三张 `tbb::concurrent_unordered_map` 缓存在途订单
+（`clientOrderId2OrderSysIdMap` / `orderId2OrderSysIdMap` / `orderSysId2OrderResponseMap`），
+现在合并成一个 `oms::shm::OmsShmWriter`：报单体存 slot，三张 hash 索引指向 slot。
+
+| 老写法 | 新写法 |
+|---|---|
+| `map[sysid] = rcmd;` | `omsShm_.upsert(rcmd);`（一次建三样：报单体 + 3 个索引） |
+| `map.find(sysid)` → `iter->second` | `lookup_by_orderSysId_ex(sysid, out)` |
+| **原地改 `iter->second`** | 改副本 `out`，然后 `upsert(out)` 写回 |
+| `clientOrderId2OrderSysIdMap.find(...)` | `lookup_by_client_ex(strategyId, cid, out)` |
+| `orderId2OrderSysIdMap.find(orderId)` | `lookup_by_orderId_ex(orderId, out)` |
+
+改动文件只有 2 个（`tb` git status 可证）：`tb/include/oms/OrderManager.h`（+76/-…）、
+`tb/src/oms/OrderManager.cpp`（+334/-…）。`include/oms/OmsShm.h` **本轮未改**。
+
+### 二、最容易写错的一条：原地引用 → 必须写回
+
+老代码 `auto& op = iter->second;` 拿的是 map 里 value 的**引用**，改动原地生效 ——
+**包括那些 `return false` 的分支**（`tradeDiff`/`fillPrice` 归零、`orderId` 补写、
+`errorId` 落库 都留在表里了）。换成 OmsShm 后 `op` 是 lookup 出来的**副本**，
+所以每个 `return` 之前都要 `upsert` 写回，否则静默丢更新。
+
+实现上用一个 `oms_flush_slot()` 静态函数在 3 个返回点调用（OS_FAILED 分支、
+"无变化"分支、最终分支），唯一不写回的是 BINANCE 撤单 guard 那个提前返回 —— 那里 `op`
+确实一个字节都没动。
+
+### 三、单写者前提（这次改造的硬约束）
+
+`OmsShmWriter` 的契约是**单线程串行调用**。核实结论：**满足**。
+
+`TbOperation::run()`（`src/operation/TbOperation.cpp:103`）起了两个 detached 线程，
+但只有 `execute()` 这一个线程碰 OrderManager：
+
+```cpp
+std::thread executeThread(&TbOperation::execute, this);      // ← 只有它调 processTcmd/processRcmd
+std::thread executeTcmdThread(&TbOperation::executeTcmd, this);  // ← 只派发给 trade client
+```
+
+`execute()` 的 while 循环里 `processTcmd` / `processRcmd` 是**串行**的，`rcmdInnerQueue`
+的 pop→publish 也在这个线程。`preStart()` 在 main 线程、早于线程创建（happens-before），
+没有交叠。
+
+⚠ 已把这条写进 `OrderManager.h` 的成员注释：**将来若把 tcmd / rcmd 拆到两个线程，
+必须先加锁**。
+
+### 四、`preStop()` 故意不 close（避免引入新 race）
+
+`preStop()` 是从 `main.cpp` 的 `signal_handler` 调的，跑在**另一个线程**上；而 `execute()`
+线程可能正卡在 `upsert` 中间。此时 `munmap` 掉正在写的映射 = 段错误。
+所以 `preStop()` 只打最终统计，**不** `close()`。进程退出时内核回收映射，
+`MAP_SHARED` 的数据早已对其他进程可见，不 close 没有副作用。
+
+（老的 tbb map 版无所谓 —— 它没有 mmap。这是改造**新引入**的一类风险，必须处理。）
+
+### 五、新引入的失败模式（3 条，都是有意的）
+
+| # | 行为 | 老实现 | 新实现 | 为什么这样选 |
+|---|---|---|---|---|
+| 1 | 环写满时新建单 | 永远 `true`（map 无上限）→ 照发 | `upsert` 失败 → **`false`，不发** | 宁可不下单，也不发一张 OMS 不认识的单（那种单之后撤不掉、查不到） |
+| 2 | 已回收的单再撤/查 | 永远查得到 | TTL 到期后 `NOT_FOUND` → `OS_REJECTED` + `OMSOrderNotFoundError` | TTL 是 store 的设计语义；**必须按"上层最晚可能来撤单的时长"定** |
+| 3 | tb 重启后 | 内存 map 全丢 → 撤单报 `OMSOrderNotFoundError` | **订单还在**（open 同一路径即恢复） | 这是收益，不是代价 |
+
+### 六、★ 顺手修掉一个老 bug：orderSysId 被截断
+
+`getOrderSysId(cid, strategyId, out, orderId)` 里老代码写的是
+`strncpy(orderSysId, ..., INSTID_SIZE)` —— `INSTID_SIZE` 是 **32**（`data_struct.h:17`），
+而 orderSysId 是 `char[64]`、值形如 `x-<strategyId><rdtsc>`。
+**strategyId 超过约 13 个字符就会被截断**（rdtsc 约 17 位），调用方随后拿这个截断值去查
+报单体必然查不到，于是走进 "oms not found order response" 分支 —— 撤单回复里成交量/orderId
+全是 0，缓存状态整个丢掉。
+
+差分实测（场景 B，strategyId = `utrade_btc_strategy_001`，orderSysId 长 **41** 字节）：
+
+```
+老版 B03 CANCEL:  sysid=S2(截断后是另一个串)  oid=(空)   volTot=0.0000   ← 缓存丢了
+新版 B03 CANCEL:  sysid=S1                  oid=EX-B1  volTot=1.0000   ← 正确
+```
+
+生产配置里的 `sss_test1`（9 字符）恰好没踩到（orderSysId 27 字节），属于**侥幸**。
+已改成 `ORDER_SIZE`（64，与调用方缓冲区一致）。
+
+### 七、我自己引入又自己修掉的问题：丢单热路径刷屏
+
+第一版里环写满的 `LOG_ERROR` 是**逐单**打的，而且为了打"可持续速率"还调了
+`omsShm_.stats()` —— 那是 **O(slot_capacity) 的全表扫描**。20k 单/秒的故障场景下
+= 每秒 2 万条 ERROR + 2 万次 10 万长度的扫描。**这正是 §2.9 那个刷屏事故的形态。**
+
+改成：限流（前 8 次 + 之后每 4096 次，与 OmsShm 内部一致）+ 用 `preStart` 时存下的
+`cfg_.sustainable_insert_rate()` 代替 `stats()`。BUSY 的 3 处日志同样限流。
+
+### 八、验证：新旧两版跑同一份差分驱动
+
+把 `tb/src/oms/OrderManager.cpp` 的新旧两版（老版取自改动前的快照）分别与**同一份**
+`driver.cpp` 链接成两个可执行文件，回放同一脚本，打印规范化轨迹
+（orderSysId 按首次出现顺序映射成 S1/S2…，`updateTime` 不打印），然后 `diff`。
+
+**怎么在 macOS 上编 tb 的代码**：`tb` 依赖 tbb / boost / openssl / fmtlog / rapidjson /
+moodycamel，本机都没有。做法是只替身**第三方库**、不动被测逻辑：
+
+- `-I` 一个 shim 目录，提供 `fmt`（支持 `{}` 替换，不能返回空串 —— 老代码用
+  `fmt::format("{}{}", strategyId, cid)` 造 client key）、`fmtlog`、`boost/algorithm/string.hpp`、
+  `boost/date_time/...`、`openssl/{hmac,sha}.h`、`rapidjson/document.h`、`bits/stdc++.h`、
+  `tbb/concurrent_unordered_map.h`
+- 把 `include/` 用 symlink 镜像一份，只替换 3 个在 ARM64 上编不过的头：
+  `time_util.h`（裸 `asm rdtsc`，x86 专用）、`concurrent_queue.h`（boost::lockfree）、
+  `shm_spmc_queue.h`（`<bits/stdc++.h>` + mmap）
+- `pubsub_protocol.h` / `data_struct.h` / `utils/order_util.h` / `oms/AccountManager.h` /
+  **`oms/OmsShm.h`** 全部是**真实文件**，未被替身
+
+踩到的坑（值得记）：`fmtlog` 替身的 `FMTLOG` 宏形参**不能叫 `format`** —— 预处理器会把
+替换列表里的形参名一并替换，于是 `fmt::format(x)` 被改写成 `fmt::"x"(x)`。
+
+结果：
+
+| 场景 | 结果 |
+|---|---|
+| **A** 正常生命周期 / 撤单 / 查询 / 部分成交 / 拒绝 / 撤单失败 / 超量 / 只靠 orderId 反查 / `C_SWAP` 成交算术 / BINANCE 撤单 guard / 非 BINANCE guard / TESTCLIENTORDERID / 未实现 cmd | **93 行轨迹逐字节相同** ✅ |
+| **B** 22 字符 strategyId | **不同**（2 行）—— 即上面那个截断 bug，预期如此 ✅ |
+| **C** capacity=64 灌 70 张 LIVE 单 | 成功 64 / 被拒 6；`alloc_fail=6 exhausted=6` ✅ |
+| **D** `min_reclaim_age=0` | 灌满后已 FINISHED 的单被回收 → `D04` 撤单 `NOT_FOUND` → `OS_REJECTED` ✅ |
+| **E** 重新 open 同一路径 | `created_new=0`；重启前建的活单 `E04`/`E05` 仍可撤（`true`），从未存在的 `E06` 报 `OS_REJECTED` ✅ |
+
+确定性：两个二进制各跑两次，轨迹一致。
+告警：真实文件 `-Wall -Wextra` 仍是**原有的 2 条**（`processRcmd` 缺 return、`store_rcmd_data`
+形参未用），没有新增。
+
+### 九、留给用户的决策（未改）
+
+**`OS_FAILED` 分支不写回 slot → 该 slot 要等 `max_live_stale_ns`（默认 24h）才能回收。**
+
+老代码在 `orderStatus == OS_FAILED` 分支里只把 `OS_FAILED` 写进**发出去的回复**
+（`memcpy(&rcmd, &op, ...)` 之后改 `rcmd`），**没有**改 `op`。所以 slot 里存的仍是
+`OS_PENDING_NEW`（= LIVE）。老实现无所谓；在 OmsShm 里这意味着一个已经逻辑死亡的订单
+占着 slot 长达 24 小时。
+
+实测证据（差分场景 A 跑完后的逐 slot dump）：
+
+```
+[slot   3] state=1(LIVE) sysid=S4 cid=1004 oid=EX-4 status=OS_PENDING_NEW   ← A21 发的是 OS_FAILED
+[slot   5] state=2(FIN)  sysid=S6 cid=1006 oid=EX-6 status=OS_CANCELED
+```
+
+两个选项（**都没做**，等用户定）：
+
+1. **只调配置**：把 `max_live_stale_ns` 从 24h 改成 10~30 分钟。卡单/僵尸单本来就该很快判死。
+   零风险，行为与老代码完全一致。
+2. **改代码**：在 `OS_FAILED` 分支里把 `OS_FAILED` 一并写回 slot。策略可见的行为**不变**
+   （后续 QUERY 两支都走"非 FILLED → 转发交易所"，后续 CANCEL 两支都走"未完结 → OS_CANCELLING"），
+   但存储状态与 `iterate_live`/`iterate_finished` 的可见性会变，且**会打破场景 A 的逐字节等价**。
+
+### 十、撤销
+
+改动都在 `tb` 这个 git 仓库里，直接 `git checkout` 即可：
+
+```bash
+git -C tb checkout -- include/oms/OrderManager.h src/oms/OrderManager.cpp
+```
+
+补丁：`tb/tools/OmsShm_v7.patch`（4 文件 / 11 hunk），基线 = 两个仓各自的 `HEAD`。
+
+---
+
+## 2.12 第 26 轮：`getOrderSysId` 的双重查询 —— 以及它中途牵出的越界写
+
+### 一、问题：一次撤单查了两遍
+
+用户提问：「先是查到 orderSysId，然后再去查询 order。但 `getOrderSysId` 内部不是已经查到报单了吗？需要查询两次吗？」
+
+**老代码必须查两次**，因为它是两张表：
+
+| 表 | 值 |
+|---|---|
+| `clientOrderId2OrderSysIdMap[strategyId+cid]` | **只有** orderSysId 字符串 |
+| `orderSysId2OrderResponseMap[orderSysId]` | 报单体 `RCommand` |
+
+第一张表**只能**给出 sysId，所以必须再查第二张才拿得到报单体。
+
+**换成 OmsShm 之后第二次是多余的**：三张索引都指向同一个 slot，slot 里就是完整 `RCommand`。
+`lookup_by_client_ex(strategyId, cid, cached)` 已经把整张报单体通过 `out` 返回了，
+而 `getOrderSysId` 只取走 `orderSysId` 字符串就把 `cached` 丢掉，调用方再查一遍**同一个 slot**。
+
+`sizeof(pubsub::RCommand) = 536 B` —— 每次 lookup 都是 hash + probe + 536 字节 memcpy，
+一次撤单/查询做两遍。调用点只有 2 个（CANCEL / QUERY）。
+
+### 二、真正的问题：B3 在撤单入口复活了
+
+`getOrderSysId` 返回 **`bool`**，把 `BUSY` 和 `NOT_FOUND` 合并成 `false`。
+探针实测（同一张**活单**，只改 slot 状态）：
+
+| slot 状态 | `processTcmd(CANCEL)` | 回包 |
+|---|---|---|
+| `LIVE`（对照） | `true` | `OS_CANCELLING` ✓ |
+| `RECLAIMING`（实验） | `false` | **`OS_REJECTED` + `errorId=-99998`(OMSOrderNotFoundError)** ✗ |
+
+一张活单被回成「单不存在」—— 正是 §2.10 刚修掉的 B3，在撤单入口原样存在。
+
+更别扭的是两次查询对 BUSY 的处理**互相矛盾**：第一次判「没有这张单」→ REJECTED 且**不转发**；
+第二次记录日志后**照常转发**（`return true`，回 `OS_CANCELLING`）。同一个函数，两种语义。
+
+### 三、改法
+
+`getOrderSysId` 改成三态并直接吐出报单体，两个调用点合并成**一次查询 + 一套三态处理**：
+
+```cpp
+oms::shm::OmsShmSegment::LookupStatus
+getOrderSysId(int64_t cid, const char* strategyId, pubsub::RCommand& out, const char* orderId = "");
+```
+
+`BUSY` 与第二次查询保持一致（转发 / 重试），不再回 REJECTED。
+注意 CANCEL / QUERY 分支后面还要用 `tcmd.body.cancelOrder.orderSysId` 拼回包，
+合并后要从 `cached.body.orderResponse.orderSysId` 补写回去。
+
+### 四、★ 我在本轮**自己引入**又自己修掉的越界写
+
+v7 的环满分支只 `return false` + 打日志，**没有给策略任何回包**（见第六节）。
+本轮补上 REJECTED 回包时我写成了 `strncpy(..., ORIGINMSG_SIZE)`，
+`-Wall -Wextra` 的警告数立刻从 2 变成 3。
+
+**`ORIGINMSG_SIZE = 256`，而 `originMsg` 是 `char[128]`。**
+
+关键在于 `strncpy(dst, src, n)` 的行为是**按 n 补 NUL** —— 也就是**无条件写满 256 字节**，
+跟 `src` 有多长毫无关系。实测偏移：
+
+| 字段 | offset | 大小 |
+|---|---|---|
+| `originMsg` | 384 | 128 → 到 512 结束 |
+| `updateTime` | **512** | 8 |
+| `apiSourceEnum` | **520** | 4 |
+| `sizeof(OrderResponse)` | | 528 |
+
+写入区间 `[384, 640)` —— 越过 `originMsg` 尾部 128 字节，把**同一个分支里上面两行刚设好的**
+`updateTime` / `apiSourceEnum` 清零，并继续溢出结构体 112 字节。
+
+探针 `probe_overflow2` 的对照：
+
+```
+旧写法 strncpy(.., ORIGINMSG_SIZE=256):  updateTime=0                 apiSource=0
+新写法 snprintf(.., sizeof(originMsg)):  updateTime=1234567890123456  apiSource=2
+```
+
+旧写法还会**直接把 stack canary 打爆**（进程 `exit=134` / SIGABRT）。
+
+**改法**：用 `sizeof(字段)` 而不是宏，边界跟着字段走：
+
+```cpp
+std::snprintf(fail.body.orderResponse.originMsg,
+              sizeof(fail.body.orderResponse.originMsg),
+              "%s", "OMS SHM ring exhausted");
+```
+
+`snprintf` 永远按目标缓冲截断、永远补 NUL，不会随常量漂移（400 字节输入 → `strlen=127` 且 NUL 结尾）。
+
+### 五、验证
+
+| 项 | 结果 |
+|---|---|
+| `-Wall -Wextra` | **2 条，与 `HEAD` 基线逐条相同**（`-Wreturn-type`、`-Wunused-parameter`，都是既有问题）|
+| 场景 A 全生命周期 | **93 行逐字节一致** |
+| 场景 B 长 strategyId | 只差**截断那 2 行**（新的 `sysid=S1` + `oid=EX-B1` + `volTot=1.0`，老的 `S2` + 空 + `0`）|
+| 场景 C 环写满 | 64 存 / 6 拒；**6 条 REJECTED 的 `updateTime`/`apiSourceEnum` 完好** |
+| 场景 D / E / F | TTL 回收、重启持久化、BUSY 转发（F03/F04 返回 `true` 且回 `OS_CANCELLING`；F06 真不存在才回 REJECTED）|
+| 确定性 | A / C / F 各自两次运行一致 |
+
+### 六、★ 顺带发现：v7 的环满分支**根本没有回包**
+
+做上面的对照时发现，v7 的环满路径只 `return false` + 打日志，**没有 push 任何回包**：
+
+```
+v7 场景 C: [队列] 共 70 条回包, 状态直方图: OS_2×70         ← 6 条被拒的单也在里面, 状态是 PENDING_NEW
+v8 场景 C: [队列] 共 76 条回包, 状态直方图: OS_2×70 OS_6×6  ← 6 条 REJECTED
+```
+
+也就是说 v7 下被拒的单会让策略收到一条 **`OS_PENDING_NEW`**，然后永远等不到结果。
+本轮补上了 REJECTED 回包。
+
+> ⚠ **留一个决策给用户**：现在一条被拒的单会收到 **两条**回包（`PENDING_NEW` 然后 `REJECTED`），
+> 因为 `rcmdInnerQueue.push(rcmd)` 在 upsert **之前**（这是原始 `HEAD` 的顺序，见 §2.11 的 `ADD_NEW_ORDER_2_ORDER_RESPONSE` 之后）。
+> 原始代码里 map 插入不可能失败，所以这个顺序从来无所谓。
+> 如果希望被拒的单**只**收到 REJECTED，把 `push(rcmd)` 移到 upsert 成功之后即可 —— 一行。
+> 本轮**没有**改，因为这会动到策略侧可见的协议顺序。
+
+### 七、★ 同一缺陷还在 Gateio 的 4 处（**未改**）
+
+`ORIGINMSG_SIZE` 一共 6 处使用。本轮修了 2 处（`OrderManager.cpp` 环满分支 + `README.md` 示例），
+剩下 **4 处在 Gateio 交易客户端**，用的是同一个越界写法：
+
+```
+tb/src/Gateio/GateioSpotTrade.cpp:737
+tb/src/Gateio/GateioSpotTrade.cpp:747
+tb/src/Gateio/GateioSpotTrade.cpp:887
+tb/src/Gateio/GateioUSTrade.cpp:1076
+```
+
+都是 `strncpy(rcmd.body.orderResponse.originMsg, resp.body.c_str(), ORIGINMSG_SIZE)` ——
+把交易所返回的错误原文写进 `char[128]`，写 256 字节。
+**后果**：错误原文之后紧跟的字段被清零，并溢出 112 字节。
+
+本轮**没动**（不在本次范围内，且是实盘交易路径）。根治办法是 `#define ORIGINMSG_SIZE 128`，
+但更稳的是把这 4 处也改成 `sizeof(字段)`（宏改成 128 只解决越界，不解决 `src` ≥ 128 时
+**不补 NUL** 的问题）。建议单独一轮处理。
+
+### 八、撤销
+
+```bash
+git -C tb      checkout -- include/oms/OrderManager.h src/oms/OrderManager.cpp tools/OMS_SHM_REVIEW.md
+git -C include checkout -- oms/README.md
+```
+
+补丁：`tb/tools/OmsShm_v8.patch`（4 文件），基线 = **已应用 v7 之后**的状态。
+
+---
+
 ## 3. 形式正确性（当前环境能用，但是错的）
 
 ### P1-6 · seqlock 两边都缺 fence
@@ -1986,18 +2302,22 @@ clang++ -std=c++17 -I /Users/lawson/Documents/hft/include -I /tmp/omsshm_check/s
 > 对照着看才说明问题。
 
 **当前仓库状态**：`include/oms/OmsShm.h` **已被八个补丁修改**
-（44788 → 47794 → 49427 → 51965 → 62899 → 68079 → 77059 → 80486 → **81474 B**；
-980 → 1033 → 1062 → 1101 → 1265 → 1338 → 1471 → 1515 → **1529 行**；
-md5 现为 `447b1ed8bb4bee4e1d1bfbab220c1fd2`）；
+（44788 → 47794 → 49427 → 51965 → 62899 → 68079 → 77059 → 80486 → 81474 → **88851 B**；
+980 → 1033 → 1062 → 1101 → 1265 → 1338 → 1471 → 1515 → 1529 → **1640 行**；
+md5 现为 `08968b138f79c2e234d6e001032cfec5`。**第 26 轮没有再动它**）；
 `tb/tools/oms_query.cpp` **已被 A1 + A4 + B6 + v4 + v4.1 + v5 修改**（236 → 262 → 267 → 287 → 308 → 318 → **330 行**）；
 `tb/tools/oms_shm.sh` **已被 A4 + B6 + v4 + v4.1 + v5 修改**（180 → 182 → 199 → 229 → 299 → **316 行**）；
 `tb/tools/oms_bench.cpp` / `oms_demo.cpp`（仍逐字节相同，md5 `e274ede4c75ac0a7a98adec32ad2f95a`）
 **被 v5 改了 159 行**：`make_rcmd` 加 prefix/oid_base、MIXED 相位换 `"mx-"` key 空间、
 新增 `--mixed-ttl-ms`、打 writer summary + 自检、`--reset` 容量不匹配时重建（330 → **441 行**）；
 `include/oms/README.md` 改了索引 2N → 4N、内存、`shm_size`、Q2、新增 Q7 / Q8、四个新指标行、
-`oms_test` 说明、`oms_demo` 描述改成如实、v5 的 `sustainable_insert_rate`（883 → **974 行**）。
-新增 `tb/tools/OMS_SHM_REVIEW.md`、`tb/tools/oms_test.cpp`（**1073 行 / 191 条断言**）、
-`tb/tools/OmsShm_{P1-1,A1,A4,B5,B6,v4,v4_1,v5}.patch`（**均已应用**）。
+`oms_test` 说明、`oms_demo` 描述改成如实、v5 的 `sustainable_insert_rate`（883 → 974 行），
+再经 v6 / v7 / v8 → **1190 行**（v8 顺带修掉 §12.8 里 `originMsg` 回写示例的 `ORIGINMSG_SIZE` 越界）；
+**v7 新增的接入方，v8 继续改**：
+`tb/include/oms/OrderManager.h`（→ **109 行**；`getOrderSysId` 从 `bool` 改三态签名）、
+`tb/src/oms/OrderManager.cpp`（→ **580 行**；三张 tbb map → 一次 `upsert`；`getOrderSysId` 双查合一）；
+新增 `tb/tools/OMS_SHM_REVIEW.md`、`tb/tools/oms_test.cpp`（**1242 行 / 224 条断言**）、
+`tb/tools/OmsShm_{P1-1,A1,A4,B5,B6,v4,v4_1,v5,v6,v7,v8}.patch`（**均已应用**）。
 除这些文件外没有其它改动。
 
 > ⚠️ **运维**：B6 之后 `kVersion` 已到 3，**已有的 shm 文件必须删掉重建**
@@ -2097,3 +2417,31 @@ md5 现为 `447b1ed8bb4bee4e1d1bfbab220c1fd2`）；
 15. **仍未做**（顺延）：**D1**（`oms_demo` 与 `oms_bench` 仍逐字节相同，v5 是**同步**改的
    两个文件，md5 `e274ede4c75ac0a7a98adec32ad2f95a`；`./oms_shm.sh demo` 跑的仍是 bench）、
    **D2**（`tb/tools` 仍未进 CMake）。
+16. ✅ **第 25 轮：`tb/OrderManager` 的三张 tbb map → OmsShm**（2026-10-07，见 §2.11）。
+   `clientOrderId2OrderSysIdMap` / `orderId2OrderSysIdMap` / `orderSysId2OrderResponseMap`
+   换成**一个** `oms::shm::OmsShmWriter`。注意这**不是**"换个容器"：
+   ① 有界环 → `upsert` 会失败，`processTcmd(CMD_NEW_ORDER)` 因此**返回 false**（拒单，不发交易所）；
+   ② `lookup` 变三态；③ 老代码拿的是 map value 的**引用**（改动原地生效），现在拿的是副本 →
+   **每个 return 之前都要写回**（`oms_flush_slot`）。
+   顺带修掉老 bug：`getOrderSysId` 用 `INSTID_SIZE`(32) 去截断 `char[64]` 的 orderSysId。
+   补丁 `OmsShm_v7.patch`（4 文件 / 11 hunk）。`AccountManager` 按使用者要求**未动**。
+17. ✅ **第 26 轮：`getOrderSysId` 双查合一 + `originMsg` 越界写**（2026-10-07，见 §2.12）。
+   使用者提问「`getOrderSysId` 内部不是已经查到报单了吗？需要查询两次吗？」——
+   老代码是**两张表**所以必须查两次；OmsShm 下第二次纯属多余
+   （536 B memcpy 做两遍 + 两次查询之间的 TOCTOU 窗口）。
+   顺带发现 `bool` 返回值把 BUSY 压成 `false` → **活单被回成 `OS_REJECTED` + `OMSOrderNotFoundError`**
+   （正是 B3 在撤单入口复活）。
+   改：三态 + 直接吐出报单体；环满分支补上 REJECTED 回包（v7 只 `return false`，
+   策略永远等不到结果），并修掉由此引入的
+   `strncpy(.., ORIGINMSG_SIZE=256)` 越界写（`originMsg` 只有 `char[128]`，
+   会清零 `updateTime`/`apiSourceEnum` 并溢出结构体 112 字节）。
+   补丁 `OmsShm_v8.patch`（4 文件 / 10 hunk）。
+18. **仍未做**（第 26 轮新增，按建议优先级）：
+   - ⚠ **`ORIGINMSG_SIZE` 的 4 处 Gateio 用法**（`GateioSpotTrade.cpp:737/747/887`、
+     `GateioUSTrade.cpp:1076`）—— 同一个越界写，**实盘交易路径**，见 §2.12 七；
+   - **`processRcmd` 的 `default:` 分支漏 `return`** —— `-Wall -Wextra` 报的
+     `-Wreturn-type` 就是它（非 void 函数走到末尾 = **UB**）。
+     `processTcmd` 的 default 有 `return false`，`processRcmd` 没有。**既有问题**，两版都在；
+   - 环满时一条被拒的单会收到 **两条**回包（`PENDING_NEW` 然后 `REJECTED`），
+     因为 `rcmdInnerQueue.push(rcmd)` 在 upsert **之前**（原始 `HEAD` 的顺序）。
+     想只发 REJECTED 就把 `push` 后移一行 —— 会动到策略侧可见的协议顺序，故未改。

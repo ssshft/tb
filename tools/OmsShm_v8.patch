@@ -1,0 +1,703 @@
+# OmsShm_v8.patch —— 第 26 轮: getOrderSysId 双重查询合并 + originMsg 越界写修复
+#
+# 用法 (在 /Users/lawson/Documents/hft 下):
+#     patch -p1 < tb/tools/OmsShm_v8.patch
+# 撤销:
+#     patch -p1 -R < tb/tools/OmsShm_v8.patch
+#
+# ★ 基线 = **已应用 v7 之后**的状态。依次应用顺序: v7 -> v8
+#     tb/include/oms/OrderManager.h / tb/src/oms/OrderManager.cpp / tb/tools/OMS_SHM_REVIEW.md
+#         → tb 仓 HEAD 18027ec 的版本, 再正向 apply OmsShm_v7.patch
+#     include/oms/README.md
+#         → include 仓 HEAD 65bfae1 的版本, 再正向 apply OmsShm_v7.patch
+#
+#   已核对 (不是"看起来像"): 把 OmsShm_v7.patch 正向 apply 到两个仓的 HEAD 检出上,
+#   产物与本补丁的基线逐字节相等 (cmp 过)。
+#
+# 本补丁改了什么:
+#   1. getOrderSysId 从 bool 改成三态 LookupStatus, 并**直接吐出完整报单体** ——
+#      老代码要查两次 (client key→sysId, sysId→报单体), 因为老的第一张表只存字符串;
+#      OmsShm 的三张索引都指向同一个 slot, 一次 lookup 就够 (省 536 字节 memcpy + 一个 TOCTOU 窗口)。
+#   2. BUSY 不再被压成 false —— 老写法会把一张**活单**回成 OS_REJECTED + OMSOrderNotFoundError。
+#   3. 环满分支补上 REJECTED 回包 (v7 只 return false, 策略永远等不到结果),
+#      并修掉由此引入的 originMsg 越界写: ORIGINMSG_SIZE 是 256 而 originMsg 是 char[128],
+#      strncpy 按 n 补 NUL 会无条件写满 256 字节, 把同一条回包里刚设好的
+#      updateTime / apiSourceEnum 清零并溢出结构体 112 字节。改用 snprintf + sizeof(字段)。
+#
+# 文件: 4 个
+#
+--- a/tb/include/oms/OrderManager.h
++++ b/tb/include/oms/OrderManager.h
+@@ -61,7 +61,14 @@
+     private:
+         void load_data();
+         void store_rcmd_data(vector<pubsub::RCommand> &rcmdVec);
+-        bool getOrderSysId(const int64_t clientOrderId, const char* strategyId, char* orderSysId, const char* orderId="");
++        // 一次查询拿到**完整报单体** (三态)。
++        //   ★ 老代码是两段式: 先 clientOrderId2OrderSysIdMap 拿 orderSysId, 再用
++        //     orderSysId2OrderResponseMap 拿报单体 —— 因为老的第一张表**只存字符串**。
++        //     OmsShm 的三张索引都指向同一个 slot, slot 里就是完整 RCommand, 所以**一次就够**。
++        //   ★ 返回三态而不是 bool: BUSY(索引里有、这一瞬间读不到) 与 NOT_FOUND(真的没有)
++        //     会导致**完全不同的动作**, 合并成 false 会把活单回成 OS_REJECTED。
++        oms::shm::OmsShmSegment::LookupStatus getOrderSysId(const int64_t clientOrderId, const char* strategyId,
++                                                            pubsub::RCommand& out, const char* orderId="");
+         std::string getOrderSysId(ExchangeType exchangeTypeEnum, const char* strategyId);
+ 
+     protected:
+--- a/tb/src/oms/OrderManager.cpp
++++ b/tb/src/oms/OrderManager.cpp
+@@ -1,5 +1,7 @@
+ #include "oms/OrderManager.h"
+ 
++#include <cstdio>    // std::snprintf (originMsg 回写, 见 CMD_NEW_ORDER 的环满分支)
++#include <cstring>   // std::strncpy / std::memset
+ 
+ Tb2OmsRCommandInnerQueue tb2OmsRCommandInnerQueue;
+ RcmdInnerQueue rcmdInnerQueue;
+@@ -131,142 +133,152 @@
+                               cfg_.slot_capacity, cfg_.min_reclaim_age_ns / 1000000ULL,
+                               cfg_.sustainable_insert_rate());
+                 }
++
++                // 上报 REJECTED, 免得策略以为发出去了
++                pubsub::RCommand fail;
++                memcpy(&fail, &rcmd, sizeof(fail));
++                fail.body.orderResponse.orderStatus = OS_REJECTED;
++                fail.body.orderResponse.errorId = UnknownError;
++                fail.body.orderResponse.updateTime = crypto::getCurrentTime();
++                // ★ 这里**不能**用 ORIGINMSG_SIZE: 它是 256, 而 originMsg 只有 char[128]。
++                //   `strncpy(dst, src, n)` 会按 n **补 NUL**, 也就是无条件写满 256 字节 ——
++                //   越过 originMsg 尾部 128 字节, 把**上面两行刚设好的** updateTime /
++                //   apiSourceEnum 清零, 并继续溢出到结构体之外 (sizeof(OrderResponse)=528)。
++                //   实测: updateTime 1234567890123456 → 0, apiSourceEnum 2 → 0。
++                //   用 sizeof(字段) 而不是宏: 边界跟着字段走, 以后字段变长也不会再漂。
++                std::snprintf(fail.body.orderResponse.originMsg,
++                              sizeof(fail.body.orderResponse.originMsg),
++                              "%s", "OMS SHM ring exhausted");
++                rcmdInnerQueue.push(fail);
+                 return false;
+             }
+             return true;
+             break;
+         }
+         case pubsub::CMD_CANCEL_ORDER: {
+-            bool found = getOrderSysId(tcmd.body.cancelOrder.clientOrderId, tcmd.body.cancelOrder.strategyId, tcmd.body.cancelOrder.orderSysId, tcmd.body.cancelOrder.orderId);
+-            if (found) {
+-                pubsub::RCommand cached;
+-                const oms::shm::OmsShmSegment::LookupStatus ls =
+-                    omsShm_.lookup_by_orderSysId_ex(tcmd.body.cancelOrder.orderSysId, cached);
++            // ★ 一次查询就拿到完整报单体 (老代码要查两次: client key→sysId, sysId→报单体)。
++            pubsub::RCommand cached;
++            const oms::shm::OmsShmSegment::LookupStatus ls = getOrderSysId(tcmd.body.cancelOrder.clientOrderId, tcmd.body.cancelOrder.strategyId, cached, tcmd.body.cancelOrder.orderId);
+ 
+-                if (ls == oms::shm::OmsShmSegment::LookupStatus::OK) {
+-                    pubsub::RCommand rcmd;
+-                    memset(&rcmd, 0, sizeof(pubsub::RCommand));
+-                    memcpy(&rcmd, &cached, sizeof(pubsub::RCommand));
+-                    rcmd.body.orderResponse.orderStatus = OS_CANCELLING;
+-                    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+-                    rcmd.body.orderResponse.apiSourceEnum = AS_CANCEL_ORDER;
+-                    rcmdInnerQueue.push(rcmd);
++            if (ls == oms::shm::OmsShmSegment::LookupStatus::OK) {
++                // 回填 orderSysId —— 后续拼回包 / 转发给 trade client 都要用。
++                strncpy(tcmd.body.cancelOrder.orderSysId, cached.body.orderResponse.orderSysId, ORDER_SIZE);
+ 
+-                    if (cached.body.orderResponse.orderStatus == OS_CANCELED || cached.body.orderResponse.orderStatus == OS_FILLED || cached.body.orderResponse.orderStatus == OS_REJECTED) {
+-                        LOG_INFO("order clientOrderId: {} already finished, return oms result.", cached.body.orderResponse.clientOrderId);
+-                        rcmd.body.orderResponse.orderStatus = cached.body.orderResponse.orderStatus;
+-                        rcmd.body.orderResponse.errorId = OrderAlreadyFinishedError;
+-                        rcmd.body.orderResponse.updateTime = cached.body.orderResponse.updateTime;
+-                        rcmd.body.orderResponse.apiSourceEnum = AS_CANCEL_ORDER;
+-                        rcmdInnerQueue.push(rcmd);
+-                        return false;
+-                    }
+-                }
+-                else {
+-                    // B3: lookup 现在是三态。BUSY = 索引里**有**这张单, 只是这一瞬间拿不到
+-                    // 一致快照 (写者正忙 / 该 slot 正在被回收); NOT_FOUND = 真的没有。
+-                    // 老代码把两者混成"找不到", 排查时会把活单当死单 —— 所以日志必须分开。
+-                    if (ls == oms::shm::OmsShmSegment::LookupStatus::BUSY) {
+-                        // 限流: BUSY 在高压下会成片出现, 逐条打日志就是刷屏。
+-                        const uint64_t n = ++shm_busy_count_;
+-                        if (should_log_limited(n)) {
+-                            LOG_ERROR("oms lookup BUSY (writer busy / slot reclaiming), count={} orderSysId: {}", n, tcmd.body.cancelOrder.orderSysId);
+-                        }
+-                    } else {
+-                        LOG_ERROR("oms not found order response, orderSysId: {}", tcmd.body.cancelOrder.orderSysId);
+-                    }
+-                    pubsub::RCommand rcmd;
+-                    memset(&rcmd, 0, sizeof(pubsub::RCommand));
+-                    rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
+-                    rcmd.body.orderResponse.exchangeTypeEnum = tcmd.body.cancelOrder.exchangeTypeEnum;
+-                    rcmd.body.orderResponse.instTypeEnum = tcmd.body.cancelOrder.instTypeEnum;
+-                    strncpy(rcmd.body.orderResponse.accountName, tcmd.body.cancelOrder.accountName, ACCOUNTID_SIZE);
+-                    strncpy(rcmd.body.orderResponse.strategyId, tcmd.body.cancelOrder.strategyId, STRATEGYID_SIZE);
+-                    strncpy(rcmd.body.orderResponse.instId, tcmd.body.cancelOrder.instId, INSTID_SIZE);
+-                    rcmd.body.orderResponse.clientOrderId = tcmd.body.cancelOrder.clientOrderId;
+-                    strncpy(rcmd.body.orderResponse.orderSysId, tcmd.body.cancelOrder.orderSysId, ORDER_SIZE);
+-                    strncpy(rcmd.body.orderResponse.orderId, tcmd.body.cancelOrder.orderId, ORDER_SIZE); \
+-                    rcmd.body.orderResponse.orderStatus = OS_CANCELLING;
+-                    rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+-                    rcmd.body.orderResponse.apiSourceEnum = AS_CANCEL_ORDER;
+-                    rcmdInnerQueue.push(rcmd);   
+-                }
+-                return true;
+-            }
+-            else {
+-                LOG_ERROR("oms not found orderSysId, tcmd: {}", tcmd.getString());
+                 pubsub::RCommand rcmd;
+-                memset(&rcmd, 0, sizeof(pubsub::RCommand));  
+-                rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
+-                rcmd.body.orderResponse.exchangeTypeEnum = tcmd.body.cancelOrder.exchangeTypeEnum;
+-                rcmd.body.orderResponse.instTypeEnum = tcmd.body.cancelOrder.instTypeEnum;
+-                strncpy(rcmd.body.orderResponse.accountName, tcmd.body.cancelOrder.accountName, ACCOUNTID_SIZE);
+-                strncpy(rcmd.body.orderResponse.strategyId, tcmd.body.cancelOrder.strategyId, STRATEGYID_SIZE);
+-                strncpy(rcmd.body.orderResponse.instId, tcmd.body.cancelOrder.instId, INSTID_SIZE);
+-                rcmd.body.orderResponse.clientOrderId = tcmd.body.cancelOrder.clientOrderId;
+-                strncpy(rcmd.body.orderResponse.orderSysId, tcmd.body.cancelOrder.orderSysId, ORDER_SIZE);
+-                strncpy(rcmd.body.orderResponse.orderId, tcmd.body.cancelOrder.orderId, ORDER_SIZE); \
+-                rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+-                rcmd.body.orderResponse.errorId = OMSOrderNotFoundError;
++                memset(&rcmd, 0, sizeof(pubsub::RCommand));
++                memcpy(&rcmd, &cached, sizeof(pubsub::RCommand));
++                rcmd.body.orderResponse.orderStatus = OS_CANCELLING;
+                 rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+                 rcmd.body.orderResponse.apiSourceEnum = AS_CANCEL_ORDER;
+                 rcmdInnerQueue.push(rcmd);
+-                return false;
+-            }
+-            break;
+-        }
+-        case pubsub::CMD_QUERY_ORDER: {
+-            bool found = getOrderSysId(tcmd.body.queryOrder.clientOrderId, tcmd.body.queryOrder.strategyId, tcmd.body.queryOrder.orderSysId, tcmd.body.queryOrder.orderId);
+-            if (found) {
+-                pubsub::RCommand cached;
+-                const oms::shm::OmsShmSegment::LookupStatus ls =
+-                    omsShm_.lookup_by_orderSysId_ex(tcmd.body.queryOrder.orderSysId, cached);
+ 
+-                if (ls == oms::shm::OmsShmSegment::LookupStatus::OK) {
+-                    if (cached.body.orderResponse.orderStatus != OS_FILLED) { // 非成交，发到交易所查询
+-                        strncpy(tcmd.body.queryOrder.orderId, cached.body.orderResponse.orderId, INSTID_SIZE);
+-                        return true;
+-                    }
+-                    else { // filled状态直接返回
+-                        pubsub::RCommand rcmd;
+-                        memset(&rcmd, 0, sizeof(pubsub::RCommand));
+-                        memcpy(&rcmd, &cached, sizeof(pubsub::RCommand));
+-                        rcmd.body.orderResponse.apiSourceEnum = AS_QUERY_ORDER;
+-                        rcmdInnerQueue.push(rcmd);  
+-                        return false;
+-                    }
++                if (cached.body.orderResponse.orderStatus == OS_CANCELED || cached.body.orderResponse.orderStatus == OS_FILLED || cached.body.orderResponse.orderStatus == OS_REJECTED) {
++                    LOG_INFO("order clientOrderId: {} already finished, return oms result.", cached.body.orderResponse.clientOrderId);
++                    rcmd.body.orderResponse.orderStatus = cached.body.orderResponse.orderStatus;
++                    rcmd.body.orderResponse.errorId = OrderAlreadyFinishedError;
++                    rcmd.body.orderResponse.updateTime = cached.body.orderResponse.updateTime;
++                    rcmd.body.orderResponse.apiSourceEnum = AS_CANCEL_ORDER;
++                    rcmdInnerQueue.push(rcmd);
++                    return false;
+                 }
+-                else { // 可以查询到orderSysId，但是查不到缓存的rcmd，则发到交易所查询
+-                   if (ls == oms::shm::OmsShmSegment::LookupStatus::BUSY) {
+-                       const uint64_t n = ++shm_busy_count_;
+-                       if (should_log_limited(n)) {
+-                           LOG_ERROR("oms lookup BUSY, query goes to exchange. count={} orderSysId: {}", n, tcmd.body.queryOrder.orderSysId);
+-                       }
+-                   }
+-                   return true; 
+-                }
++                return true;
+             }
+-            else {
++
++            // 非 OK 有两种, 动作**完全不同**, 所以不能压成一个 bool:
++            //   BUSY      = 索引里**有**这张单, 只是这一瞬间拿不到一致快照 (写者正忙 /
++            //               该 slot 正在被回收) → "存在但暂时读不到" → **转发**给交易所。
++            //   NOT_FOUND = 真的没有这张单 → 回 OS_REJECTED, 不转发。
++            //   ★ 老代码把 BUSY 也归进 found=false, 于是**活单被回成 OS_REJECTED**
++            //     —— 这正是 B3 在撤单入口处的形态。
++            OrderStatus replyStatus  = OS_REJECTED;
++            int         replyErrorId = OMSOrderNotFoundError;
++            bool        forward      = false;   // true = 交给 trade client 发给交易所
++
++            if (ls == oms::shm::OmsShmSegment::LookupStatus::BUSY) {
++                // 限流: BUSY 在高压下会成片出现, 逐条打日志就是刷屏。
++                const uint64_t n = ++shm_busy_count_;
++                if (should_log_limited(n)) {
++                    LOG_ERROR("oms lookup BUSY (writer busy / slot reclaiming), forward cancel anyway. count={} clientOrderId={} strategyId={}",
++                              n, tcmd.body.cancelOrder.clientOrderId, tcmd.body.cancelOrder.strategyId);
++                }
++                replyStatus  = OS_CANCELLING;
++                replyErrorId = 0;
++                forward      = true;
++            } else {
+                 LOG_ERROR("oms not found orderSysId, tcmd: {}", tcmd.getString());
++            }
++
++            // BUSY / NOT_FOUND 的回包骨架逐字段相同, 只有 orderStatus / errorId 不同 ——
++            // 老代码把这一段抄了两遍, 这里合成一份。
++            pubsub::RCommand rcmd;
++            memset(&rcmd, 0, sizeof(pubsub::RCommand));
++            rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
++            rcmd.body.orderResponse.exchangeTypeEnum = tcmd.body.cancelOrder.exchangeTypeEnum;
++            rcmd.body.orderResponse.instTypeEnum = tcmd.body.cancelOrder.instTypeEnum;
++            strncpy(rcmd.body.orderResponse.accountName, tcmd.body.cancelOrder.accountName, ACCOUNTID_SIZE);
++            strncpy(rcmd.body.orderResponse.strategyId, tcmd.body.cancelOrder.strategyId, STRATEGYID_SIZE);
++            strncpy(rcmd.body.orderResponse.instId, tcmd.body.cancelOrder.instId, INSTID_SIZE);
++            rcmd.body.orderResponse.clientOrderId = tcmd.body.cancelOrder.clientOrderId;
++            strncpy(rcmd.body.orderResponse.orderSysId, tcmd.body.cancelOrder.orderSysId, ORDER_SIZE);
++            strncpy(rcmd.body.orderResponse.orderId, tcmd.body.cancelOrder.orderId, ORDER_SIZE);
++            rcmd.body.orderResponse.orderStatus = replyStatus;
++            rcmd.body.orderResponse.errorId = replyErrorId;
++            rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
++            rcmd.body.orderResponse.apiSourceEnum = AS_CANCEL_ORDER;
++            rcmdInnerQueue.push(rcmd);
++            return forward;
++        }
++        case pubsub::CMD_QUERY_ORDER: {
++            // ★ 一次查询就拿到完整报单体 (与 CANCEL 同理)。
++            pubsub::RCommand cached;
++            const oms::shm::OmsShmSegment::LookupStatus ls = getOrderSysId(tcmd.body.queryOrder.clientOrderId, tcmd.body.queryOrder.strategyId, cached, tcmd.body.queryOrder.orderId);
++
++            if (ls == oms::shm::OmsShmSegment::LookupStatus::OK) {
++                strncpy(tcmd.body.queryOrder.orderSysId, cached.body.orderResponse.orderSysId, ORDER_SIZE);
++
++                if (cached.body.orderResponse.orderStatus != OS_FILLED) { // 非成交，发到交易所查询
++                    strncpy(tcmd.body.queryOrder.orderId, cached.body.orderResponse.orderId, INSTID_SIZE);
++                    return true;
++                }
++                // filled 状态直接返回缓存结果
+                 pubsub::RCommand rcmd;
+-                memset(&rcmd, 0, sizeof(pubsub::RCommand));  
+-                rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
+-                rcmd.body.orderResponse.exchangeTypeEnum = tcmd.body.queryOrder.exchangeTypeEnum;
+-                rcmd.body.orderResponse.instTypeEnum = tcmd.body.queryOrder.instTypeEnum;
+-                strncpy(rcmd.body.orderResponse.accountName, tcmd.body.queryOrder.accountName, ACCOUNTID_SIZE);
+-                strncpy(rcmd.body.orderResponse.strategyId, tcmd.body.queryOrder.strategyId, STRATEGYID_SIZE);
+-                strncpy(rcmd.body.orderResponse.instId, tcmd.body.queryOrder.instId, INSTID_SIZE);
+-                rcmd.body.orderResponse.clientOrderId = tcmd.body.queryOrder.clientOrderId;
+-                strncpy(rcmd.body.orderResponse.orderSysId, tcmd.body.queryOrder.orderSysId, ORDER_SIZE);
+-                strncpy(rcmd.body.orderResponse.orderId, tcmd.body.queryOrder.orderId, ORDER_SIZE); \
+-                rcmd.body.orderResponse.orderStatus = OS_REJECTED;
+-                rcmd.body.orderResponse.errorId = OMSOrderNotFoundError;
+-                rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
++                memset(&rcmd, 0, sizeof(pubsub::RCommand));
++                memcpy(&rcmd, &cached, sizeof(pubsub::RCommand));
+                 rcmd.body.orderResponse.apiSourceEnum = AS_QUERY_ORDER;
+                 rcmdInnerQueue.push(rcmd);
+                 return false;
++            }
++
++            // BUSY = 索引里**有**这张单, 只是这一瞬间读不到一致快照 → 转发到交易所查询,
++            //        **不能**判成"不存在" (老代码在这里同样转发, 但那是第二次查询才走到)。
++            if (ls == oms::shm::OmsShmSegment::LookupStatus::BUSY) {
++                const uint64_t n = ++shm_busy_count_;
++                if (should_log_limited(n)) {
++                    LOG_ERROR("oms lookup BUSY, query goes to exchange. count={} clientOrderId={} strategyId={}",
++                              n, tcmd.body.queryOrder.clientOrderId, tcmd.body.queryOrder.strategyId);
++                }
++                return true;
+             }
+ 
++            // NOT_FOUND —— 真的没有这张单
++            LOG_ERROR("oms not found orderSysId, tcmd: {}", tcmd.getString());
++            pubsub::RCommand rcmd;
++            memset(&rcmd, 0, sizeof(pubsub::RCommand));
++            rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
++            rcmd.body.orderResponse.exchangeTypeEnum = tcmd.body.queryOrder.exchangeTypeEnum;
++            rcmd.body.orderResponse.instTypeEnum = tcmd.body.queryOrder.instTypeEnum;
++            strncpy(rcmd.body.orderResponse.accountName, tcmd.body.queryOrder.accountName, ACCOUNTID_SIZE);
++            strncpy(rcmd.body.orderResponse.strategyId, tcmd.body.queryOrder.strategyId, STRATEGYID_SIZE);
++            strncpy(rcmd.body.orderResponse.instId, tcmd.body.queryOrder.instId, INSTID_SIZE);
++            rcmd.body.orderResponse.clientOrderId = tcmd.body.queryOrder.clientOrderId;
++            strncpy(rcmd.body.orderResponse.orderSysId, tcmd.body.queryOrder.orderSysId, ORDER_SIZE);
++            strncpy(rcmd.body.orderResponse.orderId, tcmd.body.queryOrder.orderId, ORDER_SIZE);
++            rcmd.body.orderResponse.orderStatus = OS_REJECTED;
++            rcmd.body.orderResponse.errorId = OMSOrderNotFoundError;
++            rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
++            rcmd.body.orderResponse.apiSourceEnum = AS_QUERY_ORDER;
++            rcmdInnerQueue.push(rcmd);
++            return false;
+         }
+         case pubsub::CMD_QUERY_ACCOUNT: {
+             return true;
+@@ -338,8 +350,7 @@
+ 
+ bool om::OrderManager::onOrderUpdate(pubsub::RCommand& rcmd) {
+     pubsub::RCommand cached;
+-    const oms::shm::OmsShmSegment::LookupStatus ls =
+-        omsShm_.lookup_by_orderSysId_ex(rcmd.body.orderResponse.orderSysId, cached);
++    const oms::shm::OmsShmSegment::LookupStatus ls = omsShm_.lookup_by_orderSysId_ex(rcmd.body.orderResponse.orderSysId, cached);
+ 
+     if (ls == oms::shm::OmsShmSegment::LookupStatus::BUSY) {
+         // ★ B3: 索引里**有**这张单, 只是这一瞬间读不到一致快照 (写者正忙 / 正在回收)。
+@@ -520,30 +531,28 @@
+ }
+ 
+ 
+-bool om::OrderManager::getOrderSysId(const int64_t clientOrderId, const char* strategyId, char* orderSysId, const char* orderId) {
++oms::shm::OmsShmSegment::LookupStatus
++om::OrderManager::getOrderSysId(const int64_t clientOrderId, const char* strategyId,
++                                pubsub::RCommand& out, const char* orderId) {
++    using LS = oms::shm::OmsShmSegment::LookupStatus;
++
+     // 老代码查的是 clientOrderId2OrderSysIdMap[fmt::format("{}{}", strategyId, clientOrderId)];
+     // 这里换成 OmsShm 的复合 client 索引 —— 键的拼法完全一致 (compose_client_key)。
+-    // ★ 一次 lookup 就同时拿到 orderSysId (老代码要查"key→sysId"再查"sysId→报单体")。
+-    pubsub::RCommand cached;
+-    if (omsShm_.lookup_by_client_ex(strategyId, clientOrderId, cached)
+-            == oms::shm::OmsShmSegment::LookupStatus::OK) {
+-        // ★ 老代码这里写的是 INSTID_SIZE (32), 而 orderSysId 是 char[64]、值形如
+-        //   "x-<strategyId><rdtsc>" —— strategyId 一长就**被截断**, 调用方随后拿这个
+-        //   截断值去查报单体必然查不到, 于是走进 "oms not found order response" 分支。
+-        //   顺手改成 ORDER_SIZE (与调用方缓冲区一致)。这是本次改造中发现并修掉的老 bug。
+-        strncpy(orderSysId, cached.body.orderResponse.orderSysId, ORDER_SIZE);
+-        return true;
+-    }
++    // ★ 命中时**整张报单体**已经写在 out 里了, 调用方不必再按 orderSysId 查第二次。
++    //   (老代码必须查两次: clientOrderId2OrderSysIdMap 只存字符串, 还得查
++    //    orderSysId2OrderResponseMap 才拿得到报单体。OmsShm 两张索引指向同一个 slot。)
++    LS ls = omsShm_.lookup_by_client_ex(strategyId, clientOrderId, out);
++    if (ls == LS::OK) return LS::OK;
+ 
++    // client 索引没命中: 再用交易所 orderId 兜底 (策略只给 orderId 的撤单/查询走这里)。
++    //   ★ 只有 BUSY 才覆盖 ls —— NOT_FOUND 不该盖掉一个 BUSY:
++    //     BUSY 表示"索引里有, 只是这一瞬间读不到", 那是**存在**, 不能降级成"不存在"。
+     if (!crypto::str_cmp(orderId, "")) {
+-        if (omsShm_.lookup_by_orderId_ex(orderId, cached)
+-                == oms::shm::OmsShmSegment::LookupStatus::OK) {
+-           strncpy(orderSysId, cached.body.orderResponse.orderSysId, ORDER_SIZE);
+-           return true; 
+-        }
++        const LS ls2 = omsShm_.lookup_by_orderId_ex(orderId, out);
++        if (ls2 == LS::OK) return LS::OK;
++        if (ls2 == LS::BUSY) ls = LS::BUSY;
+     }
+-
+-    return false;
++    return ls;
+ }
+ 
+ std::string om::OrderManager::getOrderSysId(ExchangeType exchangeTypeEnum, const char* strategyId) {
+--- a/tb/tools/OMS_SHM_REVIEW.md
++++ b/tb/tools/OMS_SHM_REVIEW.md
+@@ -1961,8 +1961,158 @@
+ git -C tb checkout -- include/oms/OrderManager.h src/oms/OrderManager.cpp
+ ```
+ 
+-（本轮**没有**产出 patch 文件 —— 两个改动文件都在 git 追踪内，`git diff` 就是完整产物。）
++补丁：`tb/tools/OmsShm_v7.patch`（4 文件 / 11 hunk），基线 = 两个仓各自的 `HEAD`。
++
++---
++
++## 2.12 第 26 轮：`getOrderSysId` 的双重查询 —— 以及它中途牵出的越界写
++
++### 一、问题：一次撤单查了两遍
++
++用户提问：「先是查到 orderSysId，然后再去查询 order。但 `getOrderSysId` 内部不是已经查到报单了吗？需要查询两次吗？」
++
++**老代码必须查两次**，因为它是两张表：
++
++| 表 | 值 |
++|---|---|
++| `clientOrderId2OrderSysIdMap[strategyId+cid]` | **只有** orderSysId 字符串 |
++| `orderSysId2OrderResponseMap[orderSysId]` | 报单体 `RCommand` |
++
++第一张表**只能**给出 sysId，所以必须再查第二张才拿得到报单体。
++
++**换成 OmsShm 之后第二次是多余的**：三张索引都指向同一个 slot，slot 里就是完整 `RCommand`。
++`lookup_by_client_ex(strategyId, cid, cached)` 已经把整张报单体通过 `out` 返回了，
++而 `getOrderSysId` 只取走 `orderSysId` 字符串就把 `cached` 丢掉，调用方再查一遍**同一个 slot**。
++
++`sizeof(pubsub::RCommand) = 536 B` —— 每次 lookup 都是 hash + probe + 536 字节 memcpy，
++一次撤单/查询做两遍。调用点只有 2 个（CANCEL / QUERY）。
++
++### 二、真正的问题：B3 在撤单入口复活了
++
++`getOrderSysId` 返回 **`bool`**，把 `BUSY` 和 `NOT_FOUND` 合并成 `false`。
++探针实测（同一张**活单**，只改 slot 状态）：
++
++| slot 状态 | `processTcmd(CANCEL)` | 回包 |
++|---|---|---|
++| `LIVE`（对照） | `true` | `OS_CANCELLING` ✓ |
++| `RECLAIMING`（实验） | `false` | **`OS_REJECTED` + `errorId=-99998`(OMSOrderNotFoundError)** ✗ |
++
++一张活单被回成「单不存在」—— 正是 §2.10 刚修掉的 B3，在撤单入口原样存在。
++
++更别扭的是两次查询对 BUSY 的处理**互相矛盾**：第一次判「没有这张单」→ REJECTED 且**不转发**；
++第二次记录日志后**照常转发**（`return true`，回 `OS_CANCELLING`）。同一个函数，两种语义。
++
++### 三、改法
++
++`getOrderSysId` 改成三态并直接吐出报单体，两个调用点合并成**一次查询 + 一套三态处理**：
++
++```cpp
++oms::shm::OmsShmSegment::LookupStatus
++getOrderSysId(int64_t cid, const char* strategyId, pubsub::RCommand& out, const char* orderId = "");
++```
++
++`BUSY` 与第二次查询保持一致（转发 / 重试），不再回 REJECTED。
++注意 CANCEL / QUERY 分支后面还要用 `tcmd.body.cancelOrder.orderSysId` 拼回包，
++合并后要从 `cached.body.orderResponse.orderSysId` 补写回去。
++
++### 四、★ 我在本轮**自己引入**又自己修掉的越界写
++
++v7 的环满分支只 `return false` + 打日志，**没有给策略任何回包**（见第六节）。
++本轮补上 REJECTED 回包时我写成了 `strncpy(..., ORIGINMSG_SIZE)`，
++`-Wall -Wextra` 的警告数立刻从 2 变成 3。
++
++**`ORIGINMSG_SIZE = 256`，而 `originMsg` 是 `char[128]`。**
++
++关键在于 `strncpy(dst, src, n)` 的行为是**按 n 补 NUL** —— 也就是**无条件写满 256 字节**，
++跟 `src` 有多长毫无关系。实测偏移：
++
++| 字段 | offset | 大小 |
++|---|---|---|
++| `originMsg` | 384 | 128 → 到 512 结束 |
++| `updateTime` | **512** | 8 |
++| `apiSourceEnum` | **520** | 4 |
++| `sizeof(OrderResponse)` | | 528 |
++
++写入区间 `[384, 640)` —— 越过 `originMsg` 尾部 128 字节，把**同一个分支里上面两行刚设好的**
++`updateTime` / `apiSourceEnum` 清零，并继续溢出结构体 112 字节。
++
++探针 `probe_overflow2` 的对照：
++
++```
++旧写法 strncpy(.., ORIGINMSG_SIZE=256):  updateTime=0                 apiSource=0
++新写法 snprintf(.., sizeof(originMsg)):  updateTime=1234567890123456  apiSource=2
++```
++
++旧写法还会**直接把 stack canary 打爆**（进程 `exit=134` / SIGABRT）。
++
++**改法**：用 `sizeof(字段)` 而不是宏，边界跟着字段走：
++
++```cpp
++std::snprintf(fail.body.orderResponse.originMsg,
++              sizeof(fail.body.orderResponse.originMsg),
++              "%s", "OMS SHM ring exhausted");
++```
++
++`snprintf` 永远按目标缓冲截断、永远补 NUL，不会随常量漂移（400 字节输入 → `strlen=127` 且 NUL 结尾）。
++
++### 五、验证
++
++| 项 | 结果 |
++|---|---|
++| `-Wall -Wextra` | **2 条，与 `HEAD` 基线逐条相同**（`-Wreturn-type`、`-Wunused-parameter`，都是既有问题）|
++| 场景 A 全生命周期 | **93 行逐字节一致** |
++| 场景 B 长 strategyId | 只差**截断那 2 行**（新的 `sysid=S1` + `oid=EX-B1` + `volTot=1.0`，老的 `S2` + 空 + `0`）|
++| 场景 C 环写满 | 64 存 / 6 拒；**6 条 REJECTED 的 `updateTime`/`apiSourceEnum` 完好** |
++| 场景 D / E / F | TTL 回收、重启持久化、BUSY 转发（F03/F04 返回 `true` 且回 `OS_CANCELLING`；F06 真不存在才回 REJECTED）|
++| 确定性 | A / C / F 各自两次运行一致 |
+ 
++### 六、★ 顺带发现：v7 的环满分支**根本没有回包**
++
++做上面的对照时发现，v7 的环满路径只 `return false` + 打日志，**没有 push 任何回包**：
++
++```
++v7 场景 C: [队列] 共 70 条回包, 状态直方图: OS_2×70         ← 6 条被拒的单也在里面, 状态是 PENDING_NEW
++v8 场景 C: [队列] 共 76 条回包, 状态直方图: OS_2×70 OS_6×6  ← 6 条 REJECTED
++```
++
++也就是说 v7 下被拒的单会让策略收到一条 **`OS_PENDING_NEW`**，然后永远等不到结果。
++本轮补上了 REJECTED 回包。
++
++> ⚠ **留一个决策给用户**：现在一条被拒的单会收到 **两条**回包（`PENDING_NEW` 然后 `REJECTED`），
++> 因为 `rcmdInnerQueue.push(rcmd)` 在 upsert **之前**（这是原始 `HEAD` 的顺序，见 §2.11 的 `ADD_NEW_ORDER_2_ORDER_RESPONSE` 之后）。
++> 原始代码里 map 插入不可能失败，所以这个顺序从来无所谓。
++> 如果希望被拒的单**只**收到 REJECTED，把 `push(rcmd)` 移到 upsert 成功之后即可 —— 一行。
++> 本轮**没有**改，因为这会动到策略侧可见的协议顺序。
++
++### 七、★ 同一缺陷还在 Gateio 的 4 处（**未改**）
++
++`ORIGINMSG_SIZE` 一共 6 处使用。本轮修了 2 处（`OrderManager.cpp` 环满分支 + `README.md` 示例），
++剩下 **4 处在 Gateio 交易客户端**，用的是同一个越界写法：
++
++```
++tb/src/Gateio/GateioSpotTrade.cpp:737
++tb/src/Gateio/GateioSpotTrade.cpp:747
++tb/src/Gateio/GateioSpotTrade.cpp:887
++tb/src/Gateio/GateioUSTrade.cpp:1076
++```
++
++都是 `strncpy(rcmd.body.orderResponse.originMsg, resp.body.c_str(), ORIGINMSG_SIZE)` ——
++把交易所返回的错误原文写进 `char[128]`，写 256 字节。
++**后果**：错误原文之后紧跟的字段被清零，并溢出 112 字节。
++
++本轮**没动**（不在本次范围内，且是实盘交易路径）。根治办法是 `#define ORIGINMSG_SIZE 128`，
++但更稳的是把这 4 处也改成 `sizeof(字段)`（宏改成 128 只解决越界，不解决 `src` ≥ 128 时
++**不补 NUL** 的问题）。建议单独一轮处理。
++
++### 八、撤销
++
++```bash
++git -C tb      checkout -- include/oms/OrderManager.h src/oms/OrderManager.cpp tools/OMS_SHM_REVIEW.md
++git -C include checkout -- oms/README.md
++```
++
++补丁：`tb/tools/OmsShm_v8.patch`（4 文件），基线 = **已应用 v7 之后**的状态。
++
+ ---
+ 
+ ## 3. 形式正确性（当前环境能用，但是错的）
+@@ -2152,18 +2302,22 @@
+ > 对照着看才说明问题。
+ 
+ **当前仓库状态**：`include/oms/OmsShm.h` **已被八个补丁修改**
+-（44788 → 47794 → 49427 → 51965 → 62899 → 68079 → 77059 → 80486 → **81474 B**；
+-980 → 1033 → 1062 → 1101 → 1265 → 1338 → 1471 → 1515 → **1529 行**；
+-md5 现为 `447b1ed8bb4bee4e1d1bfbab220c1fd2`）；
++（44788 → 47794 → 49427 → 51965 → 62899 → 68079 → 77059 → 80486 → 81474 → **88851 B**；
++980 → 1033 → 1062 → 1101 → 1265 → 1338 → 1471 → 1515 → 1529 → **1640 行**；
++md5 现为 `08968b138f79c2e234d6e001032cfec5`。**第 26 轮没有再动它**）；
+ `tb/tools/oms_query.cpp` **已被 A1 + A4 + B6 + v4 + v4.1 + v5 修改**（236 → 262 → 267 → 287 → 308 → 318 → **330 行**）；
+ `tb/tools/oms_shm.sh` **已被 A4 + B6 + v4 + v4.1 + v5 修改**（180 → 182 → 199 → 229 → 299 → **316 行**）；
+ `tb/tools/oms_bench.cpp` / `oms_demo.cpp`（仍逐字节相同，md5 `e274ede4c75ac0a7a98adec32ad2f95a`）
+ **被 v5 改了 159 行**：`make_rcmd` 加 prefix/oid_base、MIXED 相位换 `"mx-"` key 空间、
+ 新增 `--mixed-ttl-ms`、打 writer summary + 自检、`--reset` 容量不匹配时重建（330 → **441 行**）；
+ `include/oms/README.md` 改了索引 2N → 4N、内存、`shm_size`、Q2、新增 Q7 / Q8、四个新指标行、
+-`oms_test` 说明、`oms_demo` 描述改成如实、v5 的 `sustainable_insert_rate`（883 → **974 行**）。
+-新增 `tb/tools/OMS_SHM_REVIEW.md`、`tb/tools/oms_test.cpp`（**1073 行 / 191 条断言**）、
+-`tb/tools/OmsShm_{P1-1,A1,A4,B5,B6,v4,v4_1,v5}.patch`（**均已应用**）。
++`oms_test` 说明、`oms_demo` 描述改成如实、v5 的 `sustainable_insert_rate`（883 → 974 行），
++再经 v6 / v7 / v8 → **1190 行**（v8 顺带修掉 §12.8 里 `originMsg` 回写示例的 `ORIGINMSG_SIZE` 越界）；
++**v7 新增的接入方，v8 继续改**：
++`tb/include/oms/OrderManager.h`（→ **109 行**；`getOrderSysId` 从 `bool` 改三态签名）、
++`tb/src/oms/OrderManager.cpp`（→ **580 行**；三张 tbb map → 一次 `upsert`；`getOrderSysId` 双查合一）；
++新增 `tb/tools/OMS_SHM_REVIEW.md`、`tb/tools/oms_test.cpp`（**1242 行 / 224 条断言**）、
++`tb/tools/OmsShm_{P1-1,A1,A4,B5,B6,v4,v4_1,v5,v6,v7,v8}.patch`（**均已应用**）。
+ 除这些文件外没有其它改动。
+ 
+ > ⚠️ **运维**：B6 之后 `kVersion` 已到 3，**已有的 shm 文件必须删掉重建**
+@@ -2263,3 +2417,31 @@
+ 15. **仍未做**（顺延）：**D1**（`oms_demo` 与 `oms_bench` 仍逐字节相同，v5 是**同步**改的
+    两个文件，md5 `e274ede4c75ac0a7a98adec32ad2f95a`；`./oms_shm.sh demo` 跑的仍是 bench）、
+    **D2**（`tb/tools` 仍未进 CMake）。
++16. ✅ **第 25 轮：`tb/OrderManager` 的三张 tbb map → OmsShm**（2026-10-07，见 §2.11）。
++   `clientOrderId2OrderSysIdMap` / `orderId2OrderSysIdMap` / `orderSysId2OrderResponseMap`
++   换成**一个** `oms::shm::OmsShmWriter`。注意这**不是**"换个容器"：
++   ① 有界环 → `upsert` 会失败，`processTcmd(CMD_NEW_ORDER)` 因此**返回 false**（拒单，不发交易所）；
++   ② `lookup` 变三态；③ 老代码拿的是 map value 的**引用**（改动原地生效），现在拿的是副本 →
++   **每个 return 之前都要写回**（`oms_flush_slot`）。
++   顺带修掉老 bug：`getOrderSysId` 用 `INSTID_SIZE`(32) 去截断 `char[64]` 的 orderSysId。
++   补丁 `OmsShm_v7.patch`（4 文件 / 11 hunk）。`AccountManager` 按使用者要求**未动**。
++17. ✅ **第 26 轮：`getOrderSysId` 双查合一 + `originMsg` 越界写**（2026-10-07，见 §2.12）。
++   使用者提问「`getOrderSysId` 内部不是已经查到报单了吗？需要查询两次吗？」——
++   老代码是**两张表**所以必须查两次；OmsShm 下第二次纯属多余
++   （536 B memcpy 做两遍 + 两次查询之间的 TOCTOU 窗口）。
++   顺带发现 `bool` 返回值把 BUSY 压成 `false` → **活单被回成 `OS_REJECTED` + `OMSOrderNotFoundError`**
++   （正是 B3 在撤单入口复活）。
++   改：三态 + 直接吐出报单体；环满分支补上 REJECTED 回包（v7 只 `return false`，
++   策略永远等不到结果），并修掉由此引入的
++   `strncpy(.., ORIGINMSG_SIZE=256)` 越界写（`originMsg` 只有 `char[128]`，
++   会清零 `updateTime`/`apiSourceEnum` 并溢出结构体 112 字节）。
++   补丁 `OmsShm_v8.patch`（4 文件 / 10 hunk）。
++18. **仍未做**（第 26 轮新增，按建议优先级）：
++   - ⚠ **`ORIGINMSG_SIZE` 的 4 处 Gateio 用法**（`GateioSpotTrade.cpp:737/747/887`、
++     `GateioUSTrade.cpp:1076`）—— 同一个越界写，**实盘交易路径**，见 §2.12 七；
++   - **`processRcmd` 的 `default:` 分支漏 `return`** —— `-Wall -Wextra` 报的
++     `-Wreturn-type` 就是它（非 void 函数走到末尾 = **UB**）。
++     `processTcmd` 的 default 有 `return false`，`processRcmd` 没有。**既有问题**，两版都在；
++   - 环满时一条被拒的单会收到 **两条**回包（`PENDING_NEW` 然后 `REJECTED`），
++     因为 `rcmdInnerQueue.push(rcmd)` 在 upsert **之前**（原始 `HEAD` 的顺序）。
++     想只发 REJECTED 就把 `push` 后移一行 —— 会动到策略侧可见的协议顺序，故未改。
+--- a/include/oms/README.md
++++ b/include/oms/README.md
+@@ -587,8 +587,11 @@
+     // 6) REJECTED 保留错误信息
+     if (rcmd.body.orderResponse.orderStatus == OS_REJECTED) {
+         cur.body.orderResponse.errorId = rcmd.body.orderResponse.errorId;
+-        std::strncpy(cur.body.orderResponse.originMsg,
+-                     rcmd.body.orderResponse.originMsg, ORIGINMSG_SIZE);
++        // ⚠ 别用 ORIGINMSG_SIZE (=256): originMsg 是 char[128], strncpy 会按 n 补 NUL,
++        //   越界写 128 字节并把紧随其后的 updateTime / apiSourceEnum 清零。
++        std::snprintf(cur.body.orderResponse.originMsg,
++                      sizeof(cur.body.orderResponse.originMsg),
++                      "%s", rcmd.body.orderResponse.originMsg);
+     }
+ 
+     // === 原子写回 ===
+@@ -653,22 +656,20 @@
+     }
+ };
+ 
+-getOrderSysId (辅助函数) 改成:
++getOrderSysId (辅助函数) 改成:  ★ 三态, 并且**直接吐出完整报单体** (见 §12.8)
+ 
+-bool OrderManager::getOrderSysId(int64_t cid, const char* strategyId,
+-                                  char* orderSysId_out, const char* orderId) {
+-    pubsub::RCommand out;
+-    if (shm_.lookup_by_client(strategyId, cid, out)) {
+-        std::strncpy(orderSysId_out, out.body.orderResponse.orderSysId, ORDER_SIZE);
+-        return true;
+-    }
+-    if (orderId && orderId[0]) {
+-        if (shm_.lookup_by_orderId(orderId, out)) {
+-            std::strncpy(orderSysId_out, out.body.orderResponse.orderSysId, ORDER_SIZE);
+-            return true;
+-        }
++oms::shm::OmsShmSegment::LookupStatus
++OrderManager::getOrderSysId(int64_t cid, const char* strategyId,
++                            pubsub::RCommand& out, const char* orderId) {
++    // 一次 lookup 就同时拿到 orderSysId 和整张报单体 —— 老代码要查两次
++    // (client key→sysId, sysId→报单体), 因为老的第一张表**只存字符串**。
++    auto ls = shm_.lookup_by_client_ex(strategyId, cid, out);
++    if (ls == LookupStatus::OK) return ls;
++    if (orderId && orderId[0]) {
++        ls = shm_.lookup_by_orderId_ex(orderId, out);
++        if (ls == LookupStatus::OK) return ls;
+     }
+-    return false;
++    return ls;      // ★ 返回三态而不是 bool: BUSY 不等于 NOT_FOUND
+ }
+ 
+ processTcmd 里的 orderSysId2OrderResponseMap[orderSysId] = rcmd 变 shm_.upsert(rcmd); (三个索引自动落地)。
+@@ -1052,6 +1053,8 @@
+     原地改 iter->second, 靠引用生效                  改副本 out, 然后 upsert(out) 写回 (必须!)
+     clientOrderId2OrderSysIdMap.find(...)            lookup_by_client_ex(strategyId, cid, out)
+     orderId2OrderSysIdMap.find(orderId)              lookup_by_orderId_ex(orderId, out)
++    getOrderSysId: 先查表1拿 sysId, 再查表2         getOrderSysId: **一次** lookup 直接吐报单体
++                    (两张表, 两次查询)                (三张索引指向同一个 slot, 见 §12.8)
+ 
+ 复合 client key 的拼法两版完全一致 —— `compose_client_key()` 当初就是照
+ `fmt::format("{}{}", strategyId, clientOrderId)` 写的。
+@@ -1136,6 +1139,38 @@
+ 
+ 已改成 `ORDER_SIZE` (64, 与调用方缓冲区一致)。
+ 
++12.8 `getOrderSysId` 的两次查询合并成一次 (以及一个 `strncpy` 越界陷阱)
++
++**为什么老代码要查两次**: 它是两张表 ——
++`clientOrderId2OrderSysIdMap[key]` **只存 orderSysId 字符串**, 报单体在
++`orderSysId2OrderResponseMap[sysId]` 里, 所以必须再查一次。
++
++**OmsShm 下第二次是多余的**: 三张索引都指向**同一个 slot**, slot 里就是完整 `RCommand`。
++`lookup_by_client_ex(strategyId, cid, out)` 已经把整张报单体通过 `out` 返回了。
++`sizeof(pubsub::RCommand) = 536 B` —— 每次 lookup 都是 hash + probe + 536 字节 memcpy,
++一次撤单/查询原本要做两遍。
++
++`getOrderSysId` 因此改成**三态 + 直接吐出报单体**, 两个调用点 (CANCEL / QUERY) 合并成
++一次查询 + 一套三态处理。`BUSY` 不再被压成 `false` —— 老写法会把一张**活单**回成
++`OS_REJECTED` + `OMSOrderNotFoundError` (就是 §12.4 的 B3, 只是发生在撤单入口)。
++
++⚠ **`ORIGINMSG_SIZE` 是个坑, 别用**。它是 **256**, 而 `OrderResponse::originMsg` 是
++`char[128]`。`strncpy(dst, src, n)` 会**按 n 补 NUL** —— 也就是**无条件写满 256 字节**,
++与 `src` 多长无关:
++
++    originMsg        offset 384, 128 字节 → 到 512 结束
++    updateTime       offset 512          ← 被覆盖
++    apiSourceEnum    offset 520          ← 被覆盖
++    sizeof(OrderResponse) = 528, 而写入区间是 [384, 640)
++
++结果是把**同一个分支里刚设好的** `updateTime` / `apiSourceEnum` 清零, 并溢出结构体 112 字节
++(实测 `updateTime` 1234567890123456 → 0)。正确写法是让边界跟着字段走:
++
++    std::snprintf(dst, sizeof(dst), "%s", src);      // 永远截断 + 永远补 NUL
++
++**同一写法在 Gateio 还有 4 处** (`GateioSpotTrade.cpp:737/747/887`,
++`GateioUSTrade.cpp:1076`), 都是把交易所错误原文写进 `char[128]`, 尚未修。
++
+ 十三、文件清单
+ 
+ new_dev/

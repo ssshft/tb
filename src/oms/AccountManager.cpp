@@ -145,7 +145,7 @@ bool am::AccountManager::processRcmd(pubsub::RCommand& rcmd) {
                 }
             }
         }
-        else if (rcmd.body.position.apiSourceEnum = AS_WEBSOCKET) {
+        else if (rcmd.body.position.apiSourceEnum == AS_WEBSOCKET) {
             positionMap[key] = rcmd; // 暂时全覆盖，有需要单独处理
             // auto found = positionMap.find(key);
             // if (found != positionMap.end()) {

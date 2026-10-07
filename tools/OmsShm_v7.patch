@@ -1,0 +1,914 @@
+# ============================================================================
+# OmsShm_v7.patch —— OrderManager 用 OmsShm 取代三张 tbb::concurrent_unordered_map
+#                     (第 25 轮, 2026-10-07)
+# ============================================================================
+#
+# 改了什么
+# --------
+#   tb/include/oms/OrderManager.h   +  tb/src/oms/OrderManager.cpp
+#       三张 tbb::concurrent_unordered_map
+#           clientOrderId2OrderSysIdMap / orderId2OrderSysIdMap / orderSysId2OrderResponseMap
+#       合并成**一个** oms::shm::OmsShmWriter omsShm_ (报单体存 slot, 三张 hash 索引指向 slot)。
+#       新增 struct OmsShmConfig (含 sustainable_insert_rate())、omsShm() 访问器、
+#       shm_reject_count_/shm_busy_count_ + should_log_limited()。
+#       读路径改用第 24 轮的 lookup_by_*_ex() 三态 (BUSY 不再被当成"单不存在")。
+#
+#   tb/tools/OMS_SHM_REVIEW.md
+#       新增 §2.11 (本次改造的完整记录)。
+#
+#   include/oms/README.md
+#       新增"十二、接入 tb/OrderManager"章节 (API 映射 / 单写者前提 / 容量规划)。
+#
+# 语义变化 (重要)
+# ---------------
+#   老: 无上限 map, 存单**不可能失败**; find() → 有/无。
+#   新: 有上限的环, upsert 满了返回 kInvalidSlot → processTcmd 返回 false (**拒单, 不发交易所**)。
+#       所以这次不只是"换容器", 而是**容量规划变更**:
+#           **可持续写入速率上限 = slot_capacity / min_reclaim_age**
+#       默认 100000 slot + 60s TTL ⇒ 只有约 1666 单/秒。超了必然写满、必然丢单。
+#       上线前必须拿实际下单速率跟这条线比一次。
+#
+# 基线 (两段, 因为两个目录各自是独立的 git 仓库)
+# --------------------------------------------
+#   tb/       ← git -C tb      HEAD = 18027ec  (== origin/main)
+#   include/  ← git -C include HEAD = 65bfae1  (== origin/main)
+#
+#   核对方式 (规则 42: 基线必须被证明, 不能只是"看起来像"):
+#       git -C tb show HEAD:include/oms/OrderManager.h | grep -c concurrent_unordered_map   # → 4
+#       git -C tb show HEAD:include/oms/OrderManager.h | wc -l                              # → 41
+#       git -C include show HEAD:oms/README.md | grep -c '接入 tb/OrderManager'             # → 0
+#
+# 应用
+# ----
+#   在 /Users/lawson/Documents/hft (workspace 根, 非 git 仓库) 下:
+#       patch -p1 < tb/tools/OmsShm_v7.patch
+#
+#   注意: 现在 tb/ 和 include/ **都是 git 仓库且有远端**了, 所以也可以直接
+#       git -C tb diff ; git -C include diff
+#   本补丁只是为了给出一个跨两仓的单文件交付物。
+#
+# 验证 (见 OMS_SHM_REVIEW.md §2.11)
+# --------------------------------
+#   差分 harness: 同一个 driver.cpp 编两遍 (-DOMS_NEW 为新版), diff 轨迹。
+#       场景 A 正常生命周期 93 行  → **逐字节一致** (行为等价)
+#       场景 B 长 strategyId       → 只差**那 2 行** (老代码 orderSysId 被 INSTID_SIZE 截断)
+#       场景 C 环写满 (cap=64)     → 64 成功 + 6 被拒, 被拒的单没发给交易所
+#       场景 D TTL=0               → 回收可用
+#       场景 E 重启                → created_new=0, 活单仍可解析
+#   真实文件 -Wall -Wextra: 2 个 warning, 与基线**完全相同** (均为既有问题)。
+#
+# ============================================================================
+--- a/tb/include/oms/OrderManager.h
++++ b/tb/include/oms/OrderManager.h
+@@ -5,27 +5,59 @@
+ #include "log_engine.h"
+ #include "time_util.h"
+ #include "oms/AccountManager.h"
+-#include <tbb/concurrent_unordered_map.h>
++#include "oms/OmsShm.h"                 // ← 取代 <tbb/concurrent_unordered_map.h>
+ #include "crypto_exception.h"
+ #include "utils/order_util.h"
+ #include "utils/tb_global.h"
+ 
+ 
+ namespace om {
++
++    // OmsShm 段的配置。
++    //
++    // ★ 容量和 TTL **必须一起规划**, 只调一个会持续静默丢单:
++    //       稳态占用 ≈ 写入速率 × min_reclaim_age
++    //    ⇒  **可持续写入速率上限 = slot_capacity / min_reclaim_age**
++    //
++    //   默认 (100000 slot + 60s) ⇒ 只有 **约 1666 单/秒**。超过这条线环必然写满,
++    //   `upsert` 返回 kInvalidSlot → `processTcmd` 会**拒绝该单**(不发给交易所)。
++    //
++    //   例: 峰值 20000 单/秒、想留 60s 历史 ⇒ slot_capacity 至少 1_200_000。
++    //       内存 ≈ slot_capacity × 1KB + 3 × next_pow2(4×slot_capacity) × 32B。
++    //       (1200000 slot ⇒ 约 1.2 GB + 1.6 GB, 需要确认 /dev/shm 够大)
++    //
++    //   如果只想要"够用就行"而不留历史, 把 min_reclaim_age_ns 调小即可 (回收更激进),
++    //   但**不能**调到 0: 0 意味着刚 FINISHED 就被复用, 上层按 orderId 反查会落空。
++    struct OmsShmConfig {
++        std::string path               = "/dev/shm/tb_oms.dat";
++        uint32_t    slot_capacity      = 100000;
++        uint64_t    min_reclaim_age_ns = 60ULL * 1000000000ULL;              // FINISHED 多久后可回收
++        uint64_t    max_live_stale_ns  = 24ULL * 3600ULL * 1000000000ULL;    // LIVE 僵尸兜底
++
++        // 可持续写入速率上限 (单/秒); 0 = 不限制
++        uint64_t sustainable_insert_rate() const noexcept {
++            return min_reclaim_age_ns
++                 ? static_cast<uint64_t>(slot_capacity) * 1000000000ULL / min_reclaim_age_ns
++                 : 0;
++        }
++    };
++
+     class OrderManager{
+     public:
+         OrderManager();
+         ~OrderManager();
+ 
+-        void preStart();
++        void preStart(const OmsShmConfig& cfg = OmsShmConfig());
+         void run();
+         void preStop();
+ 
+         bool processTcmd(pubsub::TCommand& tcmd);
+         bool processRcmd(pubsub::RCommand& rcmd);
+         bool onOrderUpdate(pubsub::RCommand& rcmd);
+-        
+- 
++
++        // 测试 / 工具用: 直接访问底层 shm 段 (只读统计、对账遍历)
++        oms::shm::OmsShmWriter& omsShm() { return omsShm_; }
++
+     private:
+         void load_data();
+         void store_rcmd_data(vector<pubsub::RCommand> &rcmdVec);
+@@ -33,10 +65,38 @@
+         std::string getOrderSysId(ExchangeType exchangeTypeEnum, const char* strategyId);
+ 
+     protected:
+-        tbb::concurrent_unordered_map<std::string, std::string> clientOrderId2OrderSysIdMap;
+-        tbb::concurrent_unordered_map<std::string, std::string> orderId2OrderSysIdMap;
+-        tbb::concurrent_unordered_map<std::string, pubsub::RCommand> orderSysId2OrderResponseMap;
++        // ★ 单写者共享内存订单存储 —— 取代原先的三张 tbb::concurrent_unordered_map:
++        //     clientOrderId2OrderSysIdMap / orderId2OrderSysIdMap / orderSysId2OrderResponseMap
++        //
++        //   三张表的内容现在都在这一个段里:
++        //     - 报单体 (pubsub::RCommand) → slot
++        //     - orderSysId / 复合 clientOrderId / orderId → 三张 hash 索引, 全部指向 slot
++        //   复合 client key 的格式与老代码 `fmt::format("{}{}", strategyId, clientOrderId)`
++        //   一致 (OmsShm 的 compose_client_key 就是照它写的)。
++        //
++        //   ⚠ OmsShmWriter 的契约是**单线程串行调用** (见 OmsShm.h 的类注释)。
++        //     tb 侧由 `TbOperation::execute()` 这**一个**线程串行驱动
++        //     processTcmd / processRcmd, 满足该契约。
++        //     如果将来把 tcmd 和 rcmd 拆到不同线程, **必须**在这里加锁 (或每线程一个段),
++        //     否则会破坏 next_slot_hint 和 slot 状态机。
++        oms::shm::OmsShmWriter omsShm_;
+ 
++        // 生效的配置 (preStart 时确定), 供日志/诊断直接引用, 避免热路径去算 stats()
++        OmsShmConfig cfg_;
++
++        // 丢单计数 —— 用于限流告警。
++        //   ★ 为什么不直接把失败逐条打日志: 环写满时**每一单**都会失败。20k 单/秒就是
++        //     每秒 20k 条 ERROR —— 和 OMS_SHM_REVIEW.md §2.9 里那个"刷屏"事故同一类问题。
++        //     OmsShm 内部的 alloc_exhausted_report 已经限流并打出完整现场, 这里只补
++        //     "被上层拒掉的单"这个视角, 同样必须限流。
++        uint64_t shm_reject_count_ = 0;
++        uint64_t shm_busy_count_   = 0;
++
++        // 限流规则与 OmsShm 一致: 前 8 次 + 之后每 4096 次
++        static bool should_log_limited(uint64_t n) noexcept {
++            return n <= 8 || (n % 4096) == 0;
++        }
++
+         am::AccountManager accountManager;
+     };
+-}
+\ No newline at end of file
++}
+--- a/tb/src/oms/OrderManager.cpp
++++ b/tb/src/oms/OrderManager.cpp
+@@ -35,12 +35,37 @@
+ }
+ 
+ om::OrderManager::~OrderManager(){
+-
++    // omsShm_ 的析构 (OmsShmSegment::~OmsShmSegment) 会 munmap, 不需要在这里手动 close。
+ }
+ 
+-void om::OrderManager::preStart(){
++void om::OrderManager::preStart(const OmsShmConfig& cfg){
+     // storage->create_oms_table();
+     // load_data();
++
++    try {
++        omsShm_.open(cfg.path, cfg.slot_capacity);
++    }
++    catch (const std::exception& e) {
++        // 开不了 shm 就没法跟踪订单 —— 继续跑下去会变成"发出去的单全都不认识",
++        // 比启动失败更危险。直接抛, 让 tb 起不来。
++        LOG_ERROR("oms shm open failed: path={} err={}", cfg.path, e.what());
++        cryptothrow(e.what(), -1);
++    }
++    omsShm_.set_min_reclaim_age_ns(cfg.min_reclaim_age_ns);
++    omsShm_.set_max_live_stale_ns(cfg.max_live_stale_ns);
++    cfg_ = cfg;
++    shm_reject_count_ = 0;
++    shm_busy_count_   = 0;
++
++    const oms::shm::OmsShmSegment::Stats st = omsShm_.stats();
++    LOG_INFO("oms shm ready: path={} created={} slot_cap={} index_cap={} "
++             "empty={} live={} finished={} min_reclaim_age={}ms max_live_stale={}ms "
++             "sustainable_insert_rate={}/s",
++             cfg.path, omsShm_.created_new(), omsShm_.slot_capacity(), omsShm_.index_capacity(),
++             st.empty, st.live, st.finished,
++             cfg.min_reclaim_age_ns / 1000000ULL, cfg.max_live_stale_ns / 1000000ULL,
++             cfg.sustainable_insert_rate());
++
+     accountManager.preStart();
+ }
+ 
+@@ -49,6 +74,22 @@
+ }
+ 
+ void om::OrderManager::preStop(){
++    // ★ 这里**故意不** close()/munmap。
++    //   preStop 是从 main 的 signal_handler 调的, 跑在**另一个线程**上; 而 execute()
++    //   线程可能正卡在 upsert 中间。munmap 掉正在写的映射 = 段错误。
++    //   进程退出时内核会回收映射, 不 close 没有任何副作用 (MAP_SHARED 的数据早已可见)。
++    if (omsShm_.is_open()) {
++        const oms::shm::OmsShmSegment::Stats st = omsShm_.stats();
++        LOG_INFO("oms shm final: inserts={} updates={} reclaims={} alloc_failures={} "
++                 "(exhausted={} alias_insert_failures={} key_sync_failures={})",
++                 st.total_inserts, st.total_updates, st.total_reclaims, st.total_alloc_failures,
++                 st.total_alloc_exhausted, st.total_alias_insert_failures, st.total_key_sync_failures);
++        if (st.total_alloc_failures > 0) {
++            LOG_ERROR("oms shm dropped {} order(s) —— 可持续速率上限 = slot_cap / min_reclaim_age "
++                      "= {}/s, 请核对实际下单速率", st.total_alloc_failures,
++                      cfg_.sustainable_insert_rate());
++        }
++    }
+     accountManager.preStop();
+ }
+ 
+@@ -61,39 +102,81 @@
+             ADD_NEW_ORDER_2_ORDER_RESPONSE(tcmd)
+             rcmdInnerQueue.push(rcmd);
+             strncpy(tcmd.body.newOrder.orderSysId, rcmd.body.orderResponse.orderSysId, ORDER_SIZE);
+-            orderSysId2OrderResponseMap[rcmd.body.orderResponse.orderSysId] = rcmd;
+-            const std::string& clientOrderIdStra = fmt::format("{}{}", rcmd.body.orderResponse.strategyId, rcmd.body.orderResponse.clientOrderId);
+-            clientOrderId2OrderSysIdMap[clientOrderIdStra] = rcmd.body.orderResponse.orderSysId;
++
++            // ★ 取代老代码的三行:
++            //     orderSysId2OrderResponseMap[orderSysId] = rcmd;
++            //     clientOrderId2OrderSysIdMap[strategyId+cid] = orderSysId;
++            //   现在一次 upsert 就同时建立: 报单体 + orderSysId 主索引 + 复合 client 索引。
++            //   (orderId 索引要等交易所回报带了 orderId 才建, 由 update_slot 的 key 同步补上)
++            const uint32_t slot = omsShm_.upsert(rcmd);
++            if (slot == oms::shm::kInvalidSlot) {
++                // 环写满 / 索引写不进 —— 这张单**没进 SHM**。
++                // 老代码此处必然返回 true (tbb map 无上限), 于是会把一张"OMS 不认识"的单
++                // 发给交易所: 之后撤单/查询全部落空, 只能等交易所回报兜底。
++                // 现在返回 false → TbOperation 不会把它投给 trade client (宁可不下, 不可失控)。
++                //
++                // ★ 限流: 环写满时**每一单**都会走到这里。逐条打日志 = 每秒上万条 ERROR,
++                //   正是 §2.9 那个刷屏事故的形态。OmsShm 内部的 alloc_exhausted_report 已经
++                //   限流并打出完整现场 (环占用 / TTL / 可持续速率), 这里只补上层视角。
++                //   也**不要**在这里调 omsShm_.stats() —— 它是 O(slot_capacity) 的全表扫描,
++                //   放在丢单热路径上会把一次故障放大成 CPU 打满。
++                const uint64_t n = ++shm_reject_count_;
++                if (should_log_limited(n)) {
++                    LOG_ERROR("oms shm upsert failed (ring full?), reject new order. rejected={} "
++                              "orderSysId={} strategyId={} clientOrderId={} slot_cap={} "
++                              "min_reclaim_age={}ms sustainable_insert_rate={}/s",
++                              n,
++                              rcmd.body.orderResponse.orderSysId, rcmd.body.orderResponse.strategyId,
++                              rcmd.body.orderResponse.clientOrderId,
++                              cfg_.slot_capacity, cfg_.min_reclaim_age_ns / 1000000ULL,
++                              cfg_.sustainable_insert_rate());
++                }
++                return false;
++            }
+             return true;
+             break;
+         }
+         case pubsub::CMD_CANCEL_ORDER: {
+-            const std::string& clientOrderIdStra = fmt::format("{}{}", tcmd.body.cancelOrder.strategyId, tcmd.body.cancelOrder.clientOrderId);
+             bool found = getOrderSysId(tcmd.body.cancelOrder.clientOrderId, tcmd.body.cancelOrder.strategyId, tcmd.body.cancelOrder.orderSysId, tcmd.body.cancelOrder.orderId);
+             if (found) {
+-                pubsub::RCommand rcmd;
+-                memset(&rcmd, 0, sizeof(pubsub::RCommand));
+-                auto iter = orderSysId2OrderResponseMap.find(tcmd.body.cancelOrder.orderSysId);
+-                if (iter != orderSysId2OrderResponseMap.end()) {
+-                    memcpy(&rcmd, &(iter->second), sizeof(pubsub::RCommand));
++                pubsub::RCommand cached;
++                const oms::shm::OmsShmSegment::LookupStatus ls =
++                    omsShm_.lookup_by_orderSysId_ex(tcmd.body.cancelOrder.orderSysId, cached);
++
++                if (ls == oms::shm::OmsShmSegment::LookupStatus::OK) {
++                    pubsub::RCommand rcmd;
++                    memset(&rcmd, 0, sizeof(pubsub::RCommand));
++                    memcpy(&rcmd, &cached, sizeof(pubsub::RCommand));
+                     rcmd.body.orderResponse.orderStatus = OS_CANCELLING;
+                     rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+                     rcmd.body.orderResponse.apiSourceEnum = AS_CANCEL_ORDER;
+                     rcmdInnerQueue.push(rcmd);
+-                    
+-                    auto& r = iter->second;
+-                    if (r.body.orderResponse.orderStatus == OS_CANCELED || r.body.orderResponse.orderStatus == OS_FILLED || r.body.orderResponse.orderStatus == OS_REJECTED) {
+-                        LOG_INFO("order clientOrderId: {} already finished, return oms result.", r.body.orderResponse.clientOrderId);
+-                        rcmd.body.orderResponse.orderStatus = r.body.orderResponse.orderStatus;
++
++                    if (cached.body.orderResponse.orderStatus == OS_CANCELED || cached.body.orderResponse.orderStatus == OS_FILLED || cached.body.orderResponse.orderStatus == OS_REJECTED) {
++                        LOG_INFO("order clientOrderId: {} already finished, return oms result.", cached.body.orderResponse.clientOrderId);
++                        rcmd.body.orderResponse.orderStatus = cached.body.orderResponse.orderStatus;
+                         rcmd.body.orderResponse.errorId = OrderAlreadyFinishedError;
+-                        rcmd.body.orderResponse.updateTime = r.body.orderResponse.updateTime;
++                        rcmd.body.orderResponse.updateTime = cached.body.orderResponse.updateTime;
+                         rcmd.body.orderResponse.apiSourceEnum = AS_CANCEL_ORDER;
+                         rcmdInnerQueue.push(rcmd);
+                         return false;
+                     }
+                 }
+                 else {
+-                    LOG_ERROR("oms not found order response, orderSysId: {}", tcmd.body.cancelOrder.orderSysId);
++                    // B3: lookup 现在是三态。BUSY = 索引里**有**这张单, 只是这一瞬间拿不到
++                    // 一致快照 (写者正忙 / 该 slot 正在被回收); NOT_FOUND = 真的没有。
++                    // 老代码把两者混成"找不到", 排查时会把活单当死单 —— 所以日志必须分开。
++                    if (ls == oms::shm::OmsShmSegment::LookupStatus::BUSY) {
++                        // 限流: BUSY 在高压下会成片出现, 逐条打日志就是刷屏。
++                        const uint64_t n = ++shm_busy_count_;
++                        if (should_log_limited(n)) {
++                            LOG_ERROR("oms lookup BUSY (writer busy / slot reclaiming), count={} orderSysId: {}", n, tcmd.body.cancelOrder.orderSysId);
++                        }
++                    } else {
++                        LOG_ERROR("oms not found order response, orderSysId: {}", tcmd.body.cancelOrder.orderSysId);
++                    }
++                    pubsub::RCommand rcmd;
++                    memset(&rcmd, 0, sizeof(pubsub::RCommand));
+                     rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
+                     rcmd.body.orderResponse.exchangeTypeEnum = tcmd.body.cancelOrder.exchangeTypeEnum;
+                     rcmd.body.orderResponse.instTypeEnum = tcmd.body.cancelOrder.instTypeEnum;
+@@ -133,27 +216,33 @@
+             break;
+         }
+         case pubsub::CMD_QUERY_ORDER: {
+-            const std::string& clientOrderIdStra = fmt::format("{}{}", tcmd.body.queryOrder.strategyId, tcmd.body.queryOrder.clientOrderId);
+             bool found = getOrderSysId(tcmd.body.queryOrder.clientOrderId, tcmd.body.queryOrder.strategyId, tcmd.body.queryOrder.orderSysId, tcmd.body.queryOrder.orderId);
+             if (found) {
+-                pubsub::RCommand rcmd;
+-                memset(&rcmd, 0, sizeof(pubsub::RCommand));
+-                auto iter = orderSysId2OrderResponseMap.find(tcmd.body.queryOrder.orderSysId);
+-                if (iter != orderSysId2OrderResponseMap.end()) {
+-                    if (iter->second.body.orderResponse.orderStatus != OS_FILLED) { // 非成交，发到交易所查询
+-                        strncpy(tcmd.body.queryOrder.orderId, iter->second.body.orderResponse.orderId, INSTID_SIZE);
++                pubsub::RCommand cached;
++                const oms::shm::OmsShmSegment::LookupStatus ls =
++                    omsShm_.lookup_by_orderSysId_ex(tcmd.body.queryOrder.orderSysId, cached);
++
++                if (ls == oms::shm::OmsShmSegment::LookupStatus::OK) {
++                    if (cached.body.orderResponse.orderStatus != OS_FILLED) { // 非成交，发到交易所查询
++                        strncpy(tcmd.body.queryOrder.orderId, cached.body.orderResponse.orderId, INSTID_SIZE);
+                         return true;
+                     }
+                     else { // filled状态直接返回
+                         pubsub::RCommand rcmd;
+                         memset(&rcmd, 0, sizeof(pubsub::RCommand));
+-                        memcpy(&rcmd, &(iter->second), sizeof(pubsub::RCommand));
++                        memcpy(&rcmd, &cached, sizeof(pubsub::RCommand));
+                         rcmd.body.orderResponse.apiSourceEnum = AS_QUERY_ORDER;
+                         rcmdInnerQueue.push(rcmd);  
+                         return false;
+                     }
+                 }
+                 else { // 可以查询到orderSysId，但是查不到缓存的rcmd，则发到交易所查询
++                   if (ls == oms::shm::OmsShmSegment::LookupStatus::BUSY) {
++                       const uint64_t n = ++shm_busy_count_;
++                       if (should_log_limited(n)) {
++                           LOG_ERROR("oms lookup BUSY, query goes to exchange. count={} orderSysId: {}", n, tcmd.body.queryOrder.orderSysId);
++                       }
++                   }
+                    return true; 
+                 }
+             }
+@@ -233,96 +322,132 @@
+     }
+ }
+ 
++// 把合并后的报单体写回 SHM。
++//   ★ 为什么每个 return 前都要写回: 老代码拿的是 map 里 value 的**引用**
++//     (`auto& op = iter->second;`), 改动是原地生效的 —— 包括那些 `return false` 的分支
++//     (tradeDiff/fillPrice 归零、orderId 补写、errorId 落库 都留在表里了)。
++//     现在 `op` 是 lookup 出来的**副本**, 不写回就会丢掉这些改动, 行为就与老代码不一致。
++//   ★ 本函数只在"已经找到 slot"之后调用, 走的是 update_slot 分支 (不 alloc), 不会因环满失败。
++static inline void oms_flush_slot(oms::shm::OmsShmWriter& shm, const pubsub::RCommand& op) {
++    const uint32_t idx = shm.upsert(op);
++    if (idx == oms::shm::kInvalidSlot) {
++        // 只可能是 slot 在 lookup 与 upsert 之间被回收了 (FINISHED 超龄) —— 极罕见。
++        LOG_ERROR("oms shm write-back failed, orderSysId: {}", op.body.orderResponse.orderSysId);
++    }
++}
++
+ bool om::OrderManager::onOrderUpdate(pubsub::RCommand& rcmd) {
+-    auto iter = orderSysId2OrderResponseMap.find(rcmd.body.orderResponse.orderSysId);
+-    if (iter != orderSysId2OrderResponseMap.end()) {
+-        auto& op = iter->second;
++    pubsub::RCommand cached;
++    const oms::shm::OmsShmSegment::LookupStatus ls =
++        omsShm_.lookup_by_orderSysId_ex(rcmd.body.orderResponse.orderSysId, cached);
+ 
+-        bool statusAdvanced = false;
+-        bool volumeIncreased = false;
+-
+-        if (rcmd.body.orderResponse.volumeTraded > op.body.orderResponse.volumeTotal + ZERO_NUM) {
+-            LOG_ERROR("Overfilled order! orderSysId: {} volumeTraded: {} volumeTotal: {}", op.body.orderResponse.orderSysId, rcmd.body.orderResponse.volumeTraded, op.body.orderResponse.volumeTotal);
+-        }
+-
+-        if (rcmd.body.orderResponse.orderStatus == OS_CANCELED) {
+-            if (rcmd.body.orderResponse.apiSourceEnum == AS_CANCEL_ORDER && rcmd.body.orderResponse.exchangeTypeEnum == BINANCE) {
+-                if (op.body.orderResponse.volumeTraded < rcmd.body.orderResponse.volumeTraded) {
+-                    return false;
+-                }
+-            }    
++    if (ls == oms::shm::OmsShmSegment::LookupStatus::BUSY) {
++        // ★ B3: 索引里**有**这张单, 只是这一瞬间读不到一致快照 (写者正忙 / 正在回收)。
++        //   当成"没有缓存的回报"处理会把一次成交/撤单回报丢掉, 且没有任何提示。
++        //   这里明确报出来: 交易所会重发, 或者策略侧 query 兜底。
++        //   限流: BUSY 在高并发下会成片出现。
++        const uint64_t n = ++shm_busy_count_;
++        if (should_log_limited(n)) {
++            LOG_ERROR("oms lookup BUSY, drop this report (exchange will resend / query will retry). count={} orderSysId: {}",
++                      n, rcmd.body.orderResponse.orderSysId);
+         }
++        return false;
++    }
++    if (ls == oms::shm::OmsShmSegment::LookupStatus::NOT_FOUND) {
++        // 没有缓存的报单是否应该推给策略，比如adl类型的订单
++        return false;
++    }
+ 
+-        if (rcmd.body.orderResponse.volumeTraded > op.body.orderResponse.volumeTraded) {
+-            op.body.orderResponse.tradeDiff = rcmd.body.orderResponse.volumeTraded - op.body.orderResponse.volumeTraded;
+-            op.body.orderResponse.fillPrice = 0.0;
++    // 下面与老代码逐行一致 —— 只是 `op` 从"map 里的引用"变成"lookup 出来的副本",
++    // 因此每个 return 之前都要 oms_flush_slot() 把改动写回。
++    pubsub::RCommand& op = cached;
+ 
+-            if (rcmd.body.orderResponse.instTypeEnum == C_SWAP || rcmd.body.orderResponse.instTypeEnum == C_FUTURES) {
+-                if (op.body.orderResponse.volumeTraded > ZERO_NUM) {
+-                    op.body.orderResponse.fillPrice = op.body.orderResponse.tradeDiff / (rcmd.body.orderResponse.volumeTraded / rcmd.body.orderResponse.tradePrice - op.body.orderResponse.volumeTraded / op.body.orderResponse.tradePrice);
+-                }
+-                else {
+-                    op.body.orderResponse.fillPrice = rcmd.body.orderResponse.tradePrice;
+-                }
+-            }
+-            else {
+-                op.body.orderResponse.fillPrice = (rcmd.body.orderResponse.volumeTraded * rcmd.body.orderResponse.tradePrice - op.body.orderResponse.volumeTraded * op.body.orderResponse.tradePrice) / op.body.orderResponse.tradeDiff;
++    bool statusAdvanced = false;
++    bool volumeIncreased = false;
+ 
++    if (rcmd.body.orderResponse.volumeTraded > op.body.orderResponse.volumeTotal + ZERO_NUM) {
++        LOG_ERROR("Overfilled order! orderSysId: {} volumeTraded: {} volumeTotal: {}", op.body.orderResponse.orderSysId, rcmd.body.orderResponse.volumeTraded, op.body.orderResponse.volumeTotal);
++    }
++
++    if (rcmd.body.orderResponse.orderStatus == OS_CANCELED) {
++        if (rcmd.body.orderResponse.apiSourceEnum == AS_CANCEL_ORDER && rcmd.body.orderResponse.exchangeTypeEnum == BINANCE) {
++            if (op.body.orderResponse.volumeTraded < rcmd.body.orderResponse.volumeTraded) {
++                return false;   // ← 此处尚未修改 op, 不需要写回
+             }
++        }    
++    }
+ 
+-            op.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTraded;
+-            op.body.orderResponse.tradePrice = rcmd.body.orderResponse.tradePrice;
+-            op.body.orderResponse.updateTime = crypto::getCurrentTime();
+-            volumeIncreased = true;
+-        }
+-        else { // 如果没有新的成交，本次成交量和成交价设为0
+-            op.body.orderResponse.tradeDiff = 0.0;
+-            op.body.orderResponse.fillPrice = 0.0;
+-        }
++    if (rcmd.body.orderResponse.volumeTraded > op.body.orderResponse.volumeTraded) {
++        op.body.orderResponse.tradeDiff = rcmd.body.orderResponse.volumeTraded - op.body.orderResponse.volumeTraded;
++        op.body.orderResponse.fillPrice = 0.0;
+ 
+-        if (!crypto::isFinalOrderStatus(op.body.orderResponse.orderStatus)) {
+-            int oldP = crypto::getOrderStatusPriority(op.body.orderResponse.orderStatus);
+-            int newP = crypto::getOrderStatusPriority(rcmd.body.orderResponse.orderStatus);
+-            if (newP > oldP) {
+-                op.body.orderResponse.orderStatus = rcmd.body.orderResponse.orderStatus;
+-                op.body.orderResponse.updateTime = crypto::getCurrentTime();
+-                statusAdvanced = true;
++        if (rcmd.body.orderResponse.instTypeEnum == C_SWAP || rcmd.body.orderResponse.instTypeEnum == C_FUTURES) {
++            if (op.body.orderResponse.volumeTraded > ZERO_NUM) {
++                op.body.orderResponse.fillPrice = op.body.orderResponse.tradeDiff / (rcmd.body.orderResponse.volumeTraded / rcmd.body.orderResponse.tradePrice - op.body.orderResponse.volumeTraded / op.body.orderResponse.tradePrice);
+             }
++            else {
++                op.body.orderResponse.fillPrice = rcmd.body.orderResponse.tradePrice;
++            }
+         }
++        else {
++            op.body.orderResponse.fillPrice = (rcmd.body.orderResponse.volumeTraded * rcmd.body.orderResponse.tradePrice - op.body.orderResponse.volumeTraded * op.body.orderResponse.tradePrice) / op.body.orderResponse.tradeDiff;
+ 
+-        if (!crypto::str_cmp(rcmd.body.orderResponse.orderId, "")) {
+-            strncpy(op.body.orderResponse.orderId, rcmd.body.orderResponse.orderId, 64);
+-            orderId2OrderSysIdMap[op.body.orderResponse.orderId] = op.body.orderResponse.orderSysId;
+         }
+ 
+-        if (rcmd.body.orderResponse.orderStatus == OS_REJECTED) {
+-            op.body.orderResponse.errorId = rcmd.body.orderResponse.errorId;
+-            strncpy(op.body.orderResponse.originMsg, rcmd.body.orderResponse.originMsg, 128); 
+-        }
++        op.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTraded;
++        op.body.orderResponse.tradePrice = rcmd.body.orderResponse.tradePrice;
++        op.body.orderResponse.updateTime = crypto::getCurrentTime();
++        volumeIncreased = true;
++    }
++    else { // 如果没有新的成交，本次成交量和成交价设为0
++        op.body.orderResponse.tradeDiff = 0.0;
++        op.body.orderResponse.fillPrice = 0.0;
++    }
+ 
+-        if (rcmd.body.orderResponse.orderStatus == OS_FAILED) { // 撤单失败的状态要推送给策略
+-            memcpy(&rcmd, &op, sizeof(pubsub::RCommand));
+-            rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
+-            rcmd.body.orderResponse.orderStatus = OS_FAILED;
+-            rcmd.body.orderResponse.apiSourceEnum = AS_CANCEL_ORDER;
+-            return true;
++    if (!crypto::isFinalOrderStatus(op.body.orderResponse.orderStatus)) {
++        int oldP = crypto::getOrderStatusPriority(op.body.orderResponse.orderStatus);
++        int newP = crypto::getOrderStatusPriority(rcmd.body.orderResponse.orderStatus);
++        if (newP > oldP) {
++            op.body.orderResponse.orderStatus = rcmd.body.orderResponse.orderStatus;
++            op.body.orderResponse.updateTime = crypto::getCurrentTime();
++            statusAdvanced = true;
+         }
++    }
+ 
+-        bool isQueryOrder = rcmd.cmdTypeEnum == pubsub::CMD_RPT_QUERY_ORDER;
++    if (!crypto::str_cmp(rcmd.body.orderResponse.orderId, "")) {
++        strncpy(op.body.orderResponse.orderId, rcmd.body.orderResponse.orderId, 64);
++        // 老代码在这里显式维护 orderId2OrderSysIdMap。现在不需要了:
++        // op.body.orderResponse.orderId 变了, upsert → update_slot 的 key 同步会自动
++        // 把 IDX_EXCHANGE_ID 索引项迁到新值 (见 OmsShm.h 的 sync_key_copies)。
++    }
+ 
+-        if (!statusAdvanced && !volumeIncreased && !isQueryOrder) {
+-            return false;
+-        }
+-        
+-        op.body.orderResponse.apiSourceEnum = rcmd.body.orderResponse.apiSourceEnum;
+-        op.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
++    if (rcmd.body.orderResponse.orderStatus == OS_REJECTED) {
++        op.body.orderResponse.errorId = rcmd.body.orderResponse.errorId;
++        strncpy(op.body.orderResponse.originMsg, rcmd.body.orderResponse.originMsg, 128); 
++    }
++
++    if (rcmd.body.orderResponse.orderStatus == OS_FAILED) { // 撤单失败的状态要推送给策略
+         memcpy(&rcmd, &op, sizeof(pubsub::RCommand));
++        rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
++        rcmd.body.orderResponse.orderStatus = OS_FAILED;
++        rcmd.body.orderResponse.apiSourceEnum = AS_CANCEL_ORDER;
++        oms_flush_slot(omsShm_, op);      // ← 上面已改 op, 必须写回
+         return true;
+     }
+-    else { // 没有缓存的报单是否应该推给策略，比如adl类型的订单
+ 
++    bool isQueryOrder = rcmd.cmdTypeEnum == pubsub::CMD_RPT_QUERY_ORDER;
++
++    if (!statusAdvanced && !volumeIncreased && !isQueryOrder) {
++        // 走到这里 op 一定被改过 (tradeDiff/fillPrice 归零), 老代码是原地生效的 → 写回。
++        oms_flush_slot(omsShm_, op);
++        return false;
+     }
+-    return false;
++    
++    op.body.orderResponse.apiSourceEnum = rcmd.body.orderResponse.apiSourceEnum;
++    op.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
++    memcpy(&rcmd, &op, sizeof(pubsub::RCommand));
++    oms_flush_slot(omsShm_, op);
++    return true;
+ }
+ 
+ void om::OrderManager::load_data(){
+@@ -396,17 +521,24 @@
+ 
+ 
+ bool om::OrderManager::getOrderSysId(const int64_t clientOrderId, const char* strategyId, char* orderSysId, const char* orderId) {
+-    const std::string& clientOrderIdStra = fmt::format("{}{}", strategyId, clientOrderId);
+-    auto iter = clientOrderId2OrderSysIdMap.find(clientOrderIdStra);
+-    if (iter != clientOrderId2OrderSysIdMap.end()) {
+-        strncpy(orderSysId, iter->second.c_str(), INSTID_SIZE);
++    // 老代码查的是 clientOrderId2OrderSysIdMap[fmt::format("{}{}", strategyId, clientOrderId)];
++    // 这里换成 OmsShm 的复合 client 索引 —— 键的拼法完全一致 (compose_client_key)。
++    // ★ 一次 lookup 就同时拿到 orderSysId (老代码要查"key→sysId"再查"sysId→报单体")。
++    pubsub::RCommand cached;
++    if (omsShm_.lookup_by_client_ex(strategyId, clientOrderId, cached)
++            == oms::shm::OmsShmSegment::LookupStatus::OK) {
++        // ★ 老代码这里写的是 INSTID_SIZE (32), 而 orderSysId 是 char[64]、值形如
++        //   "x-<strategyId><rdtsc>" —— strategyId 一长就**被截断**, 调用方随后拿这个
++        //   截断值去查报单体必然查不到, 于是走进 "oms not found order response" 分支。
++        //   顺手改成 ORDER_SIZE (与调用方缓冲区一致)。这是本次改造中发现并修掉的老 bug。
++        strncpy(orderSysId, cached.body.orderResponse.orderSysId, ORDER_SIZE);
+         return true;
+     }
+ 
+     if (!crypto::str_cmp(orderId, "")) {
+-        auto it = orderId2OrderSysIdMap.find(orderId);
+-        if (it != orderId2OrderSysIdMap.end()) {
+-           strncpy(orderSysId, it->second.c_str(), INSTID_SIZE);
++        if (omsShm_.lookup_by_orderId_ex(orderId, cached)
++                == oms::shm::OmsShmSegment::LookupStatus::OK) {
++           strncpy(orderSysId, cached.body.orderResponse.orderSysId, ORDER_SIZE);
+            return true; 
+         }
+     }
+@@ -436,4 +568,4 @@
+             return fmt::format("{}{}", strategyId, crypto::get_rdtsc_timestamp());
+         }
+     }
+-}
+\ No newline at end of file
++}
+--- a/tb/tools/OMS_SHM_REVIEW.md
++++ b/tb/tools/OMS_SHM_REVIEW.md
+@@ -1796,7 +1796,173 @@
+ > - 在 `26db997` 之后**不需要**再应用 v5 补丁，直接 apply v6 即可。
+ 
+ 正反向 apply 均已逐字节 `cmp` 通过（见规则 42：自洽回环不算验证，基线本身也要核）。
++
++---
++
++## 2.11 第 25 轮：把 tb/OrderManager 的三张 tbb map 换成 OmsShm
++
++### 一、改了什么
++
++`om::OrderManager` 原来用三张 `tbb::concurrent_unordered_map` 缓存在途订单
++（`clientOrderId2OrderSysIdMap` / `orderId2OrderSysIdMap` / `orderSysId2OrderResponseMap`），
++现在合并成一个 `oms::shm::OmsShmWriter`：报单体存 slot，三张 hash 索引指向 slot。
++
++| 老写法 | 新写法 |
++|---|---|
++| `map[sysid] = rcmd;` | `omsShm_.upsert(rcmd);`（一次建三样：报单体 + 3 个索引） |
++| `map.find(sysid)` → `iter->second` | `lookup_by_orderSysId_ex(sysid, out)` |
++| **原地改 `iter->second`** | 改副本 `out`，然后 `upsert(out)` 写回 |
++| `clientOrderId2OrderSysIdMap.find(...)` | `lookup_by_client_ex(strategyId, cid, out)` |
++| `orderId2OrderSysIdMap.find(orderId)` | `lookup_by_orderId_ex(orderId, out)` |
++
++改动文件只有 2 个（`tb` git status 可证）：`tb/include/oms/OrderManager.h`（+76/-…）、
++`tb/src/oms/OrderManager.cpp`（+334/-…）。`include/oms/OmsShm.h` **本轮未改**。
++
++### 二、最容易写错的一条：原地引用 → 必须写回
++
++老代码 `auto& op = iter->second;` 拿的是 map 里 value 的**引用**，改动原地生效 ——
++**包括那些 `return false` 的分支**（`tradeDiff`/`fillPrice` 归零、`orderId` 补写、
++`errorId` 落库 都留在表里了）。换成 OmsShm 后 `op` 是 lookup 出来的**副本**，
++所以每个 `return` 之前都要 `upsert` 写回，否则静默丢更新。
++
++实现上用一个 `oms_flush_slot()` 静态函数在 3 个返回点调用（OS_FAILED 分支、
++"无变化"分支、最终分支），唯一不写回的是 BINANCE 撤单 guard 那个提前返回 —— 那里 `op`
++确实一个字节都没动。
++
++### 三、单写者前提（这次改造的硬约束）
++
++`OmsShmWriter` 的契约是**单线程串行调用**。核实结论：**满足**。
++
++`TbOperation::run()`（`src/operation/TbOperation.cpp:103`）起了两个 detached 线程，
++但只有 `execute()` 这一个线程碰 OrderManager：
++
++```cpp
++std::thread executeThread(&TbOperation::execute, this);      // ← 只有它调 processTcmd/processRcmd
++std::thread executeTcmdThread(&TbOperation::executeTcmd, this);  // ← 只派发给 trade client
++```
++
++`execute()` 的 while 循环里 `processTcmd` / `processRcmd` 是**串行**的，`rcmdInnerQueue`
++的 pop→publish 也在这个线程。`preStart()` 在 main 线程、早于线程创建（happens-before），
++没有交叠。
++
++⚠ 已把这条写进 `OrderManager.h` 的成员注释：**将来若把 tcmd / rcmd 拆到两个线程，
++必须先加锁**。
++
++### 四、`preStop()` 故意不 close（避免引入新 race）
++
++`preStop()` 是从 `main.cpp` 的 `signal_handler` 调的，跑在**另一个线程**上；而 `execute()`
++线程可能正卡在 `upsert` 中间。此时 `munmap` 掉正在写的映射 = 段错误。
++所以 `preStop()` 只打最终统计，**不** `close()`。进程退出时内核回收映射，
++`MAP_SHARED` 的数据早已对其他进程可见，不 close 没有副作用。
++
++（老的 tbb map 版无所谓 —— 它没有 mmap。这是改造**新引入**的一类风险，必须处理。）
++
++### 五、新引入的失败模式（3 条，都是有意的）
++
++| # | 行为 | 老实现 | 新实现 | 为什么这样选 |
++|---|---|---|---|---|
++| 1 | 环写满时新建单 | 永远 `true`（map 无上限）→ 照发 | `upsert` 失败 → **`false`，不发** | 宁可不下单，也不发一张 OMS 不认识的单（那种单之后撤不掉、查不到） |
++| 2 | 已回收的单再撤/查 | 永远查得到 | TTL 到期后 `NOT_FOUND` → `OS_REJECTED` + `OMSOrderNotFoundError` | TTL 是 store 的设计语义；**必须按"上层最晚可能来撤单的时长"定** |
++| 3 | tb 重启后 | 内存 map 全丢 → 撤单报 `OMSOrderNotFoundError` | **订单还在**（open 同一路径即恢复） | 这是收益，不是代价 |
++
++### 六、★ 顺手修掉一个老 bug：orderSysId 被截断
++
++`getOrderSysId(cid, strategyId, out, orderId)` 里老代码写的是
++`strncpy(orderSysId, ..., INSTID_SIZE)` —— `INSTID_SIZE` 是 **32**（`data_struct.h:17`），
++而 orderSysId 是 `char[64]`、值形如 `x-<strategyId><rdtsc>`。
++**strategyId 超过约 13 个字符就会被截断**（rdtsc 约 17 位），调用方随后拿这个截断值去查
++报单体必然查不到，于是走进 "oms not found order response" 分支 —— 撤单回复里成交量/orderId
++全是 0，缓存状态整个丢掉。
++
++差分实测（场景 B，strategyId = `utrade_btc_strategy_001`，orderSysId 长 **41** 字节）：
++
++```
++老版 B03 CANCEL:  sysid=S2(截断后是另一个串)  oid=(空)   volTot=0.0000   ← 缓存丢了
++新版 B03 CANCEL:  sysid=S1                  oid=EX-B1  volTot=1.0000   ← 正确
++```
++
++生产配置里的 `sss_test1`（9 字符）恰好没踩到（orderSysId 27 字节），属于**侥幸**。
++已改成 `ORDER_SIZE`（64，与调用方缓冲区一致）。
++
++### 七、我自己引入又自己修掉的问题：丢单热路径刷屏
++
++第一版里环写满的 `LOG_ERROR` 是**逐单**打的，而且为了打"可持续速率"还调了
++`omsShm_.stats()` —— 那是 **O(slot_capacity) 的全表扫描**。20k 单/秒的故障场景下
++= 每秒 2 万条 ERROR + 2 万次 10 万长度的扫描。**这正是 §2.9 那个刷屏事故的形态。**
++
++改成：限流（前 8 次 + 之后每 4096 次，与 OmsShm 内部一致）+ 用 `preStart` 时存下的
++`cfg_.sustainable_insert_rate()` 代替 `stats()`。BUSY 的 3 处日志同样限流。
++
++### 八、验证：新旧两版跑同一份差分驱动
++
++把 `tb/src/oms/OrderManager.cpp` 的新旧两版（老版取自改动前的快照）分别与**同一份**
++`driver.cpp` 链接成两个可执行文件，回放同一脚本，打印规范化轨迹
++（orderSysId 按首次出现顺序映射成 S1/S2…，`updateTime` 不打印），然后 `diff`。
++
++**怎么在 macOS 上编 tb 的代码**：`tb` 依赖 tbb / boost / openssl / fmtlog / rapidjson /
++moodycamel，本机都没有。做法是只替身**第三方库**、不动被测逻辑：
++
++- `-I` 一个 shim 目录，提供 `fmt`（支持 `{}` 替换，不能返回空串 —— 老代码用
++  `fmt::format("{}{}", strategyId, cid)` 造 client key）、`fmtlog`、`boost/algorithm/string.hpp`、
++  `boost/date_time/...`、`openssl/{hmac,sha}.h`、`rapidjson/document.h`、`bits/stdc++.h`、
++  `tbb/concurrent_unordered_map.h`
++- 把 `include/` 用 symlink 镜像一份，只替换 3 个在 ARM64 上编不过的头：
++  `time_util.h`（裸 `asm rdtsc`，x86 专用）、`concurrent_queue.h`（boost::lockfree）、
++  `shm_spmc_queue.h`（`<bits/stdc++.h>` + mmap）
++- `pubsub_protocol.h` / `data_struct.h` / `utils/order_util.h` / `oms/AccountManager.h` /
++  **`oms/OmsShm.h`** 全部是**真实文件**，未被替身
++
++踩到的坑（值得记）：`fmtlog` 替身的 `FMTLOG` 宏形参**不能叫 `format`** —— 预处理器会把
++替换列表里的形参名一并替换，于是 `fmt::format(x)` 被改写成 `fmt::"x"(x)`。
++
++结果：
++
++| 场景 | 结果 |
++|---|---|
++| **A** 正常生命周期 / 撤单 / 查询 / 部分成交 / 拒绝 / 撤单失败 / 超量 / 只靠 orderId 反查 / `C_SWAP` 成交算术 / BINANCE 撤单 guard / 非 BINANCE guard / TESTCLIENTORDERID / 未实现 cmd | **93 行轨迹逐字节相同** ✅ |
++| **B** 22 字符 strategyId | **不同**（2 行）—— 即上面那个截断 bug，预期如此 ✅ |
++| **C** capacity=64 灌 70 张 LIVE 单 | 成功 64 / 被拒 6；`alloc_fail=6 exhausted=6` ✅ |
++| **D** `min_reclaim_age=0` | 灌满后已 FINISHED 的单被回收 → `D04` 撤单 `NOT_FOUND` → `OS_REJECTED` ✅ |
++| **E** 重新 open 同一路径 | `created_new=0`；重启前建的活单 `E04`/`E05` 仍可撤（`true`），从未存在的 `E06` 报 `OS_REJECTED` ✅ |
++
++确定性：两个二进制各跑两次，轨迹一致。
++告警：真实文件 `-Wall -Wextra` 仍是**原有的 2 条**（`processRcmd` 缺 return、`store_rcmd_data`
++形参未用），没有新增。
++
++### 九、留给用户的决策（未改）
++
++**`OS_FAILED` 分支不写回 slot → 该 slot 要等 `max_live_stale_ns`（默认 24h）才能回收。**
++
++老代码在 `orderStatus == OS_FAILED` 分支里只把 `OS_FAILED` 写进**发出去的回复**
++（`memcpy(&rcmd, &op, ...)` 之后改 `rcmd`），**没有**改 `op`。所以 slot 里存的仍是
++`OS_PENDING_NEW`（= LIVE）。老实现无所谓；在 OmsShm 里这意味着一个已经逻辑死亡的订单
++占着 slot 长达 24 小时。
++
++实测证据（差分场景 A 跑完后的逐 slot dump）：
++
++```
++[slot   3] state=1(LIVE) sysid=S4 cid=1004 oid=EX-4 status=OS_PENDING_NEW   ← A21 发的是 OS_FAILED
++[slot   5] state=2(FIN)  sysid=S6 cid=1006 oid=EX-6 status=OS_CANCELED
++```
+ 
++两个选项（**都没做**，等用户定）：
++
++1. **只调配置**：把 `max_live_stale_ns` 从 24h 改成 10~30 分钟。卡单/僵尸单本来就该很快判死。
++   零风险，行为与老代码完全一致。
++2. **改代码**：在 `OS_FAILED` 分支里把 `OS_FAILED` 一并写回 slot。策略可见的行为**不变**
++   （后续 QUERY 两支都走"非 FILLED → 转发交易所"，后续 CANCEL 两支都走"未完结 → OS_CANCELLING"），
++   但存储状态与 `iterate_live`/`iterate_finished` 的可见性会变，且**会打破场景 A 的逐字节等价**。
++
++### 十、撤销
++
++改动都在 `tb` 这个 git 仓库里，直接 `git checkout` 即可：
++
++```bash
++git -C tb checkout -- include/oms/OrderManager.h src/oms/OrderManager.cpp
++```
++
++（本轮**没有**产出 patch 文件 —— 两个改动文件都在 git 追踪内，`git diff` 就是完整产物。）
++
+ ---
+ 
+ ## 3. 形式正确性（当前环境能用，但是错的）
+--- a/include/oms/README.md
++++ b/include/oms/README.md
+@@ -1032,12 +1032,120 @@
+ 
+ 
+ 
+-十二、文件清单
++十二、接入 tb/OrderManager (已落地)
++
++tb 的 `om::OrderManager` 原先用三张 `tbb::concurrent_unordered_map` 缓存在途订单:
++
++    clientOrderId2OrderSysIdMap   // fmt::format("{}{}", strategyId, cid) → orderSysId
++    orderId2OrderSysIdMap         // 交易所 orderId → orderSysId
++    orderSysId2OrderResponseMap   // orderSysId → pubsub::RCommand
++
++这三张表现在合并成**一个 OmsShm 段** (`oms::shm::OmsShmWriter`), 报单体存 slot,
++三张 hash 索引指向 slot。
++
++12.1 API 映射
++
++    老写法                                          新写法
++    ----------------------------------------------  ------------------------------------------------
++    map[sysid] = rcmd;                              omsShm_.upsert(rcmd);      // 一次建三样
++    map.find(sysid) → iter->second                  查: lookup_by_orderSysId_ex(sysid, out)
++    原地改 iter->second, 靠引用生效                  改副本 out, 然后 upsert(out) 写回 (必须!)
++    clientOrderId2OrderSysIdMap.find(...)            lookup_by_client_ex(strategyId, cid, out)
++    orderId2OrderSysIdMap.find(orderId)              lookup_by_orderId_ex(orderId, out)
++
++复合 client key 的拼法两版完全一致 —— `compose_client_key()` 当初就是照
++`fmt::format("{}{}", strategyId, clientOrderId)` 写的。
++
++★ 最容易写错的一条: 老代码拿的是 map 里 value 的**引用**, 改动是原地生效的 —— 包括那些
++  `return false` 的分支 (tradeDiff/fillPrice 归零、orderId 补写、errorId 落库)。
++  换成 OmsShm 之后 `op` 是 lookup 出来的**副本**, 所以**每一个 return 之前都要 upsert 写回**,
++  否则行为就与老代码不一致 (静默丢更新)。
++
++12.2 单写者前提
++
++`OmsShmWriter` 的契约是**单线程串行调用**。tb 侧满足这个前提:
++`TbOperation::run()` 起两个线程, 但只有 `execute()` 这一个线程会碰 OrderManager
++(`processTcmd` / `processRcmd` 都在它的 while 循环里串行调用); 另一个 `executeTcmd()`
++只负责把 tcmd 派发给 trade client。
++
++⚠ 如果将来把 tcmd 和 rcmd 拆到两个线程, **必须**在 OrderManager 里加锁, 否则会破坏
++  `next_slot_hint` 和 slot 状态机。
++
++12.3 配置与容量规划
++
++`om::OmsShmConfig` (定义在 `tb/include/oms/OrderManager.h`):
++
++    path               = "/dev/shm/tb_oms.dat"
++    slot_capacity      = 100000
++    min_reclaim_age_ns = 60s     // FINISHED 多久后可回收
++    max_live_stale_ns  = 24h     // LIVE 僵尸兜底
++
++**可持续写入速率上限 = slot_capacity / min_reclaim_age** (见 §七)。默认值只有
++**约 1666 单/秒**; 超过就必然写满。tb 启动时会把这行打进日志:
++
++    oms shm ready: path=... slot_cap=... sustainable_insert_rate=1666/s
++
++12.4 与老实现的行为差异 (三条, 都是有意的)
++
++(1) **环写满时新单被拒**。老代码的 map 无上限, `processTcmd(CMD_NEW_ORDER)` 永远返回 true;
++    现在 `upsert` 失败会返回 **false**, `TbOperation` 因此**不会**把这张单发给交易所。
++    取舍: 宁可不下单, 也不发一张 OMS 不认识的单 (那种单之后撤不掉、查不到)。
++    日志已限流 (前 8 次 + 之后每 4096 次), 不会刷屏。
+ 
++(2) **已回收的单查不到**。`min_reclaim_age` 到期后 FINISHED 的 slot 会被复用, 之后拿
++    旧 clientOrderId/orderId 来撤单/查询会得到 `NOT_FOUND` → `OS_REJECTED` +
++    `OMSOrderNotFoundError`。老实现永远查得到。**这个 TTL 必须按"上层最晚可能来撤单的时长"定。**
++
++(3) **重启后订单还在** (新能力, 不是差异而是收益)。老实现是进程内 map, tb 重启即全丢,
++    重启后撤单会报 `OMSOrderNotFoundError`; 现在重新 open 同一路径即可恢复
++    (open 时还会 `recover_orphan_slots()` 清理上次崩溃留下的 RECLAIMING 槽)。
++
++12.5 已知待办
++
++`OS_FAILED` (撤单失败) 那条分支里, 老代码只把 `OS_FAILED` 写进**发出去的回复**, 不写回
++存储 —— 所以 slot 里的状态仍是 `OS_PENDING_NEW` (= LIVE)。老实现无所谓, 但在 OmsShm 里
++这意味着这个 slot 要等 `max_live_stale_ns` 才能回收。
++**建议把 `max_live_stale_ns` 从 24h 调到 10~30 分钟** (卡单/僵尸单本来就该很快判死)。
++若要更彻底, 可以在那条分支里把 `OS_FAILED` 一并写回 slot —— 但那会改变存储状态的可见性
++(策略可见的行为不变), 属于独立决策, 未做。
++
++12.6 验证方式
++
++`OrderManager` 的新旧两版用**同一份差分驱动**回放同一脚本, 把返回值 + 每次推给策略的
++RCommand 打成规范化轨迹 (orderSysId 按首次出现顺序映射成 S1/S2..., updateTime 不打印):
++
++    场景 A (正常生命周期/撤单/查询/部分成交/拒绝/失败/超量/只靠 orderId 反查/C_SWAP 成交算术)
++      老版 vs 新版: **93 行轨迹逐字节相同**
++    场景 B (22 字符 strategyId): 两版**不同** —— 见 §12.7
++    场景 C (capacity=64 灌 70 张 LIVE 单): 成功 64 / 被拒 6, 被拒的没发给交易所
++    场景 D (min_reclaim_age=0): 灌满后已 FINISHED 的单被回收 → 撤单 NOT_FOUND
++    场景 E (重新 open 同一路径): created_new=0, 重启前建的活单仍可撤
++
++12.7 顺带修掉的老 bug: orderSysId 被截断
++
++`getOrderSysId(cid, strategyId, out, orderId)` 里老代码写的是
++`strncpy(orderSysId, ..., INSTID_SIZE)` —— `INSTID_SIZE` 是 **32**, 而 orderSysId 是
++`char[64]`、值形如 `x-<strategyId><rdtsc>`。strategyId 超过约 13 个字符时就会**被截断**,
++调用方随后拿这个截断值去查报单体必然查不到, 于是走进 "oms not found order response" 分支 ——
++撤单回复里成交量/orderId 全是 0, 缓存状态整个丢掉。
++
++差分场景 B 实测 (strategyId = `utrade_btc_strategy_001`, orderSysId 长 41 字节):
++
++    老版 B03 CANCEL:  sysid=S2(截断后的新串)  oid=(空)  volTot=0.0000   ← 缓存丢了
++    新版 B03 CANCEL:  sysid=S1              oid=EX-B1 volTot=1.0000   ← 正确
++
++已改成 `ORDER_SIZE` (64, 与调用方缓冲区一致)。
++
++十三、文件清单
++
+ new_dev/
+ ├── include/oms/
+ │   ├── OmsShm.h                # 核心 header (writer + reader + 布局)
+ │   └── README.md               # 本文档
++├── tb/include/oms/
++│   └── OrderManager.h          # 接入方: OmsShmConfig + OmsShmWriter 成员
++├── tb/src/oms/
++│   └── OrderManager.cpp        # 接入方: 三张 tbb map 已换成一次 upsert
+ └── tb/tools/
+     ├── oms_query.cpp           # CLI 查询
+     ├── oms_bench.cpp           # 性能测试
