@@ -11,10 +11,6 @@ GateioSpotWsTradeUnit::GateioSpotWsTradeUnit(AccountCfg& a, sm::SecurityManager*
 
 GateioSpotWsTradeUnit::~GateioSpotWsTradeUnit() = default;
 
-
-// ============================================================================
-// WS JSON builders
-// ============================================================================
 std::string GateioSpotWsTradeUnit::buildLoginJson(int64_t ts) const {
     // sign payload: channel=spot.login&event=api&time=T
     std::string time_str = std::to_string(ts);
@@ -139,9 +135,6 @@ std::string GateioSpotWsTradeUnit::buildOrderCancelJson(int reqId, const pubsub:
     return j;
 }
 
-// ============================================================================
-// pending map
-// ============================================================================
 void GateioSpotWsTradeUnit::recordPending(int id, pubsub::CommandType type, const pubsub::RCommand& rcmd) {
     const int64_t now_ms = crypto::getCurrentTimeMilli();
     const int64_t last_gc = pendingLastGcMs_.load(std::memory_order_relaxed);
@@ -184,9 +177,6 @@ void GateioSpotWsTradeUnit::clearPending() {
     }
 }
 
-// ============================================================================
-// subWebsocekt
-// ============================================================================
 void GateioSpotWsTradeUnit::subWebsocekt() {
     std::string restHost = crypto::host_of(acc.restUrl);
     initRestClient(restHost, {}, 4);
@@ -202,9 +192,6 @@ void GateioSpotWsTradeUnit::subWebsocekt() {
     subWebsocketWithConfig(std::move(cfg));
 }
 
-// ============================================================================
-// onOpen / onCloseMsg
-// ============================================================================
 void GateioSpotWsTradeUnit::onOpen() {
     BaseTradeUnit::onOpen();
     wsLoggedIn_.store(false);
@@ -221,13 +208,9 @@ void GateioSpotWsTradeUnit::onCloseMsg(int code, const std::string& reason) {
     clearPending();
 }
 
-// ============================================================================
-// onWebsocketMsg
-// ============================================================================
 void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /*isBinary*/, int64_t /*recv_ns*/) {
     try {
-        std::string msg(reinterpret_cast<const char*>(data), len);
-        std::cout << "onWebsocketMsg: " << msg << std::endl;
+        LOG_INFO("onWebsocketMsg: {}", std::string_view(reinterpret_cast<const char*>(data), len));
 
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
         auto doc = g_parser.iterate(padded);
@@ -311,7 +294,8 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
                                     }
                                     else if (rk == "status") {
                                         r.value().get(orf.status_sv);
-                                    } else if (rk == "req_id") { // 有req_id的回报不推送
+                                    } 
+                                    else if (rk == "req_id") { // 有req_id的回报不推送
                                         has_data_result = false;
                                     }
                                 }
@@ -352,7 +336,8 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
                         pWsClient->send_text(buildSubscribeJson(kOrdersSubId, "spot.orders", "!all", nullptr));
                         pWsClient->send_text(buildSubscribeJson(kBalancesSubId, "spot.balances", nullptr, nullptr));
                     }
-                } else {
+                } 
+                else {
                     wsLoggedIn_.store(false);
                     LOG_ERROR("TB {} Gate spot spot.login FAILED status={}", acc.accountName, status);
                 }
@@ -360,7 +345,8 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
             else if (id == kOrdersSubId || id == kBalancesSubId) {
                 if (status == 200) {
                     LOG_INFO("TB {} Gate spot subscribe reqId={} OK", acc.accountName, id);
-                } else {
+                } 
+                else {
                     LOG_ERROR("TB {} Gate spot subscribe reqId={} FAILED status={}", acc.accountName, id, status);
                 }
             }
@@ -432,7 +418,8 @@ void GateioSpotWsTradeUnit::handleWsApiResponse(WsPending& pending, const OrderR
         rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
 
         PUSH_RCMD(rcmd)
-    } else if (pending.type == pubsub::CMD_CANCEL_ORDER) {
+    } 
+    else if (pending.type == pubsub::CMD_CANCEL_ORDER) {
         crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, fields.id_sv);
         if (!fields.avg_sv.empty()) {
             rcmd.body.orderResponse.tradePrice = crypto::fast_atod(fields.avg_sv);
@@ -459,7 +446,8 @@ void GateioSpotWsTradeUnit::handleWsApiError(WsPending& pending, const ErrorFiel
 
     if (pending.type == pubsub::CMD_NEW_ORDER) {
         rcmd.body.orderResponse.orderStatus = OS_REJECTED;    
-    } else if (pending.type == pubsub::CMD_CANCEL_ORDER) {
+    } 
+    else if (pending.type == pubsub::CMD_CANCEL_ORDER) {
         rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.errorId == OrderNotFoundError) ? OS_REJECTED : OS_FAILED;
     }
 
@@ -635,11 +623,121 @@ void GateioSpotWsTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
     }
 }
 
-// ============================================================================
-// query_* : REST (HMAC-SHA512 签名)
-// ============================================================================
-void GateioSpotWsTradeUnit::query_account (const pubsub::TCommand& tcmd) {
-    query_balance(tcmd);
+void GateioSpotWsTradeUnit::query_account(const pubsub::TCommand& tcmd) {
+#ifndef USE_GATEIO_UNIFIED
+    return;   // 非统一账户模式不查
+#endif
+
+    std::string time_str = std::to_string(crypto::getCurrentTimeSeconds());    
+    std::string sign = crypto::getGateioSignatureRest("GET", unifiedUrl, time_str, "", "", acc.secretKey);
+    std::vector<std::pair<std::string, std::string>> headers = {{"KEY", acc.apiKey}, {"Timestamp", time_str}, {"SIGN", sign}};
+
+    asyncRequest(boost::beast::http::verb::get, unifiedUrl, "", "application/json", std::move(headers), [this](boost::system::error_code ec, ::net::HttpResponse resp) {
+        if (ec) { 
+            LOG_ERROR("TB {} UF query_account ec: {}", acc.accountName, ec.message()); 
+            return; 
+        }
+
+        try {
+            LOG_INFO("query_account: {}", resp.body);
+            simdjson::padded_string padded(resp.body);
+            auto doc = g_parser.iterate(padded);
+            if (doc.error()) {
+                LOG_ERROR("TB {} query_account parse err: {}", acc.accountName, resp.body);
+                return;
+            }
+
+            auto doc_value = doc.get_object().value_unsafe();
+
+            simdjson::ondemand::object balances;
+            std::string_view teq_sv;
+            std::string_view tmb_sv;
+            std::string_view tmm_sv;
+            std::string_view tmr_sv;
+
+            std::vector<pubsub::RCommand> pending;
+           
+            for (auto field : doc_value) {
+                std::string_view k = field.unescaped_key().value_unsafe();
+                if (k == "balances") {
+                    field.value().get(balances);
+                    for (auto bal : balances) {
+                        std::string_view asset = bal.unescaped_key().value_unsafe();
+                        auto b = bal.value().get_object();
+
+                        std::string_view av_sv;
+                        std::string_view fr_sv;
+                        std::string_view eq_sv;
+                        for (auto ass : b) {
+                            std::string_view v = ass.unescaped_key().value_unsafe();
+                            if (v == "available") {
+                                ass.value().get(av_sv);
+                            }
+                            else if (v == "freeze") {
+                                ass.value().get(fr_sv);
+                            }
+                            else if (v == "equity") {
+                                ass.value().get(eq_sv);
+                            }
+                        }
+
+                        pubsub::RCommand rcmd;
+                        memset(&rcmd, 0, sizeof(pubsub::RCommand));
+                        rcmd.cmdTypeEnum = pubsub::CMD_RPT_BALANCE;
+                        rcmd.body.balance.exchangeTypeEnum = GATEIO;
+                        rcmd.body.balance.instTypeEnum = SPOT;
+                        rcmd.body.balance.accountId = acc.accountId;
+                        crypto::copy_sv_to_char_array(rcmd.body.balance.accountName, acc.accountName);
+                        crypto::copy_sv_to_char_array(rcmd.body.balance.strategyId, acc.strategyId);
+                        crypto::copy_sv_to_char_array(rcmd.body.balance.currency, crypto::to_upper(std::string(asset)));
+                        rcmd.body.balance.available = crypto::fast_atod(av_sv);
+                        rcmd.body.balance.frozen = crypto::fast_atod(fr_sv);
+                        rcmd.body.balance.total = crypto::fast_atod(eq_sv);
+                        rcmd.body.balance.updateTime = crypto::getCurrentTime();
+                        rcmd.body.balance.apiSourceEnum = AS_REST;
+                        pending.emplace_back(rcmd);  
+                    }
+                }
+                else if (k == "unified_account_total_equity") {
+                    field.value().get(teq_sv);
+                }
+                else if (k == "total_margin_balance") {
+                    field.value().get(tmb_sv);
+                }
+                else if (k == "total_maintenance_margin") {
+                    field.value().get(tmm_sv);
+                }
+                else if (k == "total_maintenance_margin_rate") {
+                    field.value().get(tmr_sv);
+                }
+            }
+
+            for (size_t i = 0; i < pending.size(); ++i) {
+                pending[i].body.balance.isLast = (i + 1 == pending.size());
+                PUSH_RCMD(pending[i]);
+            }
+
+            // totalAccount
+            pubsub::RCommand rcmd;
+            memset(&rcmd, 0, sizeof(pubsub::RCommand));
+            rcmd.cmdTypeEnum = pubsub::CMD_RPT_TOTAL_ACCOUNT;
+            rcmd.body.totalAccount.exchangeTypeEnum = GATEIO;
+            rcmd.body.totalAccount.instTypeEnum = SPOT;
+            rcmd.body.totalAccount.accountId = acc.accountId;
+            crypto::copy_sv_to_char_array(rcmd.body.totalAccount.accountName, acc.accountName);
+            crypto::copy_sv_to_char_array(rcmd.body.totalAccount.strategyId, acc.strategyId);
+            rcmd.body.totalAccount.totalEquity = crypto::fast_atod(teq_sv);
+            rcmd.body.totalAccount.adjEquity = crypto::fast_atod(tmb_sv);
+            rcmd.body.totalAccount.mmr = crypto::fast_atod(tmm_sv);
+            rcmd.body.totalAccount.mgnRatio = tmr_sv.empty() ? 9999.0 : crypto::fast_atod(tmr_sv);
+            rcmd.body.totalAccount.updateTime = crypto::getCurrentTime();
+            rcmd.body.totalAccount.apiSourceEnum = AS_REST;
+            PUSH_RCMD(rcmd)
+        }      
+        catch (const std::exception& e) {
+            LOG_ERROR("TB {} Gate query_account cb exc: {}", acc.accountName, e.what());
+        }
+    });
 }
 
 void GateioSpotWsTradeUnit::query_position(const pubsub::TCommand& tcmd) {
@@ -657,7 +755,7 @@ void GateioSpotWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
             return; 
         }
         try {
-            std::cout << "query_balance: " << resp.body << std::endl;
+            LOG_INFO("query_balance: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -748,9 +846,12 @@ void GateioSpotWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     std::string idSeg;
     if (!crypto::str_cmp(tcmd.body.queryOrder.orderId, "")) {
         idSeg = tcmd.body.queryOrder.orderId;
-    } else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
+    } 
+    else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
         idSeg = tcmd.body.queryOrder.orderSysId;
-    } else {
+    } 
+    else {
+        LOG_ERROR("query_order orderId and orderSysId both empty, tcmd: {}", tcmd.getString());
         return;
     }
 
@@ -774,7 +875,7 @@ void GateioSpotWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
         }
 
         try {
-            std::cout << "query order: " << resp.body << std::endl;
+            LOG_INFO("query_order: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -861,10 +962,6 @@ void GateioSpotWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     });
 }
 
-
-// ============================================================================
-// add_new_order (WS spot.order_place, 无 REST 兜底)
-// ============================================================================
 void GateioSpotWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     ADD_NEW_ORDER_TCMD_2_RCMD(tcmd)
 
@@ -950,10 +1047,6 @@ void GateioSpotWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     pWsClient->send_text(std::move(msg));
 }
 
-
-// ============================================================================
-// cancel_order (WS spot.order_cancel)
-// ============================================================================
 void GateioSpotWsTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     CANCEL_ORDER_TCMD_2_RCMD(tcmd)
 

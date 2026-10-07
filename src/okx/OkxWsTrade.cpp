@@ -17,9 +17,7 @@ std::string OkxWsTradeUnit::buildLoginJson() {
     std::string ts = std::to_string(crypto::getCurrentTimeSeconds());
     std::string sign = crypto::getOkxSignatureWsLogin(acc.secretKey, ts, "GET/users/self/verify");
 
-    return fmt::format(
-        R"({{"op":"login","args":[{{"apiKey":"{}","passphrase":"{}","timestamp":"{}","sign":"{}"}}]}})",
-        acc.apiKey, acc.password, ts, sign);
+    return fmt::format(R"({{"op":"login","args":[{{"apiKey":"{}","passphrase":"{}","timestamp":"{}","sign":"{}"}}]}})", acc.apiKey, acc.password, ts, sign);
 }
 
 std::string OkxWsTradeUnit::buildSubscribeJson() const {
@@ -96,9 +94,6 @@ std::string OkxWsTradeUnit::buildOrderCancelJson(int reqId, const pubsub::TComma
     return j;
 }
 
-// ============================================================================
-// pending map
-// ============================================================================
 void OkxWsTradeUnit::recordPending(int id, pubsub::CommandType type, const pubsub::RCommand& rcmd) {
     const int64_t now_ms = crypto::getCurrentTimeMilli();
     const int64_t last_gc = pendingLastGcMs_.load(std::memory_order_relaxed);
@@ -141,9 +136,6 @@ void OkxWsTradeUnit::clearPending() {
     }
 }
 
-// ============================================================================
-// subWebsocekt / onOpen / onCloseMsg
-// ============================================================================
 void OkxWsTradeUnit::subWebsocekt() {
     std::string restHost = crypto::host_of(acc.restUrl);
     std::vector<std::pair<std::string, std::string>> defaultHeaders;
@@ -177,14 +169,9 @@ void OkxWsTradeUnit::onCloseMsg(int code, const std::string& reason) {
     clearPending();
 }
 
-
-// ============================================================================
-// onWebsocketMsg
-// ============================================================================
 void OkxWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /*isBinary*/, int64_t /*recv_ns*/) {
    try {
-        std::string msg(reinterpret_cast<const char*>(data), len);
-        std::cout << "onWebsocketMsg: " << msg << std::endl;
+        LOG_INFO("onWebsocketMsg: {}", std::string_view(reinterpret_cast<const char*>(data), len));
 
         // 非 JSON 消息直接忽略（包括 pong、ping 等控制帧）
         if (msg.empty() || msg[0] != '{') {
@@ -362,15 +349,11 @@ void OkxWsTradeUnit::handleWsApiError(WsPending& pending, const ErrorFields& fie
         }
     }
 
-    std::cout << "fields: " << fields.code_sv << " " << fields.msg_sv << std::endl;
-
     crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, fields.msg_sv);
     rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
     PUSH_RCMD(rcmd)
 }
 
-// ---- account update ----
-// data = [{totalEq, adjEq, mmr, mgnRatio, details:[{ccy, cashBal, availEq, frozenBal, upl}]}]
 void OkxWsTradeUnit::handleAccountUpdate(simdjson::ondemand::array& arr) {
     for (auto b_val : arr) {
         auto b_res = b_val.get_object();
@@ -471,9 +454,6 @@ void OkxWsTradeUnit::handleAccountUpdate(simdjson::ondemand::array& arr) {
     }
 }
 
-
-// ---- positions update ----
-// data = [{instType, instId, pos, avgPx, mmr, upl, markPx, liqPx, adl}]
 void OkxWsTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
     for (auto b_val : arr) {
         auto b_res = b_val.get_object();
@@ -598,9 +578,6 @@ void OkxWsTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
     }
 }
 
-
-// ---- orders update ----
-// data = [{instType, instId, ordId, clOrdId, sz, px, side, ordType, state, accFillSz, avgPx}]
 void OkxWsTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
     for (auto b_val : arr) {
         auto b_res = b_val.get_object();
@@ -785,9 +762,6 @@ void OkxWsTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
     }
 }
 
-// ============================================================================
-// query_account / balance / position: 都是 REST 查询, 大同小异
-// ============================================================================
 void OkxWsTradeUnit::query_account(const pubsub::TCommand& tcmd) {
     query_balance(tcmd);   // account 主要靠 balance 返回的 totalEq / adjEq
 }
@@ -797,15 +771,13 @@ void OkxWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
     std::string sign = crypto::getOkxSignatureRest(acc.secretKey, ts, "GET", balanceUrl, "");
     std::vector<std::pair<std::string, std::string>> headers = {{"OK-ACCESS-KEY", acc.apiKey}, {"OK-ACCESS-TIMESTAMP", ts}, {"OK-ACCESS-SIGN", sign}, {"OK-ACCESS-PASSPHRASE", acc.password}};
 
-    std::cout << "OkxTradeUnit query_balance" << std::endl;
     asyncRequest(boost::beast::http::verb::get, balanceUrl, "", "", std::move(headers), [this](boost::system::error_code ec, net::HttpResponse resp) {
         if (ec) { 
             LOG_ERROR("TB {} OKX query_balance ec: {}", acc.accountName, ec.message()); 
             return; 
         }
 
-        std::cout << "query_balance: " << resp.body << std::endl;
-
+        LOG_INFO("query_account: {}", resp.body);
         try {
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
@@ -920,7 +892,7 @@ void OkxWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                 }
             }
             else {
-                std::cout << "no data" << std::endl;
+                LOG_ERROR("query_balance no data");
             }
         } catch (const std::exception& e) {
             LOG_ERROR("TB {} OKX query_balance cb exc: {}", acc.accountName, e.what());
@@ -940,7 +912,7 @@ void OkxWsTradeUnit::query_position(const pubsub::TCommand&) {
         }    
         
         try {
-            std::cout << "query position: " << resp.body << std::endl;
+            LOG_INFO("query_position: {}", resp.body);
 
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
@@ -1104,9 +1076,6 @@ void OkxWsTradeUnit::query_position(const pubsub::TCommand&) {
     });
 }
 
-// ============================================================================
-// query_order —— GET /api/v5/trade/order?instId=X&ordId=Y
-// ============================================================================
 void OkxWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     QUERY_ORDER_TCMD_2_RCMD(tcmd);
 
@@ -1125,6 +1094,7 @@ void OkxWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
         query += "&clOrdId=" + std::string(tcmd.body.queryOrder.orderSysId);
     } 
     else {
+        LOG_ERROR("query_order orderId and orderSysId both empty, tcmd: {}", tcmd.getString());
         return;
     }
     std::string fullPath = queryOrderUrl + query;
@@ -1265,9 +1235,6 @@ void OkxWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     });
 }
 
-// ============================================================================
-// add_new_order (WS op:order)
-// ============================================================================
 void OkxWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     ADD_NEW_ORDER_TCMD_2_RCMD(tcmd)
 
@@ -1351,10 +1318,6 @@ void OkxWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     pWsClient->send_text(std::move(msg));
 }
 
-
-// ============================================================================
-// cancel_order (WS op:cancel-order)
-// ============================================================================
 void OkxWsTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     CANCEL_ORDER_TCMD_2_RCMD(tcmd)
 

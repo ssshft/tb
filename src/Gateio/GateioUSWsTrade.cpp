@@ -11,9 +11,6 @@ GateioUsWsTradeUnit::GateioUsWsTradeUnit(AccountCfg& a, sm::SecurityManager* s) 
 
 GateioUsWsTradeUnit::~GateioUsWsTradeUnit() = default;
 
-// ============================================================================
-// WS JSON builders
-// ============================================================================
 std::string GateioUsWsTradeUnit::buildLoginJson(int64_t ts) const {
     std::string time_str = std::to_string(ts);
     std::string sign = crypto::getGateioSignatureWsApi("futures.login", "api", time_str, "", acc.secretKey);
@@ -163,9 +160,6 @@ void GateioUsWsTradeUnit::clearPending() {
     }
 }
 
-// ============================================================================
-// subWebsocekt / onOpen / onCloseMsg
-// ============================================================================
 void GateioUsWsTradeUnit::subWebsocekt() {
     std::string restHost = crypto::host_of(acc.restUrl);
     initRestClient(restHost, {}, 4);
@@ -196,13 +190,9 @@ void GateioUsWsTradeUnit::onCloseMsg(int code, const std::string& reason) {
     clearPending();
 }
 
-// ============================================================================
-// onWebsocketMsg
-// ============================================================================
 void GateioUsWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /*isBinary*/, int64_t /*recv_ns*/) {
     try {
-        std::string msg(reinterpret_cast<const char*>(data), len);
-        std::cout << "onWebsocketMsg: " << msg << std::endl;
+        LOG_INFO("onWebsocketMsg: {}", std::string_view(reinterpret_cast<const char*>(data), len));
 
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
         auto doc = g_parser.iterate(padded);
@@ -445,7 +435,8 @@ void GateioUsWsTradeUnit::handleWsApiError(WsPending& pending, const ErrorFields
 
     if (pending.type == pubsub::CMD_NEW_ORDER) {
         rcmd.body.orderResponse.orderStatus = OS_REJECTED;    
-    } else if (pending.type == pubsub::CMD_CANCEL_ORDER) {
+    } 
+    else if (pending.type == pubsub::CMD_CANCEL_ORDER) {
         rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.errorId == OrderNotFoundError) ? OS_REJECTED : OS_FAILED;
     }
 
@@ -541,13 +532,10 @@ void GateioUsWsTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
         }
 
         rcmd.body.orderResponse.offsetFlag = isClose ? OF_CLOSE : OF_OPEN;
-
         rcmd.body.orderResponse.direction = size > 0 ? DT_LONG : DT_SHORT;
         rcmd.body.orderResponse.volumeTotal = std::fabs(size);
-        
         rcmd.body.orderResponse.limitPrice = price;
         
-
         if (!tif_sv.empty()) {
             switch (tif_sv[0]) {
                 case 'g': 
@@ -570,12 +558,12 @@ void GateioUsWsTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
 
         left = std::fabs(left);
         rcmd.body.orderResponse.volumeTraded = rcmd.body.orderResponse.volumeTotal - left;
-        
         rcmd.body.orderResponse.tradePrice = fill;
 
         if (status_sv == "open") {
             rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.volumeTotal > rcmd.body.orderResponse.volumeTraded && rcmd.body.orderResponse.volumeTraded > ZERO_NUM) ? OS_PARTFILLED : OS_NEW;
-        } else {
+        } 
+        else {
             if (finish_sv == "filled") {
                 rcmd.body.orderResponse.orderStatus = OS_FILLED;
             }
@@ -593,7 +581,6 @@ void GateioUsWsTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
     }
 }
 
-// ---- futures.balances update ----
 void GateioUsWsTradeUnit::handleBalancesUpdate(simdjson::ondemand::array& arr) {
     for (auto b_val : arr) {
         auto b_res = b_val.get_object();
@@ -631,7 +618,6 @@ void GateioUsWsTradeUnit::handleBalancesUpdate(simdjson::ondemand::array& arr) {
     }
 }
 
-// ---- futures.positions update ----
 void GateioUsWsTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
     for (auto b_val : arr) {
         auto b_res = b_val.get_object();
@@ -723,17 +709,12 @@ void GateioUsWsTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) 
     }
 }
 
-// ============================================================================
-// query_* (REST)
-// ============================================================================
-void GateioUsWsTradeUnit::query_account(const pubsub::TCommand&) {
 
+void GateioUsWsTradeUnit::query_account(const pubsub::TCommand& tcmd) {
+    query_balance(tcmd);
 }
 
-// ============================================================================
-// query_balance —— GET /api/v4/futures/usdt/accounts (array)
-// ============================================================================
-void GateioUsWsTradeUnit::query_balance(const pubsub::TCommand&) {
+void GateioUsWsTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
     std::string time_str = std::to_string(crypto::getCurrentTimeSeconds());
     std::string sign = crypto::getGateioSignatureRest("GET", balanceUrl, time_str, "", "", acc.secretKey);
     std::vector<std::pair<std::string, std::string>> headers = {{"KEY", acc.apiKey}, {"Timestamp", time_str}, {"SIGN", sign}};
@@ -745,7 +726,9 @@ void GateioUsWsTradeUnit::query_balance(const pubsub::TCommand&) {
         }
 
         try {
-           simdjson::padded_string padded(resp.body);
+            LOG_INFO("query_balance: {}", resp.body);
+
+            simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
                 LOG_ERROR("TB {} query_order parse err: {}", acc.accountName, resp.body);
@@ -822,9 +805,6 @@ void GateioUsWsTradeUnit::query_balance(const pubsub::TCommand&) {
     });
 }
 
-// ============================================================================
-// query_position —— GET /api/v4/futures/usdt/positions
-// ============================================================================
 void GateioUsWsTradeUnit::query_position(const pubsub::TCommand&) {
     std::string time_str = std::to_string(crypto::getCurrentTimeSeconds());
     std::string sign = crypto::getGateioSignatureRest("GET", positionUrl, time_str, "", "", acc.secretKey);
@@ -837,7 +817,7 @@ void GateioUsWsTradeUnit::query_position(const pubsub::TCommand&) {
         }
 
         try {
-            std::cout << "query_position: " << resp.body << std::endl;
+            LOG_INFO("query_position: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -967,9 +947,6 @@ void GateioUsWsTradeUnit::query_position(const pubsub::TCommand&) {
     });
 }
 
-// ============================================================================
-// query_order —— GET /api/v4/futures/usdt/orders/{id}
-// ============================================================================
 void GateioUsWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     QUERY_ORDER_TCMD_2_RCMD(tcmd);
 
@@ -982,9 +959,12 @@ void GateioUsWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     std::string idSeg = "";
     if (!crypto::str_cmp(tcmd.body.queryOrder.orderId, "")) {
         idSeg = tcmd.body.queryOrder.orderId;
-    } else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
+    } 
+    else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
         idSeg = tcmd.body.queryOrder.orderSysId;
-    } else {
+    } 
+    else {
+        LOG_ERROR("query_order orderId and orderSysId both empty, tcmd: {}", tcmd.getString());
         return;
     }
 
@@ -1002,7 +982,7 @@ void GateioUsWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
         }
 
         try {
-            std::cout << "query order: " << resp.body << std::endl;
+            LOG_INFO("query_order: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -1092,9 +1072,6 @@ void GateioUsWsTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     });
 }
 
-// ============================================================================
-// add_new_order (WS futures.order_place)
-// ============================================================================
 void GateioUsWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     ADD_NEW_ORDER_TCMD_2_RCMD(tcmd)
 
@@ -1181,10 +1158,6 @@ void GateioUsWsTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     pWsClient->send_text(std::move(msg));
 }
 
-
-// ============================================================================
-// cancel_order (WS futures.order_cancel)
-// ============================================================================
 void GateioUsWsTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     CANCEL_ORDER_TCMD_2_RCMD(tcmd)
 

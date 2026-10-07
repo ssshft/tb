@@ -17,9 +17,6 @@ BinanceUFTradeUnit::~BinanceUFTradeUnit() {
     }
 }
 
-// ============================================================================
-// 签名 / URL
-// ============================================================================
 std::string BinanceUFTradeUnit::buildSignedPath(std::string_view basePath, const std::vector<std::pair<std::string, std::string>>& kvs) const {
     std::string qs;
     qs.reserve(256);
@@ -41,10 +38,6 @@ std::string BinanceUFTradeUnit::buildSignedPath(std::string_view basePath, const
     return full;
 }
 
-
-// ============================================================================
-// listenKey
-// ============================================================================
 bool BinanceUFTradeUnit::generateListenKeySync() {
     // POST /fapi/v1/listenKey (需要 X-MBX-APIKEY header, 不需要 signature)
     std::promise<std::string> prom;
@@ -72,7 +65,8 @@ bool BinanceUFTradeUnit::generateListenKeySync() {
                 std::string_view lk;
                 if (doc["listenKey"].get(lk) == simdjson::SUCCESS) {
                     prom.set_value(std::string(lk));
-                } else {
+                } 
+                else {
                     LOG_ERROR("TB {} listenKey resp missing: {}", acc.accountName, resp.body);
                     prom.set_value("");
                 }
@@ -87,10 +81,12 @@ bool BinanceUFTradeUnit::generateListenKeySync() {
         LOG_ERROR("TB {} listenKey req timeout", acc.accountName);
         return false;
     }
+
     listenKey_ = fut.get();
     if (listenKey_.empty()) {
         return false;
     }
+
     LOG_INFO("TB {} listenKey={}", acc.accountName, listenKey_);
     return true;
 }
@@ -127,10 +123,6 @@ void BinanceUFTradeUnit::listenKeyRenewLoop() {
     }
 }
 
-
-// ============================================================================
-// subWebsocekt
-// ============================================================================
 void BinanceUFTradeUnit::subWebsocekt() {
     // 1. REST
     std::string restHost = crypto::host_of(acc.restUrl);
@@ -157,14 +149,9 @@ void BinanceUFTradeUnit::subWebsocekt() {
     });
 }
 
-
-// ============================================================================
-// WS msg
-// ============================================================================
 void BinanceUFTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, int64_t) {
     try {
-        std::string msg(reinterpret_cast<const char*>(data), len);
-        std::cout << "onWebsocketMsg: " << msg << std::endl;
+        LOG_INFO("onWebsocketMsg: {}", std::string_view(reinterpret_cast<const char*>(data), len));
 
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
         auto doc = g_parser.iterate(padded);
@@ -224,8 +211,6 @@ void BinanceUFTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, i
     }
 }
 
-// ---- ACCOUNT_UPDATE ----
-//   { "e":"ACCOUNT_UPDATE", "a":{ "B":[{a,cw,bc,wb}], "P":[{s,pa,ps,iw,ep,up}] } }
 void BinanceUFTradeUnit::handleAccountUpdate(simdjson::ondemand::object& a) {
     simdjson::ondemand::array balances;
     simdjson::ondemand::array positions;
@@ -324,9 +309,11 @@ void BinanceUFTradeUnit::handleAccountUpdate(simdjson::ondemand::object& a) {
                     InstType inst = USDT_SWAP;
                     if (smc->get_instrument_info(BINANCE, USDT_SWAP, originInstId.c_str(), info)) {
                         inst = USDT_SWAP;
-                    } else if (smc->get_instrument_info(BINANCE, USDT_FUTURES, originInstId.c_str(), info)) {
+                    } 
+                    else if (smc->get_instrument_info(BINANCE, USDT_FUTURES, originInstId.c_str(), info)) {
                         inst = USDT_FUTURES;
-                    } else {
+                    } 
+                    else {
                         continue;
                     }
 
@@ -354,11 +341,6 @@ void BinanceUFTradeUnit::handleAccountUpdate(simdjson::ondemand::object& a) {
     }
 }
 
-
-// ---- ORDER_TRADE_UPDATE ----
-//   { "e":"ORDER_TRADE_UPDATE", "o":{ "s":symbol, "c":cid, "S":side, "f":tif, "o":ot,
-//                                     "q":qty, "p":px, "X":status, "z":cumQty, "ap":avgPx,
-//                                     "l":lastQty, "L":lastPx } }
 void BinanceUFTradeUnit::handleOrderUpdate(simdjson::ondemand::object& o) {
     std::string_view s_sv;
     std::string_view c_sv;
@@ -421,9 +403,11 @@ void BinanceUFTradeUnit::handleOrderUpdate(simdjson::ondemand::object& o) {
     InstType inst = USDT_SWAP;
     if (smc->get_instrument_info(BINANCE, USDT_SWAP, originInstId.c_str(), info)) {
         inst = USDT_SWAP;
-    } else if (smc->get_instrument_info(BINANCE, USDT_FUTURES, originInstId.c_str(), info)) {
+    } 
+    else if (smc->get_instrument_info(BINANCE, USDT_FUTURES, originInstId.c_str(), info)) {
         inst = USDT_FUTURES;
-    } else {
+    } 
+    else {
         LOG_ERROR("TB {} UF order upd smc miss: {}", acc.accountName, originInstId);
         return;
     }
@@ -488,7 +472,7 @@ void BinanceUFTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
         }
         
         try {
-            std::cout << "query balance: " << resp.body << std::endl;
+            LOG_INFO("query_balance: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -707,7 +691,6 @@ void BinanceUFTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
     });
 }
 
-// ---- GET /fapi/v3/positionRisk?... ----
 void BinanceUFTradeUnit::query_position(const pubsub::TCommand&) {
     std::vector<std::pair<std::string, std::string>> kvs = {
         {"recvWindow", "5000"},
@@ -721,7 +704,7 @@ void BinanceUFTradeUnit::query_position(const pubsub::TCommand&) {
             return; 
         }
         try {
-            std::cout << "query position: " << resp.body << std::endl;
+            LOG_INFO("query_position: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -850,7 +833,6 @@ void BinanceUFTradeUnit::query_position(const pubsub::TCommand&) {
     });
 }
 
-// ---- POST /fapi/v1/order?... ----
 void BinanceUFTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     ADD_NEW_ORDER_TCMD_2_RCMD(tcmd)
 
@@ -979,7 +961,7 @@ void BinanceUFTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
         }
 
         try {
-            std::cout << "add new order: " << resp.body << std::endl;
+            LOG_INFO("add_new_order: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -1070,7 +1052,6 @@ void BinanceUFTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     });
 }
 
-// ---- DELETE /fapi/v1/order?... ----
 void BinanceUFTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     CANCEL_ORDER_TCMD_2_RCMD(tcmd)
 
@@ -1123,7 +1104,7 @@ void BinanceUFTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
             return;
         }
         try {
-            std::cout << "cancel order: " << resp.body << std::endl;
+            LOG_INFO("cancel_order: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -1186,7 +1167,6 @@ void BinanceUFTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     });
 }
 
-// ---- GET /fapi/v1/order?... ----
 void BinanceUFTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     QUERY_ORDER_TCMD_2_RCMD(tcmd);
 
@@ -1204,9 +1184,12 @@ void BinanceUFTradeUnit::query_order(const pubsub::TCommand& tcmd) {
 
     if (!crypto::str_cmp(tcmd.body.queryOrder.orderId, "")) {
         kvs.emplace_back("orderId", tcmd.body.queryOrder.orderId);
-    } else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
+    } 
+    else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
         kvs.emplace_back("origClientOrderId", tcmd.body.queryOrder.orderSysId);
-    } else {
+    } 
+    else {
+        LOG_ERROR("query_order orderId and orderSysId both empty, tcmd: {}", tcmd.getString());
         return;
     }
 
@@ -1219,7 +1202,7 @@ void BinanceUFTradeUnit::query_order(const pubsub::TCommand& tcmd) {
             return;
         }
         try {
-            std::cout << "query order: " << resp.body << std::endl;
+            LOG_INFO("query_order: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {

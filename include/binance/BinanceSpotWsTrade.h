@@ -25,9 +25,7 @@
 //
 #include "base/BaseTrade.h"
 #include "ed25519_signer.h"
-
 #include <simdjson.h>
-
 #include <atomic>
 #include <cstdint>
 #include <mutex>

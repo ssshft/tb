@@ -1,26 +1,10 @@
 #include "binance/BinanceUnifiedTrade.h"
-
 #include <cmath>
 #include <future>
-
 #include <fmt/format.h>
 #include <simdjson.h>
 
 
-namespace {
-    constexpr int kListenKeyRenewSec = 30 * 60;
-
-    // um / cm 判定
-    inline bool is_um(InstType t) {
-        return t == USDT_SWAP || t == USDT_FUTURES || t == USDC_SWAP;
-    }
-    inline bool is_cm(InstType t) {
-        return t == C_SWAP || t == C_FUTURES;
-    }
-    inline bool is_spot_like(InstType t) {
-        return t == SPOT || t == MARGIN;
-    }
-}
 
 
 BinanceUnifiedTradeUnit::BinanceUnifiedTradeUnit(AccountCfg& a, sm::SecurityManager* s) : BaseTradeUnit(a, s) {
@@ -34,28 +18,6 @@ BinanceUnifiedTradeUnit::~BinanceUnifiedTradeUnit() {
     }
 }
 
-
-// ============================================================================
-// URL 分流
-// ============================================================================
-const char* BinanceUnifiedTradeUnit::newOrderPath(InstType t) {
-    if (is_spot_like(t)) return "/papi/v1/margin/order";
-    if (is_um(t))        return "/papi/v1/um/order";
-    if (is_cm(t))        return "/papi/v1/cm/order";
-    return nullptr;
-}
-const char* BinanceUnifiedTradeUnit::cancelOrderPath(InstType t) { return newOrderPath(t); }
-const char* BinanceUnifiedTradeUnit::queryOrderPath(InstType t)  { return newOrderPath(t); }
-const char* BinanceUnifiedTradeUnit::positionPathFor(InstType t) {
-    if (is_um(t)) return "/papi/v1/um/positionRisk";
-    if (is_cm(t)) return "/papi/v1/cm/positionRisk";
-    return nullptr;
-}
-
-
-// ============================================================================
-// 签名 / URL 助手
-// ============================================================================
 std::string BinanceUnifiedTradeUnit::buildSignedPath(std::string_view basePath, const std::vector<std::pair<std::string, std::string>>& kvs) const {
     std::string qs;
     qs.reserve(256);
@@ -80,10 +42,6 @@ std::string BinanceUnifiedTradeUnit::buildSignedPath(std::string_view basePath, 
     return full;
 }
 
-
-// ============================================================================
-// listenKey
-// ============================================================================
 bool BinanceUnifiedTradeUnit::generateListenKeySync() {
     std::promise<std::string> prom;
     auto fut = prom.get_future();
@@ -158,10 +116,6 @@ void BinanceUnifiedTradeUnit::listenKeyRenewLoop() {
     }
 }
 
-
-// ============================================================================
-// subWebsocekt
-// ============================================================================
 void BinanceUnifiedTradeUnit::subWebsocekt() {
     std::string restHost = crypto::host_of(acc.restUrl);
     initRestClient(restHost, {{"X-MBX-APIKEY", acc.apiKey}}, 4);
@@ -186,8 +140,7 @@ void BinanceUnifiedTradeUnit::subWebsocekt() {
 
 void BinanceUnifiedTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, int64_t) {
     try {
-        std::string msg(reinterpret_cast<const char*>(data), len);
-        std::cout << "onWebsocketMsg: " << msg << std::endl;
+        LOG_INFO("onWebsocketMsg: {}", std::string_view(reinterpret_cast<const char*>(data), len));
 
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
         auto doc = g_parser.iterate(padded);
@@ -395,8 +348,6 @@ void BinanceUnifiedTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bo
     }
 }
 
-// ---- ACCOUNT_UPDATE ----
-//   { "e":"ACCOUNT_UPDATE", "a":{ "B":[{a,cw,bc,wb}], "P":[{s,pa,ps,iw,ep,up}] } }
 void BinanceUnifiedTradeUnit::handleAccountUpdate(simdjson::ondemand::object& a) {
     simdjson::ondemand::array balances;
     simdjson::ondemand::array positions;
@@ -488,10 +439,6 @@ void BinanceUnifiedTradeUnit::handleAccountUpdate(simdjson::ondemand::object& a)
     }
 }
 
-// ---- ORDER_TRADE_UPDATE ----
-//   { "e":"ORDER_TRADE_UPDATE", "o":{ "s":symbol, "c":cid, "S":side, "f":tif, "o":ot,
-//                                     "q":qty, "p":px, "X":status, "z":cumQty, "ap":avgPx,
-//                                     "l":lastQty, "L":lastPx } }
 void BinanceUnifiedTradeUnit::handleOrderUpdate(simdjson::ondemand::object& o) {
     std::string_view s_sv;
     std::string_view c_sv;
@@ -614,7 +561,6 @@ void BinanceUnifiedTradeUnit::handleOrderUpdate(simdjson::ondemand::object& o) {
     PUSH_RCMD(rcmd)
 }
 
-// ---- GET /papi/v1/account ----
 void BinanceUnifiedTradeUnit::query_account(const pubsub::TCommand&) {
     std::vector<std::pair<std::string, std::string>> kvs = {
         {"recvWindow", "5000"},
@@ -628,7 +574,7 @@ void BinanceUnifiedTradeUnit::query_account(const pubsub::TCommand&) {
             return; 
         }
         try {
-            std::cout << "query account: " << resp.body << std::endl;
+            LOG_INFO("query_account: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -681,7 +627,6 @@ void BinanceUnifiedTradeUnit::query_account(const pubsub::TCommand&) {
     });
 }
 
-// ---- GET /papi/v1/balance (array 直出) ----
 void BinanceUnifiedTradeUnit::query_balance(const pubsub::TCommand&) {
     if (!pRestClient) return;
     std::vector<std::pair<std::string, std::string>> kvs = {
@@ -697,7 +642,7 @@ void BinanceUnifiedTradeUnit::query_balance(const pubsub::TCommand&) {
         }
 
         try {
-            std::cout << "query balances: " << resp.body << std::endl;
+            LOG_INFO("query_balance: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -803,6 +748,7 @@ void BinanceUnifiedTradeUnit::query_position(const pubsub::TCommand& tcmd) {
     asyncRequest(boost::beast::http::verb::get, std::move(signedAdl), "", "", [this, adlMap, posPath](boost::system::error_code ec, ::net::HttpResponse resp) {
         if (!ec && resp.status_code == 200) {
             try {
+                LOG_INFO("query_position adl: {}", resp.body);
                 simdjson::padded_string padded(resp.body);
                 auto doc = g_parser.iterate(padded);
                 if (!doc.error()) {
@@ -842,6 +788,7 @@ void BinanceUnifiedTradeUnit::query_position(const pubsub::TCommand& tcmd) {
                 return;
             }
             try {
+                LOG_INFO("query_position: {}", resp2.body);
                 simdjson::padded_string padded(resp2.body);
                 auto doc = g_parser.iterate(padded);
                 if (doc.error()) {
@@ -1115,7 +1062,7 @@ void BinanceUnifiedTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
         }
 
         try {
-            std::cout << "add new order: " << resp.body << std::endl;
+            LOG_INFO("add_new_order: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -1272,7 +1219,7 @@ void BinanceUnifiedTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
         }
         
         try {
-            std::cout << "cancel order: " << resp.body << std::endl;
+            LOG_INFO("cancel_order: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -1365,9 +1312,12 @@ void BinanceUnifiedTradeUnit::query_order(const pubsub::TCommand& tcmd) {
 
     if (!crypto::str_cmp(tcmd.body.queryOrder.orderId, "")) {
         kvs.emplace_back("orderId", tcmd.body.queryOrder.orderId);
-    } else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
+    } 
+    else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
         kvs.emplace_back("origClientOrderId", tcmd.body.queryOrder.orderSysId);
-    } else {
+    } 
+    else {
+        LOG_ERROR("query_order orderId and orderSysId both empty, tcmd: {}", tcmd.getString());
         return;
     }
 
@@ -1381,7 +1331,7 @@ void BinanceUnifiedTradeUnit::query_order(const pubsub::TCommand& tcmd) {
         }
 
         try {
-            std::cout << "query order: " << resp.body << std::endl;
+            LOG_INFO("query_order: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {

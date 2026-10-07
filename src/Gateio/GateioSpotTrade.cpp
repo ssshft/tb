@@ -74,13 +74,9 @@ std::string GateioSpotTradeUnit::buildBalancesSubscribeJson() const {
         ts, channel, acc.apiKey, sign);
 }
 
-// ============================================================================
-// onWebsocketMsg
-// ============================================================================
 void GateioSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, int64_t) {
     try {
-        std::string msg(reinterpret_cast<const char*>(data), len);
-        std::cout << "onWebsocketMsg: " << msg << std::endl;
+        LOG_INFO("onWebsocketMsg: {}", std::string_view(reinterpret_cast<const char*>(data), len));
 
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
         auto doc = g_parser.iterate(padded);
@@ -132,7 +128,6 @@ void GateioSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, 
     }
 }
 
-// ---- spot.balances / spot.cross_balances update ----
 void GateioSpotTradeUnit::handleBalancesUpdate(simdjson::ondemand::array& arr) {
     for (auto b_val : arr) {
         auto b_res = b_val.get_object();
@@ -174,7 +169,6 @@ void GateioSpotTradeUnit::handleBalancesUpdate(simdjson::ondemand::array& arr) {
     }
 }
 
-// ---- spot.orders update ----
 void GateioSpotTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
     for (auto b_val : arr) {
         auto b_res = b_val.get_object();
@@ -318,7 +312,7 @@ void GateioSpotTradeUnit::query_account(const pubsub::TCommand&) {
         }
 
         try {
-            std::cout << "query_account: " << resp.body << std::endl;
+            LOG_INFO("query_account: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -420,9 +414,6 @@ void GateioSpotTradeUnit::query_account(const pubsub::TCommand&) {
 }
 
 
-// ============================================================================
-// query_balance —— GET /api/v4/spot/accounts (array)
-// ============================================================================
 void GateioSpotTradeUnit::query_balance(const pubsub::TCommand&) {
     std::string time_str = std::to_string(crypto::getCurrentTimeSeconds());
     std::string sign = crypto::getGateioSignatureRest("GET", balanceUrl, time_str, "", "", acc.secretKey);
@@ -434,7 +425,7 @@ void GateioSpotTradeUnit::query_balance(const pubsub::TCommand&) {
             return; 
         }
         try {
-            std::cout << "query_balance: " << resp.body << std::endl;
+            LOG_INFO("query_balance: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -633,7 +624,6 @@ void GateioSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     LOG_INFO("TB {} Gate spot add_new_order body={}", acc.accountName, body);
 
     asyncRequest(boost::beast::http::verb::post, newOrderUrl, std::move(body), "application/json", std::move(headers), [this, rcmd](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
-        std::cout << "add new order: " << resp.body << std::endl;
         if (ec) {
             if (ec == boost::system::errc::no_stream_resources || ec == boost::system::errc::no_buffer_space || ec == boost::system::errc::not_connected) {
                 rcmd.body.orderResponse.orderStatus = OS_REJECTED;
@@ -654,6 +644,7 @@ void GateioSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
         }
 
         try {
+            LOG_INFO("add_new_order: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -758,10 +749,6 @@ void GateioSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     });
 }
 
-
-// ============================================================================
-// cancel_order —— DELETE /api/v4/spot/orders/{id}?currency_pair=X
-// ============================================================================
 void GateioSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     CANCEL_ORDER_TCMD_2_RCMD(tcmd)
 
@@ -785,9 +772,11 @@ void GateioSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     std::string idSeg = "";
     if (!crypto::str_cmp(tcmd.body.cancelOrder.orderId, "")) {
         idSeg = tcmd.body.cancelOrder.orderId;
-    } else if (!crypto::str_cmp(tcmd.body.cancelOrder.orderSysId, "")) {
+    } 
+    else if (!crypto::str_cmp(tcmd.body.cancelOrder.orderSysId, "")) {
         idSeg = tcmd.body.cancelOrder.orderSysId;
-    } else {
+    } 
+    else {
         rcmd.body.orderResponse.orderStatus = OS_FAILED;
         rcmd.body.orderResponse.errorId = OrderIdError;
         rcmd.body.orderResponse.updateTime  = crypto::getCurrentTime();
@@ -819,7 +808,7 @@ void GateioSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
             return;
         }
         try {
-            std::cout << "cancel_order : " << resp.body.c_str() << std::endl;
+            LOG_INFO("cancel_order: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -894,10 +883,6 @@ void GateioSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     });
 }
 
-
-// ============================================================================
-// query_order —— GET /api/v4/spot/orders/{id}?currency_pair=X
-// ============================================================================
 void GateioSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     QUERY_ORDER_TCMD_2_RCMD(tcmd);
 
@@ -910,9 +895,12 @@ void GateioSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     std::string idSeg;
     if (!crypto::str_cmp(tcmd.body.queryOrder.orderId, "")) {
         idSeg = tcmd.body.queryOrder.orderId;
-    } else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
+    } 
+    else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
         idSeg = tcmd.body.queryOrder.orderSysId;
-    } else {
+    } 
+    else {
+        LOG_ERROR("query_order orderId and orderSysId both empty, tcmd: {}", tcmd.getString());
         return;
     }
 
@@ -936,7 +924,7 @@ void GateioSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
         }
 
         try {
-            std::cout << "query order: " << resp.body << std::endl;
+            LOG_INFO("query_order: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -1004,13 +992,17 @@ void GateioSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
 
             if (status_sv == "open") {
                 rcmd.body.orderResponse.orderStatus = (rcmd.body.orderResponse.volumeTotal > rcmd.body.orderResponse.volumeTraded && rcmd.body.orderResponse.volumeTraded > ZERO_NUM) ? OS_PARTFILLED : OS_NEW;
-            } else if (status_sv == "closed") {
+            } 
+            else if (status_sv == "closed") {
                 rcmd.body.orderResponse.orderStatus = OS_FILLED;
-            } else if (status_sv == "cancelled") {
+            } 
+            else if (status_sv == "cancelled") {
                 rcmd.body.orderResponse.orderStatus = OS_CANCELED;
-            } else if (finishAs_sv == "filled") {
+            } 
+            else if (finishAs_sv == "filled") {
                 rcmd.body.orderResponse.orderStatus = OS_FILLED;
-            } else {
+            } 
+            else {
                 rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
             }
             rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();

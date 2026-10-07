@@ -337,9 +337,6 @@ void BinanceSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool 
     }
 }
 
-// ============================================================================
-// Trade API
-// ============================================================================
 void BinanceSpotTradeUnit::query_account(const pubsub::TCommand& tcmd) {
     // 走 query_balance 已够, 这里保留占位
     query_balance(tcmd);
@@ -367,7 +364,7 @@ void BinanceSpotTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
             return;
         }
         try {
-            std::cout << "query balance: " << resp.body << std::endl;
+            LOG_INFO("query_balance: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -458,7 +455,6 @@ void BinanceSpotTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
     });
 }
 
-// ---- POST /api/v3/order?... ----
 void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     ADD_NEW_ORDER_TCMD_2_RCMD(tcmd)
 
@@ -586,7 +582,7 @@ void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
         }
 
         try {
-            std::cout << "add new order: " << resp.body << std::endl;
+            LOG_INFO("add_new_order: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -684,8 +680,6 @@ void BinanceSpotTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     });
 }
 
-
-// ---- DELETE /api/v3/order?... ----
 void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     CANCEL_ORDER_TCMD_2_RCMD(tcmd)
 
@@ -714,9 +708,11 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
 
     if (!crypto::str_cmp(tcmd.body.cancelOrder.orderId, "")) {
         kvs.emplace_back("orderId", tcmd.body.cancelOrder.orderId);
-    } else if (!crypto::str_cmp(tcmd.body.cancelOrder.orderSysId, "")) {
+    } 
+    else if (!crypto::str_cmp(tcmd.body.cancelOrder.orderSysId, "")) {
         kvs.emplace_back("origClientOrderId", tcmd.body.cancelOrder.orderSysId);
-    } else {
+    } 
+    else {
         LOG_ERROR("TB {} cancel_order need orderId or orderSysId", acc.accountName);
         rcmd.body.orderResponse.orderStatus = OS_FAILED;
         rcmd.body.orderResponse.errorId = OrderIdError;
@@ -740,7 +736,7 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
             return;
         }
         try {
-            std::cout << "cancel order: " << resp.body << std::endl;
+            LOG_INFO("cancel_order: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -810,8 +806,6 @@ void BinanceSpotTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     });
 }
 
-
-// ---- GET /api/v3/order?... ----
 void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     QUERY_ORDER_TCMD_2_RCMD(tcmd);
 
@@ -829,10 +823,12 @@ void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
 
     if (!crypto::str_cmp(tcmd.body.queryOrder.orderId, "")) {
         kvs.emplace_back("orderId", tcmd.body.queryOrder.orderId);
-    } else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
+    } 
+    else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
         kvs.emplace_back("origClientOrderId", tcmd.body.queryOrder.orderSysId);
-    } else {
-        LOG_ERROR("TB {} query_order need orderId or orderSysId, {}", acc.accountName, tcmd.body.queryOrder.instId);
+    } 
+    else {
+        LOG_ERROR("query_order orderId and orderSysId both empty, tcmd: {}", tcmd.getString());
         return;
     }
 
@@ -845,7 +841,7 @@ void BinanceSpotTradeUnit::query_order(const pubsub::TCommand& tcmd) {
             return;
         }
         try {
-            std::cout << "query order: " << resp.body << std::endl;
+            LOG_INFO("query_order: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {

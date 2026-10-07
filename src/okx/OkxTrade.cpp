@@ -24,9 +24,7 @@ std::string OkxTradeUnit::buildLoginJson() const {
     std::string ts = std::to_string(crypto::getCurrentTimeSeconds());
     std::string sign = crypto::getOkxSignatureWsLogin(acc.secretKey, ts, "GET/users/self/verify");
 
-    return fmt::format(
-        R"({{"op":"login","args":[{{"apiKey":"{}","passphrase":"{}","timestamp":"{}","sign":"{}"}}]}})",
-        acc.apiKey, acc.password, ts, sign);
+    return fmt::format(R"({{"op":"login","args":[{{"apiKey":"{}","passphrase":"{}","timestamp":"{}","sign":"{}"}}]}})", acc.apiKey, acc.password, ts, sign);
 }
 
 std::string OkxTradeUnit::buildSubscribeJson() const {
@@ -76,7 +74,6 @@ void OkxTradeUnit::onOpen() {
     // 更严格的做法是等 login "code":"0" 后再 subscribe, 但那个状态机成本大。
     // OKX 实测直接连发也可以 —— subscribe 会被 buffer, login 成功后 server 挨个响应。
     std::string loginJson = buildLoginJson();
-    std::cout << "onOpen--- login: " << loginJson << std::endl;
     pWsClient->send_text(loginJson);
 }
 
@@ -85,8 +82,7 @@ void OkxTradeUnit::onOpen() {
 // ============================================================================
 void OkxTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, int64_t) {
     try {
-        std::string msg(reinterpret_cast<const char*>(data), len);
-        std::cout << "onWebsocketMsg: " << msg << std::endl;
+        LOG_INFO("onWebsocketMsg: {}", std::string_view(reinterpret_cast<const char*>(data), len));
 
         // 非 JSON 消息直接忽略（包括 pong、ping 等控制帧）
         if (msg.empty() || msg[0] != '{') {
@@ -152,9 +148,6 @@ void OkxTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, int64_t
     }
 }
 
-
-// ---- account update ----
-// data = [{totalEq, adjEq, mmr, mgnRatio, details:[{ccy, cashBal, availEq, frozenBal, upl}]}]
 void OkxTradeUnit::handleAccountUpdate(simdjson::ondemand::array& arr) {
     for (auto b_val : arr) {
         auto b_res = b_val.get_object();
@@ -255,9 +248,6 @@ void OkxTradeUnit::handleAccountUpdate(simdjson::ondemand::array& arr) {
     }
 }
 
-
-// ---- positions update ----
-// data = [{instType, instId, pos, avgPx, mmr, upl, markPx, liqPx, adl}]
 void OkxTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
     for (auto b_val : arr) {
         auto b_res = b_val.get_object();
@@ -315,11 +305,13 @@ void OkxTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
             if (smc->get_instrument_info(OKX, SPOT, originInstId.c_str(), info)) { 
                 instType = SPOT; 
             }
-        } else if (iType_sv == "MARGIN") {
+        } 
+        else if (iType_sv == "MARGIN") {
             if (smc->get_instrument_info(OKX, MARGIN, originInstId.c_str(), info)) { 
                 instType = MARGIN;
             }
-        } else if (iType_sv == "SWAP" || iType_sv == "FUTURES") {
+        } 
+        else if (iType_sv == "SWAP" || iType_sv == "FUTURES") {
             // 依次试 USDT_* → C_* (根据 instId 是否含 -USDT- 大致预判也可, 但这么写更 robust)
             InstType u_swap = (iType_sv == "SWAP") ? USDT_SWAP : USDT_FUTURES;
             InstType c_swap = (iType_sv == "SWAP") ? C_SWAP : C_FUTURES;
@@ -331,7 +323,8 @@ void OkxTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
             if (smc->get_instrument_info(OKX, c_swap, originInstId.c_str(), info)) { 
                 instType = c_swap;
             }
-        } else {
+        } 
+        else {
             continue;
         }
 
@@ -382,9 +375,6 @@ void OkxTradeUnit::handlePositionsUpdate(simdjson::ondemand::array& arr) {
     }
 }
 
-
-// ---- orders update ----
-// data = [{instType, instId, ordId, clOrdId, sz, px, side, ordType, state, accFillSz, avgPx}]
 void OkxTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
     for (auto b_val : arr) {
         auto b_res = b_val.get_object();
@@ -472,7 +462,8 @@ void OkxTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
             if (smc->get_instrument_info(OKX, c_swap, originInstId.c_str(), info)) { 
                 instType = c_swap;
             }
-        } else {
+        } 
+        else {
             continue;
         }
 
@@ -569,9 +560,6 @@ void OkxTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
     }
 }
 
-// ============================================================================
-// query_account / balance / position: 都是 REST 查询, 大同小异
-// ============================================================================
 void OkxTradeUnit::query_account(const pubsub::TCommand& tcmd) {
     query_balance(tcmd);   // account 主要靠 balance 返回的 totalEq / adjEq
 }
@@ -581,15 +569,13 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
     std::string sign = crypto::getOkxSignatureRest(acc.secretKey, ts, "GET", balanceUrl, "");
     std::vector<std::pair<std::string, std::string>> headers = {{"OK-ACCESS-KEY", acc.apiKey}, {"OK-ACCESS-TIMESTAMP", ts}, {"OK-ACCESS-SIGN", sign}, {"OK-ACCESS-PASSPHRASE", acc.password}};
 
-    std::cout << "OkxTradeUnit query_balance" << std::endl;
     asyncRequest(boost::beast::http::verb::get, balanceUrl, "", "", std::move(headers), [this](boost::system::error_code ec, net::HttpResponse resp) {
         if (ec) { 
             LOG_ERROR("TB {} OKX query_balance ec: {}", acc.accountName, ec.message()); 
             return; 
         }
 
-        std::cout << "query_balance: " << resp.body << std::endl;
-
+        LOG_INFO("query_balance: {}", resp.body);
         try {
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
@@ -704,7 +690,7 @@ void OkxTradeUnit::query_balance(const pubsub::TCommand& tcmd) {
                 }
             }
             else {
-                std::cout << "no data" << std::endl;
+                LOG_ERROR("query_balance no data");
             }
         } catch (const std::exception& e) {
             LOG_ERROR("TB {} OKX query_balance cb exc: {}", acc.accountName, e.what());
@@ -724,7 +710,7 @@ void OkxTradeUnit::query_position(const pubsub::TCommand&) {
         }    
         
         try {
-            std::cout << "query position: " << resp.body << std::endl;
+            LOG_INFO("query_position: {}", resp.body);
 
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
@@ -792,11 +778,13 @@ void OkxTradeUnit::query_position(const pubsub::TCommand&) {
                         if (smc->get_instrument_info(OKX, SPOT, originInstId.c_str(), info)) { 
                             instType = SPOT; 
                         }
-                    } else if (iType_sv == "MARGIN") {
+                    } 
+                    else if (iType_sv == "MARGIN") {
                         if (smc->get_instrument_info(OKX, MARGIN, originInstId.c_str(), info)) { 
                             instType = MARGIN;
                         }
-                    } else if (iType_sv == "SWAP" || iType_sv == "FUTURES") {
+                    } 
+                    else if (iType_sv == "SWAP" || iType_sv == "FUTURES") {
                         // 依次试 USDT_* → C_* (根据 instId 是否含 -USDT- 大致预判也可, 但这么写更 robust)
                         InstType u_swap = (iType_sv == "SWAP") ? USDT_SWAP : USDT_FUTURES;
                         InstType c_swap = (iType_sv == "SWAP") ? C_SWAP : C_FUTURES;
@@ -808,7 +796,8 @@ void OkxTradeUnit::query_position(const pubsub::TCommand&) {
                         if (smc->get_instrument_info(OKX, c_swap, originInstId.c_str(), info)) { 
                             instType = c_swap;
                         }
-                    } else {
+                    } 
+                    else {
                         continue;
                     }
 
@@ -888,9 +877,6 @@ void OkxTradeUnit::query_position(const pubsub::TCommand&) {
     });
 }
 
-// ============================================================================
-// add_new_order —— POST /api/v5/trade/order (body 是 JSON)
-// ============================================================================
 void OkxTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     ADD_NEW_ORDER_TCMD_2_RCMD(tcmd)
 
@@ -1006,8 +992,7 @@ void OkxTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             return;
         }
 
-        std::cout << "add new order: " << resp.body << std::endl;
-
+        LOG_INFO("add_new_order: {}", resp.body);
         try {
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
@@ -1098,10 +1083,6 @@ void OkxTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     });
 }
 
-
-// ============================================================================
-// cancel_order —— POST /api/v5/trade/cancel-order (body = {instId, ordId 或 clOrdId})
-// ============================================================================
 void OkxTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     CANCEL_ORDER_TCMD_2_RCMD(tcmd)
 
@@ -1145,7 +1126,7 @@ void OkxTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
             return;
         }
         try {
-            std::cout << "cancel order: " << resp.body << std::endl;
+            LOG_INFO("cancel_order: {}", resp.body);
 
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
@@ -1197,11 +1178,6 @@ void OkxTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
                 }
             }
 
-            std::cout << "sCode_sv: " << sCode_sv << std::endl;
-            std::cout << "sMsg_sv: " << sMsg_sv << std::endl;
-            std::cout << "code_sv: " << code_sv << std::endl;
-            std::cout << "msg_sv: " << msg_sv << std::endl;
-
             if (code_sv == "0") {
                 rcmd.body.orderResponse.orderStatus = OS_CANCELED;
             }
@@ -1238,9 +1214,6 @@ void OkxTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     });
 }
 
-// ============================================================================
-// query_order —— GET /api/v5/trade/order?instId=X&ordId=Y
-// ============================================================================
 void OkxTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     QUERY_ORDER_TCMD_2_RCMD(tcmd);
 
@@ -1259,6 +1232,7 @@ void OkxTradeUnit::query_order(const pubsub::TCommand& tcmd) {
         query += "&clOrdId=" + std::string(tcmd.body.queryOrder.orderSysId);
     } 
     else {
+        LOG_ERROR("query_order orderId and orderSysId both empty, tcmd: {}", tcmd.getString());
         return;
     }
     std::string fullPath = queryOrderUrl + query;
@@ -1276,7 +1250,7 @@ void OkxTradeUnit::query_order(const pubsub::TCommand& tcmd) {
         }
 
         try {
-            std::cout << "query order: " << resp.body << std::endl;
+            LOG_INFO("query_order: {}", resp.body);
 
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);

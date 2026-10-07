@@ -11,13 +11,9 @@ BybitTradeUnit::~BybitTradeUnit() {
 
 }
 
-// ============================================================================
-// WS auth / subscribe
-// ============================================================================
 std::string BybitTradeUnit::buildAuthJson() const {
     std::string ts = std::to_string(crypto::getCurrentTimeMilli() + 3000);
     std::string sign = crypto::getBybitSignatureWsAuth(acc.secretKey, ts, "GET/realtime");
-
     return fmt::format(R"({{"op":"auth","args":["{}",{},"{}"]}})", acc.apiKey, ts, sign);
 }
 
@@ -26,10 +22,6 @@ std::string BybitTradeUnit::buildSubscribeJson() const {
     return R"({"op":"subscribe","args":["order","wallet","position"]})";
 }
 
-
-// ============================================================================
-// subWebsocekt
-// ============================================================================
 void BybitTradeUnit::subWebsocekt() {
     std::string restHost = crypto::host_of(acc.restUrl);
     initRestClient(restHost, {}, 4);
@@ -45,23 +37,16 @@ void BybitTradeUnit::subWebsocekt() {
     subWebsocketWithConfig(std::move(cfg));
 }
 
-
-// ============================================================================
 // onOpen: auth + subscribe
-// ============================================================================
 void BybitTradeUnit::onOpen() {
     BaseTradeUnit::onOpen();
     pWsClient->send_text(buildAuthJson());
     pWsClient->send_text(buildSubscribeJson());
 }
 
-// ============================================================================
-// onWebsocketMsg
-// ============================================================================
 void BybitTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool, int64_t) {
     try {
-        std::string msg(reinterpret_cast<const char*>(data), len);
-        std::cout << "onWebsocketMsg: " << msg << std::endl;
+        LOG_INFO("onWebsocketMsg: {}", std::string_view(reinterpret_cast<const char*>(data), len));
 
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
         auto doc = g_parser.iterate(padded);
@@ -193,8 +178,6 @@ void BybitTradeUnit::handleWalletUpdate(simdjson::ondemand::array& dataArr) {
     }
 }
 
-// ---- position update ----
-// data = [{category, symbol, side, size, avgPrice, positionValue, unrealisedPnl, markPrice, liqPrice, ...}]
 void BybitTradeUnit::handlePositionUpdate(simdjson::ondemand::array& dataArr) {
     for (auto b_val : dataArr) {
         auto b_res = b_val.get_object();
@@ -256,7 +239,8 @@ void BybitTradeUnit::handlePositionUpdate(simdjson::ondemand::array& dataArr) {
             else if (smc->get_instrument_info(BYBIT, USDT_FUTURES, originInstId.c_str(), info)) { 
                 instType = USDT_FUTURES; 
             }
-        } else if (category == "inverse") {
+        } 
+        else if (category == "inverse") {
             if (smc->get_instrument_info(BYBIT, C_SWAP, originInstId.c_str(), info)) { 
                 instType = C_SWAP; 
             }
@@ -288,9 +272,6 @@ void BybitTradeUnit::handlePositionUpdate(simdjson::ondemand::array& dataArr) {
     }
 }
 
-// ---- order update ----
-// data = [{category, symbol, orderId, orderLinkId, side, orderType, timeInForce,
-//          qty, price, orderStatus, cumExecQty, avgPrice, cumExecValue, ...}]
 void BybitTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& dataArr) {
     for (auto b_val : dataArr) {
         auto b_res = b_val.get_object();
@@ -368,7 +349,8 @@ void BybitTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& dataArr) {
             else if (smc->get_instrument_info(BYBIT, USDT_FUTURES, originInstId.c_str(), info)) { 
                 instType = USDT_FUTURES; 
             }
-        } else if (category == "inverse") {
+        } 
+        else if (category == "inverse") {
             if (smc->get_instrument_info(BYBIT, C_SWAP, originInstId.c_str(), info)) { 
                 instType = C_SWAP; 
             }
@@ -412,7 +394,8 @@ void BybitTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& dataArr) {
             // Bybit: "Limit" / "Market". Post-only 靠 timeInForce=PostOnly。
             if (oType_sv == "Market") {
                 rcmd.body.orderResponse.orderType = OT_MARKET;
-            } else if (oType_sv == "Limit") {
+            } 
+            else if (oType_sv == "Limit") {
                 if (tif_sv == "PostOnly") {
                     rcmd.body.orderResponse.orderType = OT_POST_ONLY;
                 }
@@ -461,17 +444,10 @@ void BybitTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& dataArr) {
     }
 }
 
-// ============================================================================
-// query_account —— 走 balance (Bybit 无独立 account 端点)
-// ============================================================================
 void BybitTradeUnit::query_account(const pubsub::TCommand& tcmd) {
     query_balance(tcmd);
 }
 
-
-// ============================================================================
-// query_balance —— GET /v5/account/wallet-balance?accountType=UNIFIED
-// ============================================================================
 void BybitTradeUnit::query_balance(const pubsub::TCommand&) {
     std::string query = "accountType=UNIFIED";
     std::string fullPath = balanceUrl + "?" + query;
@@ -487,6 +463,7 @@ void BybitTradeUnit::query_balance(const pubsub::TCommand&) {
         }
         
         try {
+            LOG_INFO("query_balance: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -616,10 +593,6 @@ void BybitTradeUnit::query_balance(const pubsub::TCommand&) {
     });
 }
 
-
-// ============================================================================
-// query_position —— GET /v5/position/list?category=X&settleCoin=USDT
-// ============================================================================
 void BybitTradeUnit::query_position(const pubsub::TCommand& tcmd) {
     std::string category = "";
     if (tcmd.body.queryPosition.instTypeEnum == USDT_SWAP || tcmd.body.queryPosition.instTypeEnum == USDT_FUTURES) {
@@ -643,6 +616,7 @@ void BybitTradeUnit::query_position(const pubsub::TCommand& tcmd) {
         }
 
         try {
+            LOG_INFO("query_position: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -712,7 +686,8 @@ void BybitTradeUnit::query_position(const pubsub::TCommand& tcmd) {
                         else if (smc->get_instrument_info(BYBIT, USDT_FUTURES, originInstId.c_str(), info)) { 
                             instType = USDT_FUTURES; 
                         }
-                    } else if (category == "inverse") {
+                    } 
+                    else if (category == "inverse") {
                         if (smc->get_instrument_info(BYBIT, C_SWAP, originInstId.c_str(), info)) { 
                             instType = C_SWAP; 
                         }
@@ -771,10 +746,6 @@ void BybitTradeUnit::query_position(const pubsub::TCommand& tcmd) {
     });
 }
 
-
-// ============================================================================
-// add_new_order —— POST /v5/order/create (body JSON)
-// ============================================================================
 void BybitTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     ADD_NEW_ORDER_TCMD_2_RCMD(tcmd)
 
@@ -822,7 +793,8 @@ void BybitTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
         else if (tcmd.body.newOrder.direction == DT_SHORT) {
             side = "Sell";
         }
-    } else if (tcmd.body.newOrder.offsetFlag == OF_CLOSE) {
+    } 
+    else if (tcmd.body.newOrder.offsetFlag == OF_CLOSE) {
         if (tcmd.body.newOrder.direction == DT_LONG) {
             side = "Sell";
         }
@@ -914,6 +886,7 @@ void BybitTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             }
 
             try {
+                LOG_INFO("add_new_order: {}", resp.body);
                 simdjson::padded_string padded(resp.body);
                 auto doc = g_parser.iterate(padded);
                 if (doc.error()) {
@@ -970,10 +943,6 @@ void BybitTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
         });
 }
 
-
-// ============================================================================
-// cancel_order —— POST /v5/order/cancel
-// ============================================================================
 void BybitTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     CANCEL_ORDER_TCMD_2_RCMD(tcmd)
 
@@ -1008,9 +977,11 @@ void BybitTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     std::string body;
     if (!crypto::str_cmp(tcmd.body.cancelOrder.orderId, "")) {
         body = fmt::format(R"({{"category":"{}","symbol":"{}","orderId":"{}"}})", category, info.originInstId, tcmd.body.cancelOrder.orderId);
-    } else if (!crypto::str_cmp(tcmd.body.cancelOrder.orderSysId, "")) {
+    } 
+    else if (!crypto::str_cmp(tcmd.body.cancelOrder.orderSysId, "")) {
         body = fmt::format(R"({{"category":"{}","symbol":"{}","orderLinkId":"{}"}})", category, info.originInstId, tcmd.body.cancelOrder.orderSysId);
-    } else {
+    } 
+    else {
         rcmd.body.orderResponse.orderStatus = OS_FAILED;
         rcmd.body.orderResponse.errorId = OrderIdError;
         rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
@@ -1035,6 +1006,7 @@ void BybitTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
         }
 
         try {
+            LOG_INFO("cancel_order: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {
@@ -1044,7 +1016,6 @@ void BybitTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
                 PUSH_RCMD(rcmd)
                 return;
             }
-
 
             auto doc_value = doc.get_object().value_unsafe();
 
@@ -1087,10 +1058,6 @@ void BybitTradeUnit::cancel_order(const pubsub::TCommand& tcmd) {
     });
 }
 
-
-// ============================================================================
-// query_order —— GET /v5/order/realtime?category=X&orderId=Y (或 orderLinkId)
-// ============================================================================
 void BybitTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     QUERY_ORDER_TCMD_2_RCMD(tcmd);
 
@@ -1113,9 +1080,12 @@ void BybitTradeUnit::query_order(const pubsub::TCommand& tcmd) {
     std::string query = fmt::format("category={}&symbol={}", category, info.originInstId);
     if (!crypto::str_cmp(tcmd.body.queryOrder.orderId, "")) {
         query += "&orderId=" + std::string(tcmd.body.queryOrder.orderId);
-    } else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
+    } 
+    else if (!crypto::str_cmp(tcmd.body.queryOrder.orderSysId, "")) {
         query += "&orderLinkId=" + std::string(tcmd.body.queryOrder.orderSysId);
-    } else {
+    } 
+    else {
+        LOG_ERROR("query_order orderId and orderSysId both empty, tcmd: {}", tcmd.getString());
         return;
     }
     std::string fullPath = queryOrderUrl + "?" + query;
@@ -1133,6 +1103,7 @@ void BybitTradeUnit::query_order(const pubsub::TCommand& tcmd) {
         }
 
         try {
+            LOG_INFO("query_order: {}", resp.body);
             simdjson::padded_string padded(resp.body);
             auto doc = g_parser.iterate(padded);
             if (doc.error()) {

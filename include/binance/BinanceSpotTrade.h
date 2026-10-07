@@ -28,12 +28,12 @@ public:
     // 用 cfg.subscribe_messages 存不下 —— 会 stale。 所以在 on_open 时现场生成再 send_text。
     virtual void onOpen() override;
 
-    virtual void query_account (const pubsub::TCommand& tcmd) override;
-    virtual void query_balance (const pubsub::TCommand& tcmd) override;
+    virtual void query_account(const pubsub::TCommand& tcmd) override;
+    virtual void query_balance(const pubsub::TCommand& tcmd) override;
     virtual void query_position(const pubsub::TCommand& tcmd) override;
-    virtual void add_new_order (const pubsub::TCommand& tcmd) override;
-    virtual void cancel_order  (const pubsub::TCommand& tcmd) override;
-    virtual void query_order   (const pubsub::TCommand& tcmd) override;
+    virtual void add_new_order(const pubsub::TCommand& tcmd) override;
+    virtual void cancel_order(const pubsub::TCommand& tcmd) override;
+    virtual void query_order(const pubsub::TCommand& tcmd) override;
 
 private:
     // ---- 签名 / 构造 URL 助手 ----
