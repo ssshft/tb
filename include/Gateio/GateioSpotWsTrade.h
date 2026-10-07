@@ -108,6 +108,7 @@ private:
     // REST 端点 (query_balance / query_order 走 REST)
     std::string balanceUrl = "/api/v4/spot/accounts";
     std::string queryOrderUrl = "/api/v4/spot/orders";
+    std::string unifiedUrl = "/api/v4/unified/accounts";
 
     int64_t kPendingTtlMs = 30 * 1000;
     size_t kPendingHardMax = 10000;
