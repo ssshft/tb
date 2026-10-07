@@ -55,17 +55,13 @@ std::string BinanceSpotTradeUnit::buildWsSigPayload(std::vector<std::pair<std::s
 }
 
 std::string BinanceSpotTradeUnit::buildSubscribeJson(int64_t ts_ms, const std::string& signature) const {
-    // 手拼 JSON, 免拉 rapidjson。 apiKey / signature 需要 JSON 转义 (虽然通常都是 [A-Za-z0-9])。
     return fmt::format(
         R"({{"id":"{}","method":"userDataStream.subscribe.signature",)"
         R"("params":{{"apiKey":"{}","timestamp":{},"recvWindow":5000,"signature":"{}"}}}})",
         ts_ms, acc.apiKey, ts_ms, signature);
 }
 
-
-// ============================================================================
 // subWebsocekt: 建 REST + WS
-// ============================================================================
 void BinanceSpotTradeUnit::subWebsocekt() {
     // ---- REST ----
     std::string restHost = crypto::host_of(acc.restUrl);
@@ -85,10 +81,7 @@ void BinanceSpotTradeUnit::subWebsocekt() {
     subWebsocketWithConfig(std::move(cfg));
 }
 
-
-// ============================================================================
 // onOpen: 每次连上 (含重连) 都发 fresh-signed subscribe.signature
-// ============================================================================
 void BinanceSpotTradeUnit::onOpen() {
     BaseTradeUnit::onOpen();  // 更新 isConnected + log
 
@@ -107,14 +100,9 @@ void BinanceSpotTradeUnit::onOpen() {
     }
 }
 
-
-// ============================================================================
-// onWebsocketMsg: simdjson 解析
-// ============================================================================
 void BinanceSpotTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /*isBinary*/, int64_t /*recv_ns*/) {
     try {
-        std::string msg(reinterpret_cast<const char*>(data), len);
-        std::cout << "onWebsocketMsg: " << msg << std::endl;
+        LOG_INFO("onWebsocketMsg: {}", std::string_view(reinterpret_cast<const char*>(data), len));
 
         simdjson::padded_string padded(reinterpret_cast<const char*>(data), len);
         auto doc = g_parser.iterate(padded);

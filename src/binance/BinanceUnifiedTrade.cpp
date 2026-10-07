@@ -574,7 +574,7 @@ void BinanceUnifiedTradeUnit::handleOrderUpdate(simdjson::ondemand::object& o) {
 
     pubsub::RCommand rcmd;
     memset(&rcmd, 0, sizeof(pubsub::RCommand));
-    rcmd.cmdTypeEnum = pubsub::CMD_RPT_NEW_ORDER;
+    rcmd.cmdTypeEnum = pubsub::CMD_RPT_ORDER_RESPONSE;
     rcmd.body.orderResponse.exchangeTypeEnum = BINANCE;
     rcmd.body.orderResponse.instTypeEnum = inst;
     rcmd.body.orderResponse.accountId = acc.accountId;
