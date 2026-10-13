@@ -8,11 +8,11 @@
 #define PUBLISH_RCMD(rcmd) \
     if (rcmd.cmdTypeEnum == pubsub::CMD_RPT_ORDER_RESPONSE) { \
         if (rcmd.body.orderResponse.clientOrderId != TESTCLIENTORDERID) { \
-            tb2TradeRCommandPubSHM->push(rcmd); \
+            tb2TradeRcmd->push(rcmd); \
         } \
     } \
     else { \
-        tb2TradeRCommandPubSHM->push(rcmd); \
+        tb2TradeRcmd->push(rcmd); \
     } \
 
 
@@ -20,8 +20,25 @@ TbOperation::TbOperation(){
 
 }
 
-TbOperation::~TbOperation(){
- 
+TbOperation::~TbOperation() {
+    if (smc) {
+        delete smc;
+        smc = nullptr;
+    }
+
+    if (tb2TradeRcmd) {
+        delete tb2TradeRcmd;
+        tb2TradeRcmd = nullptr;
+    }
+
+    for (auto& t : vTcmd) {
+        if (t) {
+            delete t;
+            t = nullptr;
+        }
+    }
+
+    vTcmd.clear();
 }
 
 bool TbOperation::preStart(Config* config) {
@@ -47,9 +64,10 @@ bool TbOperation::preStart(Config* config) {
     }
     smc = new sm::SecurityManager(host.c_str(), port, password.c_str(), true);
 
+    std::string utrade2TbTCommandSHM = ""
     if (tradeConfig.HasMember("OMS")) {
-        utrade2TbTCommandShm = new Utrade2TbTCommandSHM(std::stoi(tradeConfig["OMS"]["Utrade2TbTCommandSHM"].GetString()));
-        tb2TradeRCommandPubSHM = new Tb2TradeRCommandPubSHM(tradeConfig["OMS"]["Tb2UtradeRCommandSHM"].GetString());
+        utrade2TbTCommandSHM = tradeConfig["OMS"]["Utrade2TbTCommandSHM"].GetString();
+        tb2TradeRcmd = new Tb2UtradeRcmd(tradeConfig["OMS"]["Tb2UtradeRCommandSHM"].GetString());
     }
     else {
         cryptothrow("trade_config.json not found OMS fields configuration!!", -1);
@@ -69,6 +87,9 @@ bool TbOperation::preStart(Config* config) {
             std::string strategyId = accountConfig["strategyId"].GetString();
             std::string exchIdAccountKey = crypto::get_tradeclient_key(exchId.c_str(), strategyId.c_str());
 
+            std::string strategyTcmdShm = crypto::get_strategy_shm(utrade2TbTCommandSHM, strategyId);
+            Utrade2TbTcmd* shm = new Utrade2TbTcmd(strategyTcmdShm);
+            vTcmd.push_back(shm);
 
             if (crypto::str_cmp(exchId.c_str(), "BINANCE")) {
                BaseTradeClient* trade = new BinanceTradeClient(accountConfig, smc);
@@ -120,9 +141,11 @@ void TbOperation::execute() {
     pubsub::TCommand tcmd;
     pubsub::RCommand rcmd;
     while (1) {
-        if (utrade2TbTCommandShm->pop(tcmd)) { // 策略端的请求
-            LOG_INFO("{}", tcmd.getString());
-            processTcmd(tcmd);
+        for (auto& t : vTcmd) {
+            if (t->tryPop(tcmd)) { // 策略端的请求
+                LOG_INFO("{}", tcmd.getString());
+                processTcmd(tcmd);
+            }
         }
 
         if (rcmdInnerQueue.pop(rcmd)) {  // 系统内部的回报

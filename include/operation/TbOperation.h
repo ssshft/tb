@@ -31,8 +31,8 @@ public:
 
 protected:
     sm::SecurityManager* smc{nullptr};
-    Utrade2TbTCommandSHM* utrade2TbTCommandShm{nullptr};
-    Tb2TradeRCommandPubSHM* tb2TradeRCommandPubSHM{nullptr};
+    std::vector<Utrade2TbTcmd*> vTcmd;
+    Tb2UtradeRcmd* tb2TradeRcmd{nullptr};
     TcmdInnerQueue tcmdInnerQueue;
     std::unordered_map<std::string, BaseTradeClient*> mTradeClient;
     om::OrderManager orderManager;

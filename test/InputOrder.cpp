@@ -1,5 +1,6 @@
 #include <iostream>
 #include <csignal>
+#include <algorithm>
 #include "log_engine.h"
 #include "program_util.h"
 #include "config.h"
@@ -25,16 +26,38 @@ int main(int argc, char *argv[]){
         usage();
     }
 
+    // ---- 收集所有 strategyId，交给 TradeClient ----
+    // /inc/trade_config.json 的实际结构是：
+    //   TB.tb_accounts.<accountName>[ { strategyId, exchId, accounts[] } ]
+    // 即 tb_accounts 是「对象」（accountName -> 数组），**不是数组**；
+    // strategyId 在数组元素里，不在 accountName 那一层。
+    // 参考实现：tb/src/operation/TbOperation.cpp:76-86。
+    std::vector<std::string> vSid;
 
     string tradeConfigStr = crypto::read_file("/inc/trade_config.json");
     rapidjson::Document d;
     rapidjson::Value &tradeConfig = d.Parse<rapidjson::kParseNumbersAsStringsFlag>(tradeConfigStr.c_str());
+    const rapidjson::Value &tbAccounts = tradeConfig["TB"]["tb_accounts"];
+    for (auto accIt = tbAccounts.MemberBegin(); accIt != tbAccounts.MemberEnd(); ++accIt) {
+        const char* accountName = accIt->name.GetString();
+        const rapidjson::Value &accArray = accIt->value;              // <accountName> -> 数组
+        if (!accArray.IsArray()) {
+            cout << "TB.tb_accounts." << accountName << " is not an array, skip" << endl;
+            continue;
+        }
+        for (rapidjson::SizeType i = 0; i < accArray.Size(); ++i) {
+            const rapidjson::Value &accCfg = accArray[i];
+            std::string strategyId = accCfg["strategyId"].GetString();
+            if (std::find(vSid.begin(), vSid.end(), strategyId) == vSid.end()) {
+                vSid.push_back(strategyId);
+            }
+        }
+    }
 
-    int utrade2TbTCommandSHM = std::stoi(tradeConfig["OMS"]["Utrade2TbTCommandSHM"].GetString());
-    std::string tb2UtradeRCommandSHM = tradeConfig["OMS"]["Tb2UtradeRCommandSHM"].GetString();
+    std::string utrade2TbTCommandSHM = tradeConfig["OMS"]["Utrade2TbTCommandSHM"].GetString();
+    Tb2UtradeRcmd* tb2TradeRcmd = new Tb2UtradeRcmd(tradeConfig["OMS"]["Tb2UtradeRCommandSHM"].GetString());
 
-    om::TradeClient* tradeClient = new om::TradeClient(utrade2TbTCommandSHM);
-    std::shared_ptr<Tb2TradeRCommandSubSHM> rcmdQueue = std::make_shared<Tb2TradeRCommandSubSHM>(tb2UtradeRCommandSHM.c_str());
+    om::TradeClient* tradeClient = new om::TradeClient(utrade2TbTCommandSHM, vSid);
 
     std::thread t([&]() {
         pubsub::RCommand rcmd;
@@ -44,7 +67,7 @@ int main(int argc, char *argv[]){
         pubsub::TotalAccount totalAccount;
 
         while (1) {
-            if (rcmdQueue->pop(rcmd)) {
+            if (tb2TradeRcmd->tryPop(rcmd)) {
                 if (crypto::convert_rcmd_2_ordertrade(rcmd, orderResponse)) {
                     std::cout << orderResponse.getString() << std::endl;
                 }
