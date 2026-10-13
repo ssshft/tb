@@ -64,7 +64,7 @@ bool TbOperation::preStart(Config* config) {
     }
     smc = new sm::SecurityManager(host.c_str(), port, password.c_str(), true);
 
-    std::string utrade2TbTCommandSHM = ""
+    std::string utrade2TbTCommandSHM = "";
     if (tradeConfig.HasMember("OMS")) {
         utrade2TbTCommandSHM = tradeConfig["OMS"]["Utrade2TbTCommandSHM"].GetString();
         tb2TradeRcmd = new Tb2UtradeRcmd(tradeConfig["OMS"]["Tb2UtradeRCommandSHM"].GetString());
