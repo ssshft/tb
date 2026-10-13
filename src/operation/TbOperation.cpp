@@ -140,27 +140,35 @@ void TbOperation::run() {
 void TbOperation::execute() {
     pubsub::TCommand tcmd;
     pubsub::RCommand rcmd;
+    unsigned step = 0;
     while (1) {
+        bool idle = true; 
         for (auto& t : vTcmd) {
             if (t->tryPop(tcmd)) { // 策略端的请求
+                idle = false;
                 LOG_INFO("{}", tcmd.getString());
                 processTcmd(tcmd);
             }
         }
 
         if (rcmdInnerQueue.pop(rcmd)) {  // 系统内部的回报
+            idle = false;
             LOG_INFO("{}", rcmd.getString());
             PUBLISH_RCMD(rcmd);
         }
 
         if (tb2OmsRCommandInnerQueue.pop(rcmd)) { // 交易所返回的回报
+            idle = false;
             LOG_INFO("{}", rcmd.getString());
             processRcmd(rcmd);
         }
 
-    #ifdef NEED_SLEEP
-        std::this_thread::sleep_for(std::chrono::microseconds(1));
-    #endif
+        if (idle) {
+            spin::backoff(step);
+        }
+        else {
+            step = 0;
+        }
     }
 }
 
@@ -176,8 +184,11 @@ void TbOperation::processTcmd(pubsub::TCommand& tcmd) {
 
 void TbOperation::executeTcmd() {
     pubsub::TCommand tcmd;
+    unsigned step = 0;
     while (1) {
+        bool idle = true; 
         if (tcmdInnerQueue.pop(tcmd)) {
+            idle = false;
             switch (tcmd.cmdTypeEnum) {
                 case pubsub::CMD_NEW_ORDER: {
                     const std::string& exchId = ExchangeTypeEnum2StrMap[tcmd.body.newOrder.exchangeTypeEnum];
@@ -258,9 +269,12 @@ void TbOperation::executeTcmd() {
             }
         }
 
-    #ifdef NEED_SLEEP
-        std::this_thread::sleep_for(std::chrono::microseconds(1));
-    #endif
+        if (idle) {
+            spin::backoff(step);
+        }
+        else {
+            step = 0;
+        }
     }
 }
 

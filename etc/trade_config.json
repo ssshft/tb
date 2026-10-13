@@ -18,7 +18,7 @@
     "SCC2UtradeChannel":"SCC2UtradeChannel"
   },
   "OMS":{
-    "Utrade2TbTCommandSHM":100031,
+    "Utrade2TbTCommandSHM":"Utrade2TbTCommandSHM",
     "Tb2UtradeRCommandSHM":"Tb2UtradeRCommandSHM"
   },
   "TB":{
