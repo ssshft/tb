@@ -57,7 +57,7 @@ private:
     // ---- WS JSON builders ----
     // op:login (timestamp 秒), 单条消息里签名
     std::string buildLoginJson();
-    // op:subscribe [account, positions, orders]
+    // op:subscribe [account, positions, orders, fills]
     std::string buildSubscribeJson() const;
     // op:order  args=[{...}]
     std::string buildOrderPlaceJson(int reqId, const pubsub::TCommand& tcmd,
@@ -93,6 +93,7 @@ private:
     void handleAccountUpdate(simdjson::ondemand::array& arr);
     void handlePositionsUpdate(simdjson::ondemand::array& arr);
     void handleOrdersUpdate(simdjson::ondemand::array& arr);
+    void handleFillsUpdate(simdjson::ondemand::array& arr);
 
 private:
     // WS session state

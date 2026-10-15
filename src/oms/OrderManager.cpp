@@ -316,6 +316,10 @@ bool om::OrderManager::processRcmd(pubsub::RCommand& rcmd) {
             return onOrderUpdate(rcmd);
             break;
         }
+        case pubsub::CMD_RPT_TRADE: {
+            return onOrderUpdate(rcmd);
+            break;
+        }
         default: {
             LOG_ERROR("got an unimplement cmd type!");
             break;
@@ -332,7 +336,38 @@ static inline void oms_flush_slot(oms::shm::OmsShmWriter& shm, const pubsub::RCo
     }
 }
 
+// ★ **兜底**路径: 只在成交通道没带 orderSysId 时才走 (clOrdId 缺失 / "0" / 非纯数字)。
+//   主路径见 OkxWsTrade::handleFillsUpdate —— 它直接把回填的 clOrdId 写进 orderSysId。
+bool om::OrderManager::resolveOrderSysIdByOrderId(pubsub::RCommand& rcmd) {
+    if (crypto::str_cmp(rcmd.body.orderResponse.orderId, "")) {
+        return false;                       // 连 orderId 都没有 —— 无从定位
+    }
+
+    pubsub::RCommand hit;
+    const oms::shm::OmsShmSegment::LookupStatus ls = omsShm_.lookup_by_orderId_ex(rcmd.body.orderResponse.orderId, hit);
+
+    // BUSY (索引里有、这一瞬间读不到) 也当"未就绪"处理: 这是**加速**通道, 丢了不影响正确性,
+    // 报单通道随后一定带着累计成交量到。反过来若在这里硬等/重试, 会把 OMS 单线程堵住。
+    if (ls != oms::shm::OmsShmSegment::LookupStatus::OK) {
+        return false;
+    }
+    if (crypto::str_cmp(hit.body.orderResponse.orderSysId, "")) {
+        return false;
+    }
+
+    strncpy(rcmd.body.orderResponse.orderSysId, hit.body.orderResponse.orderSysId, sizeof(rcmd.body.orderResponse.orderSysId));
+    return true;
+}
+
 bool om::OrderManager::onOrderUpdate(pubsub::RCommand& rcmd) {
+    // 默认成交推送里有orderSysId， 没有的话，再使用以下查找
+    // if (rcmd.cmdTypeEnum == pubsub::CMD_RPT_TRADE && crypto::str_cmp(rcmd.body.orderResponse.orderSysId, "")) {
+    //     if (!resolveOrderSysIdByOrderId(rcmd)) {
+    //         LOG_ERROR("oms trade rcmd unresolved (no orderSysId, orderId index not ready), drop. orderId={}", rcmd.body.orderResponse.orderId);
+    //         return false;
+    //     }
+    // }
+
     pubsub::RCommand cached;
     const oms::shm::OmsShmSegment::LookupStatus ls = omsShm_.lookup_by_orderSysId_ex(rcmd.body.orderResponse.orderSysId, cached);
 
@@ -355,6 +390,44 @@ bool om::OrderManager::onOrderUpdate(pubsub::RCommand& rcmd) {
 
     bool statusAdvanced = false;
     bool volumeIncreased = false;
+
+    if (rcmd.cmdTypeEnum == pubsub::CMD_RPT_TRADE) {
+        const double fill_qty = rcmd.body.orderResponse.tradeDiff;   // fillSz (增量)
+        const double fill_px  = rcmd.body.orderResponse.fillPrice;   // fillPx (本笔价)
+        const double old_qty  = op.body.orderResponse.volumeTraded;
+        const double old_avg  = op.body.orderResponse.tradePrice;
+
+        double& trade_sum = op.body.orderResponse.tradeSum;
+        trade_sum += fill_qty;
+
+        const double target = (trade_sum > old_qty) ? trade_sum : old_qty;
+
+        if (fill_px > ZERO_NUM && target > old_qty + ZERO_NUM) {
+            const double delta = target - old_qty;
+            const InstType it = op.body.orderResponse.instTypeEnum;
+
+            if (old_qty > ZERO_NUM && old_avg > ZERO_NUM) {
+                if (it == C_SWAP || it == C_FUTURES) {
+                    rcmd.body.orderResponse.tradePrice = target / (old_qty / old_avg + delta / fill_px);
+                }
+                else {
+                    rcmd.body.orderResponse.tradePrice = (old_qty * old_avg + delta * fill_px) / target;
+                }
+            }
+            else {
+                // 本单第一次成交: 累计均价就是本笔价
+                rcmd.body.orderResponse.tradePrice = fill_px;
+            }
+
+            rcmd.body.orderResponse.volumeTraded = target;
+        }
+        else {
+            rcmd.body.orderResponse.volumeTraded = old_qty;
+            rcmd.body.orderResponse.tradePrice   = old_avg;
+        }
+
+        rcmd.body.orderResponse.orderStatus = OS_PARTFILLED;
+    }
 
     if (rcmd.body.orderResponse.volumeTraded > op.body.orderResponse.volumeTotal + ZERO_NUM) {
         LOG_ERROR("Overfilled order! orderSysId: {} volumeTraded: {} volumeTotal: {}", op.body.orderResponse.orderSysId, rcmd.body.orderResponse.volumeTraded, op.body.orderResponse.volumeTotal);
@@ -464,7 +537,7 @@ std::string om::OrderManager::getOrderSysId(ExchangeType exchangeTypeEnum, const
             return fmt::format("x-{}{}", strategyId, crypto::get_rdtsc_timestamp());
         }
         case OKX: {
-            return fmt::format("ok{}{}", strategyId, crypto::get_rdtsc_timestamp());
+            return fmt::format("{}", crypto::get_rdtsc_timestamp());
         }
         case GATEIO: {
             return fmt::format("t-{}{}", strategyId, crypto::get_rdtsc_timestamp());

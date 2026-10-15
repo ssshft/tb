@@ -66,6 +66,11 @@ namespace om {
         oms::shm::OmsShmSegment::LookupStatus getOrderSysId(const int64_t clientOrderId, const char* strategyId, pubsub::RCommand& out, const char* orderId="");
         std::string getOrderSysId(ExchangeType exchangeTypeEnum, const char* strategyId);
 
+        // ★ **兜底**路径: 成交通道 (CMD_RPT_TRADE) 没带 orderSysId 时, 用交易所 orderId 反查。
+        //   返回 false = "这一瞬间定位不到" (orderId 索引还没建好 / 单已回收) —— 调用方直接丢弃,
+        //   报单通道随后会带上累计成交量兜底, 丢的只是"提前量", 不会丢成交。
+        bool resolveOrderSysIdByOrderId(pubsub::RCommand& rcmd);
+
     protected:
         // ★ 单写者共享内存订单存储 —— 取代原先的三张 tbb::concurrent_unordered_map:
         //     clientOrderId2OrderSysIdMap / orderId2OrderSysIdMap / orderSysId2OrderResponseMap

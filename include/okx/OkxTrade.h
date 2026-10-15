@@ -37,8 +37,9 @@ private:
     // ---- WS msg 分派 ----
     // channel = "account" | "positions" | "orders" | "balance_and_position"
     void handleAccountUpdate(simdjson::ondemand::array& arr);
-    void handlePositionsUpdate(simdjson::ondemand::array& dataArr);
-    void handleOrdersUpdate(simdjson::ondemand::array& dataArr);
+    void handlePositionsUpdate(simdjson::ondemand::array& arr);
+    void handleOrdersUpdate(simdjson::ondemand::array& arr);
+    void handleFillsUpdate(simdjson::ondemand::array& arr);
 
     // build WS login / subscribe payload
     std::string buildLoginJson() const;

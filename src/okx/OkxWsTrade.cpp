@@ -21,12 +21,13 @@ std::string OkxWsTradeUnit::buildLoginJson() {
 }
 
 std::string OkxWsTradeUnit::buildSubscribeJson() const {
-    // login 后订阅 3 个 channel: account / positions / orders (instType=ANY)
+    // login 后订阅 4 个 channel: account / positions / orders / fills
     return
         R"({"op":"subscribe","args":[)"
         R"({"channel":"account","extraParams":"{\"updateInterval\":0}"},)"
         R"({"channel":"positions","instType":"ANY","extraParams":"{\"updateInterval\":0}"},)"
-        R"({"channel":"orders","instType":"ANY"}])"
+        R"({"channel":"orders","instType":"ANY"},)"
+        R"({"channel":"fills"}])"
         R"(})";
 }
 
@@ -243,6 +244,9 @@ void OkxWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /*isBi
                     }
                     else if (channel_sv == "orders") {
                         handleOrdersUpdate(data_arr);
+                    }
+                    else if (channel_sv == "fills") {
+                        handleFillsUpdate(data_arr);
                     }
                 }
             }
@@ -751,6 +755,90 @@ void OkxWsTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
             rcmd.body.orderResponse.errorId = LiquidationError;
         }
 
+        rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+        rcmd.body.orderResponse.apiSourceEnum = AS_WEBSOCKET;
+        PUSH_RCMD(rcmd)
+    }
+}
+
+void OkxWsTradeUnit::handleFillsUpdate(simdjson::ondemand::array& arr) {
+    for (auto b_val : arr) {
+        auto b_res = b_val.get_object();
+        if (b_res.error()) {
+            continue;
+        }
+        auto& b = b_res.value_unsafe();
+
+        std::string_view iId_sv;
+        std::string_view ordId_sv;
+        std::string_view clOrdId_sv;
+        std::string_view fillSz_sv;
+        std::string_view fillPx_sv;
+        std::string_view side_sv;
+
+        for (auto field : b) {
+            std::string_view k = field.unescaped_key().value_unsafe();
+            if (k == "instId") {
+                field.value().get(iId_sv);
+            }
+            else if (k == "ordId") {
+                field.value().get(ordId_sv);
+            }
+            else if (k == "clOrdId") {
+                field.value().get(clOrdId_sv);
+            }
+            else if (k == "fillSz") {
+                field.value().get(fillSz_sv);
+            }
+            else if (k == "fillPx") {
+                field.value().get(fillPx_sv);
+            }
+            else if (k == "side") {
+                field.value().get(side_sv);
+            }
+        }
+
+        std::string originInstId(iId_sv);
+        md::InstrumentInfo info;
+        InstType instType = SPOT;
+        bool found = false;
+
+        static constexpr InstType kTryInstTypes[] = {SPOT, MARGIN, USDT_SWAP, C_SWAP, USDT_FUTURES, C_FUTURES};
+        for (const InstType t : kTryInstTypes) {
+            if (smc->get_instrument_info(OKX, t, originInstId.c_str(), info)) {
+                instType = t;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            LOG_ERROR("TB {} OKX fills smc miss: {}", acc.accountName, originInstId);
+            continue;
+        }
+
+        pubsub::RCommand rcmd;
+        memset(&rcmd, 0, sizeof(pubsub::RCommand));
+        rcmd.cmdTypeEnum = pubsub::CMD_RPT_TRADE;
+        rcmd.body.orderResponse.exchangeTypeEnum = OKX;
+        rcmd.body.orderResponse.instTypeEnum = instType;
+        rcmd.body.orderResponse.accountId = acc.accountId;
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountName, acc.accountName);
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
+
+        if (!clOrdId_sv.empty()) {
+            crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, clOrdId_sv);
+        }
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, ordId_sv);
+
+        rcmd.body.orderResponse.offsetFlag = OF_OPEN;
+        if (!side_sv.empty()) {
+            rcmd.body.orderResponse.direction = (side_sv[0] == 'b') ? DT_LONG : DT_SHORT;
+        }
+
+        rcmd.body.orderResponse.tradeDiff = crypto::fast_atod(fillSz_sv);
+        rcmd.body.orderResponse.fillPrice = crypto::fast_atod(fillPx_sv);
+        rcmd.body.orderResponse.orderStatus = OS_PARTFILLED;
         rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
         rcmd.body.orderResponse.apiSourceEnum = AS_WEBSOCKET;
         PUSH_RCMD(rcmd)
