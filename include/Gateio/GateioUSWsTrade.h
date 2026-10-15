@@ -45,6 +45,7 @@ private:
     static constexpr int kOrdersSubId = 2;
     static constexpr int kBalancesSubId = 3;
     static constexpr int kPositionsSubId = 4;
+    static constexpr int kTradesSubId = 5;
 
     std::string buildLoginJson(int64_t ts) const;
     std::string buildSubscribeJson(int reqId, const char* channel) const;
@@ -79,6 +80,7 @@ private:
     void handleWsApiError(WsPending& pending, const ErrorFields& fields);
 
     void handleOrdersUpdate(simdjson::ondemand::array& arr);
+    void handleTradesUpdate(simdjson::ondemand::array& arr);
     void handleBalancesUpdate(simdjson::ondemand::array& arr);
     void handlePositionsUpdate(simdjson::ondemand::array& arr);
 

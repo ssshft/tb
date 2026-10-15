@@ -25,7 +25,7 @@ std::string BybitWsTradeUnit::buildPrivateAuthJson() const {
 }
 
 std::string BybitWsTradeUnit::buildPrivateSubscribeJson() const {
-    return fmt::format(R"({{"reqId":"{}","op":"subscribe","args":["order","wallet","position"]}})", kUserSubId);
+    return fmt::format(R"({{"reqId":"{}","op":"subscribe","args":["order","execution.fast","wallet","position"]}})", kUserSubId);
 }
 
 std::string BybitWsTradeUnit::buildOrderPlaceJson(int reqId,
@@ -262,6 +262,9 @@ void BybitWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool /*is
                 }
                 else if (topic_sv == "order") {
                     handleOrdersUpdate(data_arr);
+                }
+                else if (topic_sv == "execution.fast") {
+                    handleExecutionUpdate(data_arr);
                 }
             }
         }
@@ -789,6 +792,110 @@ void BybitWsTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& dataArr) {
         }
 
         rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+        PUSH_RCMD(rcmd)
+    }
+}
+
+void BybitWsTradeUnit::handleExecutionUpdate(simdjson::ondemand::array& dataArr) {
+    for (auto b_val : dataArr) {
+        auto b_res = b_val.get_object();
+        if (b_res.error()) {
+            continue;
+        }
+        auto& b = b_res.value_unsafe();
+
+        std::string_view cat_sv;
+        std::string_view symbol_sv;
+        std::string_view execPrice_sv;
+        std::string_view execQty_sv;
+        std::string_view ordId_sv;
+        std::string_view ordLink_sv;
+        std::string_view side_sv;
+
+        for (auto field : b) {
+            std::string_view k = field.unescaped_key().value_unsafe();
+            if (k == "category") {
+                field.value().get(cat_sv);
+            }
+            else if (k == "symbol") {
+                field.value().get(symbol_sv);
+            }
+            else if (k == "execPrice") {
+                field.value().get(execPrice_sv);
+            }
+            else if (k == "execQty") {
+                field.value().get(execQty_sv);
+            }
+            else if (k == "orderId") {
+                field.value().get(ordId_sv);
+            }
+            else if (k == "orderLinkId") {
+                field.value().get(ordLink_sv);
+            }
+            else if (k == "side") {
+                field.value().get(side_sv);
+            }
+        }
+
+        std::string originInstId(symbol_sv);
+        std::string category(cat_sv);
+        md::InstrumentInfo info;
+        InstType instType = USDT_SWAP;
+        bool found = false;
+
+        if (category == "linear") {
+            if (smc->get_instrument_info(BYBIT, USDT_SWAP, originInstId.c_str(), info)) {
+                instType = USDT_SWAP;    
+                found = true;
+            }
+            else if (smc->get_instrument_info(BYBIT, USDT_FUTURES, originInstId.c_str(), info)) {
+                instType = USDT_FUTURES; 
+                found = true;
+            }
+        }
+        else if (category == "inverse") {
+            if (smc->get_instrument_info(BYBIT, C_SWAP, originInstId.c_str(), info)) {
+                instType = C_SWAP;       
+                found = true;
+            }
+            else if (smc->get_instrument_info(BYBIT, C_FUTURES, originInstId.c_str(), info)) {
+                instType = C_FUTURES;    
+                found = true;
+            }
+        }
+        else if (category == "spot") {
+            if (smc->get_instrument_info(BYBIT, SPOT, originInstId.c_str(), info)) {
+                instType = SPOT;         
+                found = true;
+            }
+        }
+        if (!found) {
+            LOG_ERROR("TB {} Bybit execution smc miss: category={} symbol={}", acc.accountName, category, originInstId);
+            continue;
+        }
+
+        pubsub::RCommand rcmd;
+        memset(&rcmd, 0, sizeof(pubsub::RCommand));
+        rcmd.cmdTypeEnum = pubsub::CMD_RPT_TRADE;
+        rcmd.body.orderResponse.exchangeTypeEnum = BYBIT;
+        rcmd.body.orderResponse.instTypeEnum = instType;
+        rcmd.body.orderResponse.accountId = acc.accountId;
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountName, acc.accountName);
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, ordLink_sv);  
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, ordId_sv); 
+        rcmd.body.orderResponse.tradeDiff = crypto::fast_atod(execQty_sv);
+        rcmd.body.orderResponse.fillPrice = crypto::fast_atod(execPrice_sv);
+
+        rcmd.body.orderResponse.offsetFlag = OF_OPEN;  
+        if (!side_sv.empty()) {
+            rcmd.body.orderResponse.direction = (side_sv[0] == 'B') ? DT_LONG : DT_SHORT;
+        }
+
+        rcmd.body.orderResponse.orderStatus = OS_PARTFILLED;
+        rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+        rcmd.body.orderResponse.apiSourceEnum = AS_WEBSOCKET;
         PUSH_RCMD(rcmd)
     }
 }

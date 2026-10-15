@@ -62,6 +62,7 @@ private:
     static constexpr int kLoginId = 1;
     static constexpr int kOrdersSubId = 2;
     static constexpr int kBalancesSubId = 3;
+    static constexpr int kTradesSubId = 4;
 
     // ---- WS RPC msg builders ----
     // spot.login 需要签名, 其他 (post-login) 无 auth 字段
@@ -97,6 +98,7 @@ private:
     void handleWsApiError(WsPending& pending, const ErrorFields& fields);
     void handleBalancesUpdate(simdjson::ondemand::array& arr);
     void handleOrdersUpdate(simdjson::ondemand::array& arr);
+    void handleTradesUpdate(simdjson::ondemand::array& arr);
 
 private:
     std::atomic<bool> wsLoggedIn_{false};

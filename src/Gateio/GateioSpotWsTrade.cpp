@@ -242,6 +242,7 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
 
         bool has_balances = false;
         bool has_orders = false;
+        bool has_trades = false;
         bool has_event = false;
 
         for (auto field : doc_value) {
@@ -261,6 +262,9 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
                 }
                 else if (channel_sv == "spot.orders") {
                     has_orders = true;
+                }
+                else if (channel_sv == "spot.usertrades_v2") {
+                    has_trades = true;
                 }
             }
             else if (k == "event") {
@@ -335,6 +339,7 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
                     if (pWsClient) {
                         pWsClient->send_text(buildSubscribeJson(kOrdersSubId, "spot.orders", "!all", nullptr));
                         pWsClient->send_text(buildSubscribeJson(kBalancesSubId, "spot.balances", nullptr, nullptr));
+                        pWsClient->send_text(buildSubscribeJson(kTradesSubId, "spot.usertrades_v2", "!all", nullptr));
                     }
                 } 
                 else {
@@ -342,7 +347,7 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
                     LOG_ERROR("TB {} Gate spot spot.login FAILED status={}", acc.accountName, status);
                 }
             }
-            else if (id == kOrdersSubId || id == kBalancesSubId) {
+            else if (id == kOrdersSubId || id == kBalancesSubId || id == kTradesSubId) {
                 if (status == 200) {
                     LOG_INFO("TB {} Gate spot subscribe reqId={} OK", acc.accountName, id);
                 } 
@@ -371,6 +376,9 @@ void GateioSpotWsTradeUnit::onWebsocketMsg(const uint8_t* data, size_t len, bool
             }
             else if (has_orders) {
                 handleOrdersUpdate(result_obj);
+            }
+            else if (has_trades) {
+                handleTradesUpdate(result_obj);
             }
         }
     } catch (const std::exception& e) {
@@ -617,6 +625,74 @@ void GateioSpotWsTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
                     break;
             }
         }
+        rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
+        rcmd.body.orderResponse.apiSourceEnum = AS_WEBSOCKET;
+        PUSH_RCMD(rcmd)
+    }
+}
+
+void GateioSpotWsTradeUnit::handleTradesUpdate(simdjson::ondemand::array& arr) {
+    for (auto b_val : arr) {
+        auto b_res = b_val.get_object();
+        if (b_res.error()) {
+            continue;
+        }
+        auto& b = b_res.value_unsafe();
+
+        std::string_view pair_sv;
+        std::string_view orderId_sv;
+        std::string_view text_sv;
+        std::string_view price_sv;
+        std::string_view amount_sv;
+        std::string_view side_sv;
+
+        for (auto field : b) {
+            std::string_view k = field.unescaped_key().value_unsafe();
+            if (k == "currency_pair") {
+                field.value().get(pair_sv);
+            }
+            else if (k == "order_id") {
+                field.value().get(orderId_sv);
+            }
+            else if (k == "text") {
+                field.value().get(text_sv);
+            }
+            else if (k == "price") {
+                field.value().get(price_sv);
+            }
+            else if (k == "amount") {
+                field.value().get(amount_sv);
+            }
+            else if (k == "side") {
+                field.value().get(side_sv);
+            }
+        }
+
+        std::string originInstId(pair_sv);
+        md::InstrumentInfo info;
+        if (!smc->get_instrument_info(GATEIO, SPOT, originInstId.c_str(), info)) {
+            LOG_ERROR("TB {} not found GATEIO.SPOT.{} smc info (usertrades id={})", acc.accountName, originInstId, id_sv);
+            continue;
+        }
+
+        pubsub::RCommand rcmd;
+        memset(&rcmd, 0, sizeof(pubsub::RCommand));
+        rcmd.cmdTypeEnum = pubsub::CMD_RPT_TRADE;
+        rcmd.body.orderResponse.exchangeTypeEnum = GATEIO;
+        rcmd.body.orderResponse.instTypeEnum = SPOT;
+        rcmd.body.orderResponse.accountId = acc.accountId;
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.accountName, acc.accountName);
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.strategyId, acc.strategyId);
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.instId, std::string_view(info.instId));
+
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderSysId, text_sv);     
+        crypto::copy_sv_to_char_array(rcmd.body.orderResponse.orderId, orderId_sv); 
+        rcmd.body.orderResponse.tradeDiff = std::fabs(crypto::fast_atod(amount_sv)) * info.magnifyNumber;
+        rcmd.body.orderResponse.fillPrice = crypto::fast_atod(price_sv);
+        rcmd.body.orderResponse.offsetFlag = OF_OPEN;
+        rcmd.body.orderResponse.direction = (!side_sv.empty() && side_sv[0] == 's') ? DT_SHORT : DT_LONG;
+
+        rcmd.body.orderResponse.orderStatus = OS_PARTFILLED;
         rcmd.body.orderResponse.updateTime = crypto::getCurrentTime();
         rcmd.body.orderResponse.apiSourceEnum = AS_WEBSOCKET;
         PUSH_RCMD(rcmd)

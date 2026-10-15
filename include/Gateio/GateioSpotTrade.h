@@ -37,12 +37,14 @@ private:
     // ---- WS subscribe payload builder ----
     // spot.orders: payload=["BTC_USDT","!all"] 一次性订阅所有 pair 的订单流
     std::string buildOrdersSubscribeJson() const;
+    std::string buildTradesSubscribeJson() const;
     // spot.balances: payload 可选, 一般订阅所有资产
     std::string buildBalancesSubscribeJson() const;
 
     // ---- WS msg 分派 ----
     void handleBalancesUpdate(simdjson::ondemand::array& arr);
     void handleOrdersUpdate(simdjson::ondemand::array& arr);
+    void handleTradesUpdate(simdjson::ondemand::array& arr);
 
 private:
     std::string newOrderUrl = "/api/v4/spot/orders";

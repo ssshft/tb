@@ -28,11 +28,13 @@ public:
 private:
     // ---- subscribe builder ----
     std::string buildOrdersSubscribeJson() const;
+    std::string buildTradesSubscribeJson() const;
     std::string buildBalancesSubscribeJson()  const;
     std::string buildPositionsSubscribeJson() const;
 
     // ---- msg 分派 ----
     void handleOrdersUpdate(simdjson::ondemand::array& arr);
+    void handleTradesUpdate(simdjson::ondemand::array& arr);
     void handleBalancesUpdate(simdjson::ondemand::array& arr);
     void handlePositionsUpdate(simdjson::ondemand::array& arr);
 

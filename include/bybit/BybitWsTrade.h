@@ -96,6 +96,7 @@ private:
 
     // ---- WS msg 分派 ----
     void handleOrdersUpdate(simdjson::ondemand::array& dataArr);
+    void handleExecutionUpdate(simdjson::ondemand::array& dataArr);
     void handleWalletUpdate(simdjson::ondemand::array& dataArr);
     void handlePositionUpdate(simdjson::ondemand::array& dataArr);
 

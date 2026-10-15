@@ -107,21 +107,40 @@ int main() {
     std::printf("\n交叉验证 (对上才说明桩没改变布局)\n");
     check_eq("sizeof(RCommand)",        sizeof(RCommand), kExpectedRCommand);
 
-    std::printf("\nOrderResponse 的尾部填充\n");
-    const size_t after_last_field =
-        offsetof(OrderResponse, tradeSum) + sizeof(OrderResponse::tradeSum);
-    const size_t tail = sizeof(OrderResponse) - after_last_field;
-    std::printf("  offsetof(apiSourceEnum)            = %zu\n", offsetof(OrderResponse, apiSourceEnum));
-    std::printf("  offsetof(tradeSum)                 = %zu\n", offsetof(OrderResponse, tradeSum));
-    std::printf("  -> 尾部填充 (tradeSum 之后)         = %zu 字节\n", tail);
+    std::printf("\nOrderResponse 的字段布局 / 尾部填充\n");
+    // ★ 尾部填充必须从**真正的最后一个字段**算起。
+    //   tradeSum 在 376 —— 它后面还有 reduceOnly/errorId/originMsg/updateTime/apiSourceEnum,
+    //   所以"tradeSum 之后"量出来的是"剩余字段之和 + 填充", 不是填充 (曾因此报出 152 的假数)。
+    const size_t last_off = offsetof(OrderResponse, apiSourceEnum);
+    const size_t last_sz  = sizeof(OrderResponse::apiSourceEnum);
+    const size_t align    = alignof(OrderResponse);
+    const size_t data_end = last_off + last_sz;
+    const size_t tail     = sizeof(OrderResponse) - data_end;
+    std::printf("  offsetof(apiSourceEnum) [末字段]    = %zu  (sizeof=%zu)\n", last_off, last_sz);
+    std::printf("  offsetof(tradeSum)                 = %zu  (★ 不是末字段)\n", offsetof(OrderResponse, tradeSum));
+    std::printf("  alignof(OrderResponse)             = %zu\n", align);
+    std::printf("  数据末端 (末字段结束处)             = %zu\n", data_end);
+    std::printf("  -> 尾部填充                        = %zu 字节\n", tail);
 
-    std::printf("\n结论: 再往 OrderResponse 加字段的代价\n");
-    std::printf("  +4 字节 (int/float)  -> sizeof(RCommand) %zu -> %zu  %s\n",
-                sizeof(RCommand), sizeof(RCommand) + (tail >= 4 ? 0 : 8 - (tail % 8)),
-                tail >= 4 ? "(塞进尾部填充, **ABI 不变**)" : "(会变大, ABI 破坏)");
-    std::printf("  +8 字节 (double)     -> sizeof(RCommand) %zu -> %zu  %s\n",
-                sizeof(RCommand), sizeof(RCommand) + (tail >= 8 ? 0 : 8),
-                tail >= 8 ? "(塞进尾部填充, ABI 不变)" : "(**ABI 破坏** -> payload_words 变)");
+    // 通用: 再加一个 (sz, al) 的字段, sizeof(OrderResponse) 会变成多少
+    auto sizeof_after_adding = [&](size_t sz, size_t al) -> size_t {
+        size_t off = (data_end + al - 1) / al * al;     // 新字段自身对齐
+        const size_t end = off + sz;
+        return (end + align - 1) / align * align;       // 结构体整体对齐
+    };
+    auto report_add = [&](const char* name, size_t sz, size_t al) {
+        const size_t ns = sizeof_after_adding(sz, al);
+        const bool fits = (ns == sizeof(OrderResponse));
+        // CommandBody 是 union, 最大成员恒为 OrderResponse ⇒ sizeof(RCommand) = 8 + sizeof(OrderResponse)
+        std::printf("  %-20s -> OrderResponse %zu -> %zu, RCommand %zu -> %zu  %s\n",
+                    name, sizeof(OrderResponse), ns, sizeof(RCommand), 8 + ns,
+                    fits ? "(塞进尾部填充, **ABI 不变**)" : "(**ABI 破坏** -> payload_words 变)");
+    };
+
+    std::printf("\n结论: 再往 OrderResponse 加字段的代价 (当前尾部填充 %zu 字节)\n", tail);
+    report_add("+1 字节 (bool)",      1, 1);
+    report_add("+4 字节 (int/float)", 4, 4);
+    report_add("+8 字节 (double)",    8, 8);
     std::printf("  ★ 当前已含 tradeSum (double): OrderResponse 528 -> 536, RCommand 536 -> 544\n"
                 "    ⇒ tb + utrade_hft 必须一起重建重启 (不符时 ShmSpmcQueue 抛 kMsgHeaderMismatch)\n"
                 "    ★ 注意抓住它的是 payload_words (67->68), **不是槽位字节数**:\n"
