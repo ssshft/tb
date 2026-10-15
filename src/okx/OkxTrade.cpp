@@ -558,7 +558,7 @@ void OkxTradeUnit::handleOrdersUpdate(simdjson::ondemand::array& arr) {
     }
 }
 
-void OkxWsTradeUnit::handleFillsUpdate(simdjson::ondemand::array& arr) {
+void OkxTradeUnit::handleFillsUpdate(simdjson::ondemand::array& arr) {
     for (auto b_val : arr) {
         auto b_res = b_val.get_object();
         if (b_res.error()) {
