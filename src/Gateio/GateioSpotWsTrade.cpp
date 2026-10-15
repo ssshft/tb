@@ -671,7 +671,7 @@ void GateioSpotWsTradeUnit::handleTradesUpdate(simdjson::ondemand::array& arr) {
         std::string originInstId(pair_sv);
         md::InstrumentInfo info;
         if (!smc->get_instrument_info(GATEIO, SPOT, originInstId.c_str(), info)) {
-            LOG_ERROR("TB {} not found GATEIO.SPOT.{} smc info (usertrades id={})", acc.accountName, originInstId, id_sv);
+            LOG_ERROR("TB {} not found GATEIO.SPOT.{} smc info", acc.accountName, originInstId);
             continue;
         }
 
