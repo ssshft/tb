@@ -1,4 +1,5 @@
 #include "base/BaseTrade.h"
+#include "hft_metrics.h"
 
 
 BaseTradeUnit::BaseTradeUnit(AccountCfg& a, sm::SecurityManager* s) {
@@ -94,7 +95,42 @@ void BaseTradeUnit::subWebsocketWithConfig(net::WsConfig cfg) {
     });
 
     pWsClient->on_message([this](const uint8_t* d, size_t n, bool b, int64_t t) {
-        this->onWebsocketMsg(d, n, b, t);
+        // 一条私有 WS 报文从回调进来到 PUSH_RCMD 完成（解析 + 填 rcmd + 进进程内队列）。
+        //
+        // 这段跑在**每个连接一个的 WS 线程**上，不跟 OMS 串行线程抢同一个核；
+        // 所以它慢不会拖慢 OMS，只会推迟"这条回报什么时候排进 tb2OmsRCommandInnerQueue"。
+        // 真正要跟 tb.exec.idle 一起看：WS 侧几十 µs + 轮询上界 = 回报进 OMS 前的总延迟。
+        //
+        // 按交易所分开统计：四家的解析器完全不是一个形状（Binance 是单条 executionReport、
+        // Gate 是数组要循环、OKX 没有 instType 要逐个试），混成一个指标时
+        // p50 会被最快那家拉低、看不出是谁慢。
+        // ⚠️ 名字必须是字面量（registry 只存 const char*，拼出来的会悬垂），
+        // 所以只能写成 if/else 链 —— 加一家 = 加一条 else if。
+        if (acc.exchangeTypeEnum == BINANCE) {
+            HFT_SCOPE("tb.ws.binance");
+            this->onWebsocketMsg(d, n, b, t);
+        }
+        else if (acc.exchangeTypeEnum == OKX) {
+            HFT_SCOPE("tb.ws.okx");
+            this->onWebsocketMsg(d, n, b, t);
+        }
+        else if (acc.exchangeTypeEnum == BYBIT) {
+            HFT_SCOPE("tb.ws.bybit");
+            this->onWebsocketMsg(d, n, b, t);
+        }
+        else if (acc.exchangeTypeEnum == GATEIO) {
+            HFT_SCOPE("tb.ws.gateio");
+            this->onWebsocketMsg(d, n, b, t);
+        }
+        else {
+            // 未覆盖的交易所不埋点，但**照常处理** —— 埋点绝不能改变业务路径。
+            // 同时计数：`acc.exchangeTypeEnum` 来自 `ExchangeTypeStr2EnumMap[exchId]`，
+            // 而 operator[] 在 key 缺失时**不报错、插入 0**（= ExchangeType_MIN）
+            // ⇒ 这个计数器非零就说明配置里的 exchId 没被映射到，上面四条一条都不会命中。
+            // 不数它的话，现象是"tb.ws.* 一个指标都不出现"，看起来像没埋点，其实是被静默跳过。
+            HFT_CNT("tb.ws.unlisted");
+            this->onWebsocketMsg(d, n, b, t);
+        }
     });
 
     pWsClient->on_close([this](int c, const::std::string& r) {

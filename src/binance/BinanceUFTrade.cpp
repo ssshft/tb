@@ -1,5 +1,7 @@
 #include "binance/BinanceUFTrade.h"
+#include "hft_metrics.h"
 #include <cmath>
+#include <cstdint>
 #include <future>
 #include <fmt/format.h>
 #include <simdjson.h>
@@ -938,8 +940,24 @@ void BinanceUFTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
     std::string path = buildSignedPath(newOrderUrl, kvs);
     LOG_INFO("TB {} UF add_new_order: {}", acc.accountName, path);
 
-    asyncRequest(boost::beast::http::verb::post, std::move(path), "", "", [this, rcmd, info](boost::system::error_code ec, net::HttpResponse resp) mutable {
+    // 报单往返 = REST 响应回来的那一刻 − 发出前的这一刻。
+    //
+    // ★ 为什么量 REST 而不是拿 WS 回报去反查 orderSysId：
+    //   下单走 REST，**REST 的响应体就是 ack** —— 起点和终点在同一条回调链上，
+    //   天生配对，不需要任何匹配层。用 WS 回报对，还得排除 tb 自己回环的那条 OS_PEND
+    //   （`ADD_NEW_ORDER_TCMD_2_RCMD` 不设 apiSourceEnum），既绕又容易算成 ~0。
+    //
+    // ★ t0 必须**闭包捕获**，不能放成员变量：发起在 `executeTcmd()` 线程，
+    //   回调在 REST client 的 io_context 线程，同时可能有多个单在飞。
+    //   两端都是 `HFT_NOW()`（mono）、同一个进程 ⇒ 同域，可直接相减。
+    //   ⚠️ 换 `HFT_NOW_FAST()` 就会跟 `HFT_RECORD_SINCE` 混域，值会是正的但是错 3 倍。
+    const std::uint64_t t0 = HFT_NOW();
+    asyncRequest(boost::beast::http::verb::post, std::move(path), "", "", [this, rcmd, info, t0](boost::system::error_code ec, net::HttpResponse resp) mutable {
         if (ec) {
+            // 失败也会走到这里（超时 / 池满 / 连不上）。单独计数，**不进直方图** ——
+            // 混进去会把 max 直接顶到超时阈值，"交易所挂了"看起来就是一个巨大的 p99。
+            HFT_CNT("tb.rest.err.binance.uf");
+
             LOG_ERROR("TB {} add_new_order ec: {}", acc.accountName, ec.message());
 
             if (ec == boost::system::errc::no_stream_resources || ec == boost::system::errc::no_buffer_space || ec == boost::system::errc::not_connected) {
@@ -959,6 +977,10 @@ void BinanceUFTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
         if (rcmd.body.orderResponse.clientOrderId == TESTCLIENTORDERID) {
             return;
         }
+
+        // 走到这里 = REST 成功返回了响应体（= ack），往返到此为止。
+        // 放在 TESTCLIENTORDERID 之后，测试单不算进报单延时。
+        HFT_RECORD_SINCE("tb.rest.rtt.binance.uf", t0);
 
         try {
             LOG_INFO("add_new_order: {}", resp.body);

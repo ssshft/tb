@@ -17,6 +17,24 @@ add_definitions("-D_TURN_OFF_PLATFORM_STRING")
 
 add_definitions(-DUSE_INFO_SHM)
 
+# 延时统计（../include/hft_metrics.h）的编译期开关。**默认关**。
+#   cmake .. && make            → 关（宏展开成空，热路径零残留、不建 metrics 文件）
+#   cmake -DHFT_METRICS=ON ..   → 开
+#
+# tb 的报文速率是**每秒几次到几十次**（只有策略请求 + 交易所私有推送，src/ 下没有任何
+# 定时线程），所以这里**全部用 HFT_SCOPE 全量计时，不采样**：
+#   · 采样是为了保护"每秒几百万次"的热路径；tb 没有这种路径。
+#   · 1/16 采样在 5 条/秒下 = 每 3.2 秒一个样本，10 s 窗口只有 3 个样本，p99 直接等于 max。
+#   · 全量计时还省掉 ×16 的换算陷阱：count 列就是真实报文数。
+# 代价：HFT_SCOPE 的边际开销是恒定的 +15~20 ns（空体才看到 36.8 ns），
+# 对 µs 级的报文处理是 0.8%~3.8%；按 5 条/秒算折合单核 0.00002%。
+option(HFT_METRICS "编译延时统计埋点（hft_metrics.h）" OFF)
+if(HFT_METRICS)
+    add_definitions(-DHFT_METRICS_ENABLED=1)
+else()
+    add_definitions(-DHFT_METRICS_ENABLED=0)
+endif()
+
 
 #include
 set(INC_DIR              ${CMAKE_CURRENT_SOURCE_DIR}/include)
