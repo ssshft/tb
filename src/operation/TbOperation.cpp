@@ -79,6 +79,15 @@ bool TbOperation::preStart(Config* config) {
     rapidjson::Document d1;
     rapidjson::Value& configValue = d1.Parse<rapidjson::kParseNumbersAsStringsFlag>(configStr.c_str());
 
+    // ---- 线程绑核（可选，缺省 -1 = 不绑）----
+    if (configValue.HasMember("cpuexecute")) {
+        cpuExecute = std::stoi(configValue["cpuexecute"].GetString());
+    }
+    if (configValue.HasMember("cpuexecutetcmd")) {
+        cpuExecuteTcmd = std::stoi(configValue["cpuexecutetcmd"].GetString());
+    }
+    LOG_INFO("cpu pin: execute={} executeTcmd={} (-1 = not pinned)", cpuExecute, cpuExecuteTcmd);
+
     const rapidjson::Value &tbAccounts = configValue["tb_accounts"].GetArray();
     for(rapidjson::SizeType i = 0; i < tbAccounts.Size(); i++){
         std::string accountName = tbAccounts[i].GetString();
@@ -139,6 +148,11 @@ void TbOperation::run() {
 }
 
 void TbOperation::execute() {
+    // 绑核放在线程体第一行：run() 里是 detach 出去的，外面拿不到 std::thread 对象，
+    // 而且"创建完到钉上"那段窗口线程已经在烧核了。
+    if (cpuExecute >= 0 && crypto::set_cpu_self(cpuExecute) != 0) {
+        LOG_ERROR("tb execute: pin to core {} failed, running unpinned", cpuExecute);
+    }
     pubsub::TCommand tcmd;
     pubsub::RCommand rcmd;
     unsigned step = 0;
@@ -204,6 +218,9 @@ void TbOperation::processTcmd(pubsub::TCommand& tcmd) {
 }
 
 void TbOperation::executeTcmd() {
+    if (cpuExecuteTcmd >= 0 && crypto::set_cpu_self(cpuExecuteTcmd) != 0) {
+        LOG_ERROR("tb executeTcmd: pin to core {} failed, running unpinned", cpuExecuteTcmd);
+    }
     pubsub::TCommand tcmd;
     unsigned step = 0;
     while (1) {

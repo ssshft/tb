@@ -40,7 +40,8 @@
               "restUrl": "https://demo-api.binance.com",
               "wsUrl": "wss://demo-stream.binance.com/ws",
               "wsTradeUrl": "wss://demo-stream.binance.com/ws",
-              "apiMode": "REST"
+              "apiMode": "REST",
+              "cpuCore": -1
             }
           ]
         }

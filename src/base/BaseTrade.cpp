@@ -1,4 +1,5 @@
 #include "base/BaseTrade.h"
+#include "program_util.h"   // CPU_SETSIZE（下面给 REST worker 挡越界核号时用）
 #include "hft_metrics.h"
 
 
@@ -47,6 +48,13 @@ void BaseTradeUnit::initRestClient(const std::string& host, std::vector<std::pai
     cfg.request_timeout_ms = 30000;
     cfg.idle_close_after_ms = 15000;
 
+    if (acc.cpuCore >= 0 && acc.cpuCore < CPU_SETSIZE) {
+        cfg.cpu_core = acc.cpuCore;
+    }
+    else if (acc.cpuCore >= CPU_SETSIZE) {
+        LOG_ERROR("TB {} cpuCore={} out of range, rest worker left unpinned", acc.accountName, acc.cpuCore);
+    }
+
     try {
         pRestClient = std::make_shared<net::RestClient>(cfg);
         restHost = host;
@@ -55,7 +63,7 @@ void BaseTradeUnit::initRestClient(const std::string& host, std::vector<std::pai
             pRestClient->set_default_header(kv.first, kv.second);
         }
 
-        LOG_INFO("Tb {} rest client to {} ready ({} conns)", acc.accountName, host, max_connections);
+        LOG_INFO("Tb {} rest client to {} ready ({} conns, cpu={})", acc.accountName, host, max_connections, cfg.cpu_core);
     }
     catch(const std::exception& e) {
         LOG_ERROR("TB {} initRestClient({}) failed: {}", acc.accountName, host, e.what());
@@ -172,6 +180,10 @@ BaseTradeClient::BaseTradeClient(rapidjson::Value& accCfg, sm::SecurityManager* 
             acc.wsTradeUrl = account["wsTradeUrl"].GetString();
         }
         acc.apiMode = ApiModeStr2EnumMap[account["apiMode"].GetString()];
+        
+        if (account.HasMember("cpuCore")) {
+            acc.cpuCore = std::stoi(account["cpuCore"].GetString());
+        }
         vAccount.push_back(acc);
     }
     smc = s;
