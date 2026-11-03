@@ -4,7 +4,7 @@
       "level": "info",
       "log_path": "/logs"
   },
-  "tb_accounts":["test1"],
+  "tb_accounts":["bntest1", "gatest1"],
 
   "cpuexecute": -1,
   "cpuexecutetcmd": -1
