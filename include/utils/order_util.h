@@ -260,6 +260,7 @@ namespace crypto {
     inline int get_binance_errorid(int code) {
         switch (code) {
             case -2011:
+                return UnknownError;
             case -2013:
                 return OrderNotFoundError;
             case -2018:
