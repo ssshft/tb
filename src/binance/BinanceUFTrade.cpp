@@ -959,13 +959,16 @@ void BinanceUFTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
             HFT_CNT("tb.rest.err.binance.uf");
 
             LOG_ERROR("TB {} add_new_order ec: {}", acc.accountName, ec.message());
-
+            /*
             if (ec == boost::system::errc::no_stream_resources || ec == boost::system::errc::no_buffer_space || ec == boost::system::errc::not_connected) {
                 rcmd.body.orderResponse.orderStatus = OS_REJECTED;
             }
             else {
                 rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
             }
+            */
+
+            rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
 
             rcmd.body.orderResponse.errorId = NetworkError;
             crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, ec.message());

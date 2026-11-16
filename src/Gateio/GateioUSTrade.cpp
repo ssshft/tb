@@ -884,12 +884,16 @@ void GateioUSTradeUnit::add_new_order(const pubsub::TCommand& tcmd) {
 
     asyncRequest(boost::beast::http::verb::post, newOrderUrl, std::move(body), "application/json", std::move(headers), [this, rcmd, info](boost::system::error_code ec, ::net::HttpResponse resp) mutable {
         if (ec) {
+            /*
             if (ec == boost::system::errc::no_stream_resources || ec == boost::system::errc::no_buffer_space || ec == boost::system::errc::not_connected) {
                 rcmd.body.orderResponse.orderStatus = OS_REJECTED;
             }
             else {
                 rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
             }
+            */
+
+            rcmd.body.orderResponse.orderStatus = OS_UNKNOWN;
 
             rcmd.body.orderResponse.errorId = NetworkError;
             crypto::copy_sv_to_char_array(rcmd.body.orderResponse.originMsg, ec.message());
