@@ -15,7 +15,7 @@ GateioUSTradeUnit::~GateioUSTradeUnit() {
 
 void GateioUSTradeUnit::subWebsocekt() {
     std::string restHost = crypto::host_of(acc.restUrl);
-    initRestClient(restHost, {}, 4);
+    initRestClient(restHost, {}, 8);
 
     net::WsConfig cfg;
     cfg.url = acc.wsUrl;

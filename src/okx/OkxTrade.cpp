@@ -49,7 +49,7 @@ void OkxTradeUnit::subWebsocekt() {
     if (acc.isSimulated) {
         defaultHeaders.emplace_back("x-simulated-trading", "1");
     }
-    initRestClient(restHost, std::move(defaultHeaders), 4);
+    initRestClient(restHost, std::move(defaultHeaders), 8);
 
     net::WsConfig cfg;
     cfg.url = acc.wsUrl;

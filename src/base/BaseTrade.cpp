@@ -45,7 +45,7 @@ void BaseTradeUnit::initRestClient(const std::string& host, std::vector<std::pai
     cfg.max_connections = max_connections;
     cfg.parallel_establish_threads = std::min<size_t>(4, max_connections);
     cfg.request_queue_capacity = 256;
-    cfg.request_timeout_ms = 30000;
+    cfg.request_timeout_ms = 1000;
     cfg.idle_close_after_ms = 15000;
 
     if (acc.cpuCore >= 0 && acc.cpuCore < CPU_SETSIZE) {
@@ -180,7 +180,7 @@ BaseTradeClient::BaseTradeClient(rapidjson::Value& accCfg, sm::SecurityManager* 
             acc.wsTradeUrl = account["wsTradeUrl"].GetString();
         }
         acc.apiMode = ApiModeStr2EnumMap[account["apiMode"].GetString()];
-        
+
         if (account.HasMember("cpuCore")) {
             acc.cpuCore = std::stoi(account["cpuCore"].GetString());
         }

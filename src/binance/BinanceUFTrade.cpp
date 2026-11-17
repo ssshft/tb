@@ -128,7 +128,7 @@ void BinanceUFTradeUnit::listenKeyRenewLoop() {
 void BinanceUFTradeUnit::subWebsocekt() {
     // 1. REST
     std::string restHost = crypto::host_of(acc.restUrl);
-    initRestClient(restHost, {{"X-MBX-APIKEY", acc.apiKey}}, 4);
+    initRestClient(restHost, {{"X-MBX-APIKEY", acc.apiKey}}, 8);
 
     // 2. listenKey (启动路径, 允许短暂 block ≤15s)
     if (!generateListenKeySync()) {

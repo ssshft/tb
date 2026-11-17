@@ -118,7 +118,7 @@ void BinanceUnifiedTradeUnit::listenKeyRenewLoop() {
 
 void BinanceUnifiedTradeUnit::subWebsocekt() {
     std::string restHost = crypto::host_of(acc.restUrl);
-    initRestClient(restHost, {{"X-MBX-APIKEY", acc.apiKey}}, 4);
+    initRestClient(restHost, {{"X-MBX-APIKEY", acc.apiKey}}, 8);
 
     if (!generateListenKeySync()) {
         LOG_ERROR("TB {} PAPI listenKey gen failed, ws NOT started", acc.accountName);
