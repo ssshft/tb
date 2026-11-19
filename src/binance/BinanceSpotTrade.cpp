@@ -65,7 +65,7 @@ std::string BinanceSpotTradeUnit::buildSubscribeJson(int64_t ts_ms, const std::s
 void BinanceSpotTradeUnit::subWebsocekt() {
     // ---- REST ----
     std::string restHost = crypto::host_of(acc.restUrl);
-    initRestClient(restHost, {{"X-MBX-APIKEY", acc.apiKey}}, 8);
+    initRestClient(restHost, {{"X-MBX-APIKEY", acc.apiKey}}, 16);
 
     // ---- WS ----
     // Binance ws-api server 主动 PING → beast 自动回 PONG (ServerOnly)。

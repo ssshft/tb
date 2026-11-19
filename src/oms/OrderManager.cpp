@@ -423,7 +423,7 @@ bool om::OrderManager::onOrderUpdate(pubsub::RCommand& rcmd) {
         }
         else {
             rcmd.body.orderResponse.volumeTraded = old_qty;
-            rcmd.body.orderResponse.tradePrice   = old_avg;
+            rcmd.body.orderResponse.tradePrice = old_avg;
         }
 
         rcmd.body.orderResponse.orderStatus = OS_PARTFILLED;

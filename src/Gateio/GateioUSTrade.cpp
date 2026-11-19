@@ -15,7 +15,7 @@ GateioUSTradeUnit::~GateioUSTradeUnit() {
 
 void GateioUSTradeUnit::subWebsocekt() {
     std::string restHost = crypto::host_of(acc.restUrl);
-    initRestClient(restHost, {}, 8);
+    initRestClient(restHost, {}, 16);
 
     net::WsConfig cfg;
     cfg.url = acc.wsUrl;
@@ -328,10 +328,16 @@ void GateioUSTradeUnit::handleTradesUpdate(simdjson::ondemand::array& arr) {
                 field.value().get(text_sv);
             }
             else if (k == "price") {
-                field.value().get(price);
+                auto v_res = field.value();
+                if (!v_res.error()) {
+                    get_flexible_double(v_res.value(), price);
+                }
             }
             else if (k == "size") {
-                field.value().get(size);
+                auto v_res = field.value();
+                if (!v_res.error()) {
+                    get_flexible_double(v_res.value(), size);
+                }
             }
         }
 

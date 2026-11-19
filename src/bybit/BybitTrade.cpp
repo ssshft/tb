@@ -24,7 +24,7 @@ std::string BybitTradeUnit::buildSubscribeJson() const {
 
 void BybitTradeUnit::subWebsocekt() {
     std::string restHost = crypto::host_of(acc.restUrl);
-    initRestClient(restHost, {}, 8);
+    initRestClient(restHost, {}, 16);
 
     net::WsConfig cfg;
     cfg.url = acc.wsUrl;
