@@ -426,7 +426,10 @@ bool om::OrderManager::onOrderUpdate(pubsub::RCommand& rcmd) {
             rcmd.body.orderResponse.tradePrice = old_avg;
         }
 
-        rcmd.body.orderResponse.orderStatus = OS_PARTFILLED;
+        // 成交通道只带"累计成交量", 本身不知道这一笔是不是最后一笔, 所以这里不能无条件写PARTFILLED
+        const double orderTotal = op.body.orderResponse.volumeTotal;
+        const double tradedTotal = rcmd.body.orderResponse.volumeTraded;
+        rcmd.body.orderResponse.orderStatus = (orderTotal > ZERO_NUM && tradedTotal >= orderTotal - ZERO_NUM) ? OS_FILLED : OS_PARTFILLED;
     }
 
     if (rcmd.body.orderResponse.volumeTraded > op.body.orderResponse.volumeTotal + ZERO_NUM) {
